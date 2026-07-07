@@ -121,14 +121,18 @@ function renderStaticPage(
 }
 
 /**
- * Build the handler's renderNotFound/renderError hooks from shell components (§14).
+ * Build the handler's renderNotFound/renderError hooks from shell components
+ * (§14). In `"prod"` mode (the default) the error page receives a generic
+ * message with a ref id and the real error goes to the server log — never
+ * the wire (§10). `"dev"` passes the real message through.
  *
  * @example
  * ```ts
  * const { renderNotFound, renderError } = makeShellRenderers(await loadShell(root));
  * ```
  */
-export function makeShellRenderers(shell: ShellComponents) {
+export function makeShellRenderers(shell: ShellComponents, opts: { mode?: "dev" | "prod" } = {}) {
+  const mode = opts.mode ?? "prod";
   return {
     renderNotFound: shell.NotFound
       ? (info: { path: string }) =>
@@ -141,17 +145,68 @@ export function makeShellRenderers(shell: ShellComponents) {
           )
       : undefined,
     renderError: shell.ErrorPage
-      ? (info: { path: string; error: unknown }) =>
-          renderStaticPage(
+      ? (info: { path: string; error: unknown }) => {
+          let message = info.error instanceof Error ? info.error.message : String(info.error);
+          if (mode === "prod") {
+            const ref = crypto.randomUUID().slice(0, 8);
+            console.error(`[rpxd] error ${ref} at ${info.path}:`, info.error);
+            message = `Internal error (ref: ${ref})`;
+          }
+          return renderStaticPage(
             createElement(shell.ErrorPage as FunctionComponent<{ path: string; message: string }>, {
               path: info.path,
-              message: info.error instanceof Error ? info.error.message : String(info.error),
+              message,
             }),
             500,
             shell,
-          )
+          );
+        }
       : undefined,
   };
+}
+
+function escapeHtml(text: string): string {
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+/**
+ * Framework dev error page (§14): the real message plus a sourcemapped stack
+ * (run the error through `vite.ssrFixStacktrace` first) — Remix/Next-style.
+ * Dev only; prod goes through the app's `__error` page with a generic
+ * message (see {@link makeShellRenderers}).
+ *
+ * @example
+ * ```ts
+ * if (error instanceof Error) vite.ssrFixStacktrace(error);
+ * return renderDevErrorPage(ctx.path, error);
+ * ```
+ */
+export function renderDevErrorPage(path: string, error: unknown): Response {
+  const message = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error ? (error.stack ?? "") : String(error);
+  const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>rpxd — runtime error</title>
+    <style>
+      body { margin: 0; padding: 2rem; background: #1c1c22; color: #f4f4f5; font-family: ui-monospace, monospace; }
+      h1 { font-size: 1rem; color: #fda4af; margin: 0 0 0.5rem; }
+      .msg { font-size: 1.25rem; margin: 0 0 1.5rem; white-space: pre-wrap; }
+      pre { background: #26262e; padding: 1rem; border-radius: 8px; overflow-x: auto; line-height: 1.6; }
+    </style>
+  </head>
+  <body data-testid="rpxd-dev-error">
+    <h1>Runtime error at ${escapeHtml(path)}</h1>
+    <p class="msg">${escapeHtml(message)}</p>
+    <pre>${escapeHtml(stack)}</pre>
+  </body>
+</html>`;
+  return new Response(html, {
+    status: 500,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
 }
 
 /**

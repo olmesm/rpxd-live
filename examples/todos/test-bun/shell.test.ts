@@ -39,12 +39,14 @@ describe("__404.tsx (§14)", () => {
   });
 });
 
-describe("__error.tsx (§10, §14)", () => {
-  it("renders the userland error page when mount rejects", async () => {
+describe("runtime errors in dev (§10, §14)", () => {
+  it("renders the framework dev overlay when mount rejects", async () => {
     const res = await fetch(`${base()}/boom`, { headers: { cookie: "rpxd_sid=shell" } });
     expect(res.status).toBe(500);
     const html = await res.text();
-    expect(html).toContain('data-testid="error-page"');
-    expect(html).toContain("mount exploded"); // the thrown message surfaces
+    // Dev shows the real error + stack; the userland __error page (generic
+    // message, no leak) is the prod path — covered in packages/cli/test-bun.
+    expect(html).toContain("rpxd-dev-error");
+    expect(html).toContain("mount exploded");
   });
 });

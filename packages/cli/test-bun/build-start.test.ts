@@ -95,4 +95,13 @@ describe("rpxd start (pure Bun, no Vite)", () => {
     const res = await fetch(`${base()}/definitely/not/here`);
     expect(res.status).toBe(404);
   });
+
+  it("hardens runtime errors: generic 500 into __error, no message leak (§10)", async () => {
+    const res = await fetch(`${base()}/boom`, { headers: { cookie: COOKIE } });
+    expect(res.status).toBe(500);
+    const html = await res.text();
+    expect(html).toContain("error-page"); // the app's __error shell page
+    expect(html).not.toContain("mount exploded"); // details stay server-side
+    expect(html).toMatch(/ref: [0-9a-f]{8}/); // correlate with the server log
+  });
 });
