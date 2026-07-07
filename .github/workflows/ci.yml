@@ -34,3 +34,24 @@ jobs:
 
       - name: Bun-runtime tests (smoke + adapters)
         run: bun test spikes/vite-bun-ssr packages/server-bun/test-bun packages/storage-sqlite/test-bun examples/todos/test-bun packages/cli/test-bun
+
+  e2e:
+    name: Playwright e2e (examples/todos)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install chromium
+        run: bunx playwright install --with-deps chromium
+        working-directory: e2e
+
+      - name: Run e2e suite
+        run: bunx playwright test
+        working-directory: e2e

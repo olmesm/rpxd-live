@@ -1,0 +1,20 @@
+/** Generator rpcs (§3): segments stream in patch-by-patch at each yield. */
+import { expect, test } from "@playwright/test";
+
+test("generator segments stream progressively, finally clears the flag", async ({ page }) => {
+  await page.goto("/import");
+  await page.click("button");
+
+  // first segment: importing flag set before any items arrive
+  await expect(page.getByTestId("importing")).toBeVisible();
+
+  // items appear one segment at a time — item-1 must render while the
+  // import is still running (progressive flushes, not one atomic patch)
+  await expect(page.getByTestId("items").locator("li").first()).toContainText("item-1");
+  await expect(page.getByTestId("importing")).toBeVisible();
+
+  // completion: all three items, flag cleared by the finally block
+  await expect(page.getByTestId("items").locator("li")).toHaveCount(3);
+  await expect(page.getByTestId("importing")).toHaveCount(0);
+  await expect(page.getByTestId("pending")).toHaveCount(0);
+});
