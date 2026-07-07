@@ -51,7 +51,10 @@ export async function buildApp(root: string): Promise<void> {
   await build({
     root,
     logLevel: "error",
-    plugins: [rpxdVitePlugin(), rpxdEntryPlugin({ rsc: config.rsc })],
+    plugins: [
+      rpxdVitePlugin(),
+      rpxdEntryPlugin({ rsc: config.rsc, transport: config.transport?.kind }),
+    ],
     build: {
       outDir: "dist/client",
       manifest: true,

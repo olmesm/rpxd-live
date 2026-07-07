@@ -11,7 +11,7 @@ export const CLIENT_ENTRY_URL = "/@rpxd-entry.tsx";
 
 const VIRTUAL_ID = "\0rpxd-entry.tsx";
 
-const clientEntrySource = (rsc: boolean) => `
+const clientEntrySource = (rsc: boolean, transport: "sse" | "ws") => `
 import { createElement } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { LiveConnection, rpcMetaFromDef } from "@rpxd/client";
@@ -31,7 +31,7 @@ const route = (await load()).default;
 const conn = new LiveConnection({
   instance: boot.instance,
   bootstrap: boot,
-  meta: rpcMetaFromDef(route.def),
+  meta: rpcMetaFromDef(route.def),${transport === "ws" ? '\n  transport: "ws",' : ""}
 });
 conn.connect();
 
@@ -56,14 +56,15 @@ hydrateRoot(rootEl, Root ? createElement(Root, null, createElement(App)) : creat
 `;
 
 /**
- * Vite plugin serving the client entry as a virtual module.
+ * Vite plugin serving the client entry as a virtual module. `transport`
+ * bakes the configured transport into the connection (§11 dev/prod parity).
  *
  * @example
  * ```ts
- * createServer({ plugins: [rpxdEntryPlugin({ rsc: true })] });
+ * createServer({ plugins: [rpxdEntryPlugin({ rsc: true, transport: "ws" })] });
  * ```
  */
-export function rpxdEntryPlugin(opts: { rsc?: boolean } = {}): Plugin {
+export function rpxdEntryPlugin(opts: { rsc?: boolean; transport?: "sse" | "ws" } = {}): Plugin {
   return {
     name: "rpxd-client-entry",
     resolveId(id) {
@@ -71,7 +72,7 @@ export function rpxdEntryPlugin(opts: { rsc?: boolean } = {}): Plugin {
       return undefined;
     },
     load(id) {
-      if (id === VIRTUAL_ID) return clientEntrySource(opts.rsc ?? false);
+      if (id === VIRTUAL_ID) return clientEntrySource(opts.rsc ?? false, opts.transport ?? "sse");
       return undefined;
     },
   };
