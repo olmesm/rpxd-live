@@ -31,3 +31,6 @@ jobs:
 
       - name: Unit tests
         run: bun run test
+
+      - name: Smoke test (Vite-on-Bun SSR)
+        run: bun test spikes/vite-bun-ssr
