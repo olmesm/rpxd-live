@@ -1,25 +1,20 @@
 import { live } from "@rpxd/core";
+import { addTodo, listTodos, scopeFrom, toggleTodo } from "../domain/todos";
 
-interface Todo {
-  id: string;
-  text: string;
-  done: boolean;
-}
-
-let counter = 0;
-
+// Data access goes through the domain layer, never `db` directly (see
+// docs/domain-layer.md). Handlers stay thin: derive the scope from
+// ctx.session, call the domain fn, then patchState.
 export default live("/")
-  .mount(async () => ({
-    todos: [{ id: "t0", text: "Try rpxd", done: false }] as Todo[],
-  }))
+  .mount(async (_params, ctx) => ({ todos: await listTodos(scopeFrom(ctx.session)) }))
   .rpc("add", (r) =>
     r
       .optimistic((state, { text }: { text: string }, ctx) => {
         state.todos.push({ id: ctx.tempId(), text, done: false });
       })
       .handler(async ({ text }, ctx) => {
+        const todo = await addTodo(scopeFrom(ctx.session), text);
         ctx.patchState((s) => {
-          s.todos.push({ id: `srv-${++counter}`, text, done: false });
+          s.todos.push(todo);
         });
       }),
   )
@@ -30,6 +25,7 @@ export default live("/")
         if (todo) todo.done = !todo.done;
       })
       .handler(async ({ id }, ctx) => {
+        await toggleTodo(scopeFrom(ctx.session), id);
         ctx.patchState((s) => {
           const todo = s.todos.find((t) => t.id === id);
           if (todo) todo.done = !todo.done;

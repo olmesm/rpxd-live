@@ -42,7 +42,7 @@ function sidOf(req: Request): string {
  */
 export function wsTransport(
   handler: RpxdHandler,
-  opts: { authenticate?: (req: Request) => unknown | Promise<unknown> } = {},
+  opts: { authenticate?: (req: Request, ctx: { sid: string }) => unknown | Promise<unknown> } = {},
 ) {
   const websocket: WebSocketHandlers = {
     open(socket: SocketLike) {
@@ -72,16 +72,17 @@ export function wsTransport(
    */
   async function prepare(req: Request): Promise<unknown | Response> {
     const url = new URL(req.url);
+    const sid = sidOf(req);
     let sessionData: unknown = {};
     if (opts.authenticate) {
       try {
-        sessionData = await opts.authenticate(req);
+        sessionData = await opts.authenticate(req, { sid });
       } catch (e) {
         return new Response(e instanceof Error ? e.message : "forbidden", { status: 403 });
       }
     }
     const data: WsData = {
-      sid: sidOf(req),
+      sid,
       sessionData,
       attach: {
         token: url.searchParams.get("attach"),

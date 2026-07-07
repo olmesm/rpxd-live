@@ -4,7 +4,7 @@ Live objects for React: server-side stateful objects with reducers; the
 client is plain React receiving state. Immer patches stream over SSE;
 optimistic updates replay client-side; multiplayer rides pubsub.
 
-**Spec:** [`spec.md`](./spec.md) · **Wire protocol:** [`docs/protocol.md`](./docs/protocol.md)
+**Spec:** [`spec.md`](./spec.md) · **Wire protocol:** [`docs/protocol.md`](./docs/protocol.md) · **App structure:** [`docs/domain-layer.md`](./docs/domain-layer.md)
 
 ```tsx
 // routes/org.$orgId.board.tsx — one live object per page, fully inferred

@@ -42,7 +42,7 @@ export interface RpxdHandlerOptions {
    * Authenticate once at connect (§10). Return the session object; throw to
    * reject with 403. Every reducer sees the result as `ctx.session`.
    */
-  authenticate?: (req: Request) => unknown | Promise<unknown>;
+  authenticate?: (req: Request, ctx: { sid: string }) => unknown | Promise<unknown>;
   /** SSR renderer (§12). Defaults to a minimal HTML shell embedding the bootstrap payload. */
   render?: (ctx: RenderContext) => Response | Promise<Response>;
   /** Unmatched-URL page (§14 `__404`). Defaults to a plain-text 404. */
@@ -332,7 +332,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       let sessionData: unknown = {};
       if (opts.authenticate) {
         try {
-          sessionData = await opts.authenticate(req);
+          sessionData = await opts.authenticate(req, { sid });
         } catch (e) {
           return new Response(e instanceof Error ? e.message : "forbidden", { status: 403 });
         }
