@@ -1,15 +1,15 @@
 {
-  "name": "@rpxd/core",
+  "name": "@rpxd/vite-plugin",
   "version": "0.1.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
+  "peerDependencies": {
+    "vite": ">=6"
+  },
   "devDependencies": {
     "typescript": "^5.9.0",
-    "zod": "^4.4.3"
-  },
-  "dependencies": {
-    "immer": "^11.1.11"
+    "vite": "^7.0.0"
   }
 }
