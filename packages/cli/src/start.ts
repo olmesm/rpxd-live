@@ -7,7 +7,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { LiveRoute } from "@rpxd/core";
-import { bunAdapter, createRpxdHandler, type RouteRegistration } from "@rpxd/server-bun";
+import {
+  bunAdapter,
+  createRpxdHandler,
+  type RouteRegistration,
+  wsTransport,
+} from "@rpxd/server-bun";
 import type { FunctionComponent } from "react";
 import type { RpxdConfig } from "./config.ts";
 import {

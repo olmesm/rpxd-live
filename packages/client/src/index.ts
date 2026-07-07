@@ -11,6 +11,7 @@ export {
   type ConnectionOptions,
   type EventSourceLike,
   LiveConnection,
+  type WebSocketLike,
 } from "./connection.ts";
 export { findTempIdLocations, matchIdMap, type TempIdLocation } from "./id-map.ts";
 export type { RenderProps } from "./render-props.ts";

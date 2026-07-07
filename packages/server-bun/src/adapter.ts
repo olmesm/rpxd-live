@@ -9,16 +9,38 @@ export interface ServeHandle {
   stop(): void | Promise<void>;
 }
 
+/** Minimal duplex socket surface the runtime needs (§11 ws opt-in). */
+export interface SocketLike<T = unknown> {
+  data: T;
+  send(message: string): void;
+  close(): void;
+}
+
+export interface WebSocketHandlers<T = unknown> {
+  open?(socket: SocketLike<T>): void;
+  message?(socket: SocketLike<T>, message: string): void;
+  close?(socket: SocketLike<T>): void;
+}
+
 export interface ServeOptions {
   port?: number;
   hostname?: string;
-  fetch(req: Request): Response | Promise<Response>;
+  /**
+   * Request handler. `upgrade` is provided when `websocket` handlers are
+   * configured: call it to take the connection duplex; it returns true when
+   * the upgrade succeeded (return no Response in that case).
+   */
+  fetch(
+    req: Request,
+    upgrade?: (data: unknown) => boolean,
+  ): Response | undefined | Promise<Response | undefined>;
+  websocket?: WebSocketHandlers;
 }
 
 /**
- * The runtime seam rpxd serves through. `serve` binds the HTTP listener,
- * `env` reads configuration. (WS upgrade support arrives with the `ws()`
- * transport opt-in — the envelope is transport-agnostic, §11.)
+ * The runtime seam rpxd serves through (§14). `serve` binds the HTTP
+ * listener (with optional WS upgrade — §11 `transport: ws()`), `env` reads
+ * configuration.
  */
 export interface ServerAdapter {
   serve(opts: ServeOptions): ServeHandle;
@@ -36,8 +58,30 @@ export interface ServerAdapter {
  */
 export function bunAdapter(): ServerAdapter {
   return {
-    serve({ port = 3000, hostname, fetch }) {
-      const server = Bun.serve({ port, hostname, fetch: (req) => fetch(req) });
+    serve({ port = 3000, hostname, fetch, websocket }) {
+      const server = Bun.serve<unknown>({
+        port,
+        hostname,
+        async fetch(req, bunServer) {
+          const upgrade = websocket
+            ? (data: unknown) => bunServer.upgrade(req, { data })
+            : undefined;
+          const res = await fetch(req, upgrade);
+          // undefined response = successful upgrade; Bun takes over.
+          return res as Response;
+        },
+        websocket: {
+          open(ws) {
+            websocket?.open?.(ws as unknown as SocketLike);
+          },
+          message(ws, message) {
+            websocket?.message?.(ws as unknown as SocketLike, String(message));
+          },
+          close(ws) {
+            websocket?.close?.(ws as unknown as SocketLike);
+          },
+        },
+      });
       return {
         port: server.port ?? port,
         stop: () => server.stop(true),

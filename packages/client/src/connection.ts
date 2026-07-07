@@ -12,6 +12,13 @@ export interface EventSourceLike {
   close(): void;
 }
 
+/** The slice of `WebSocket` the connection uses — injectable for tests (§11 ws opt-in). */
+export interface WebSocketLike {
+  addEventListener(type: string, listener: (event: { data?: unknown }) => void): void;
+  send(data: string): void;
+  close(): void;
+}
+
 /** SSR bootstrap payload embedded by the server (§12). */
 export interface Bootstrap {
   instance: string;
@@ -28,9 +35,15 @@ export interface ConnectionOptions {
   base?: string;
   /** SSR bootstrap: seeds the store and attaches to the warm instance (§12). */
   bootstrap?: Bootstrap;
+  /**
+   * Transport (§11): `"sse"` (default) or `"ws"` — one duplex socket, same
+   * envelope protocol, identical API shape.
+   */
+  transport?: "sse" | "ws";
   /** Injectable transport primitives (tests, non-browser environments). */
   fetchImpl?: typeof fetch;
   eventSource?: (url: string) => EventSourceLike;
+  webSocket?: (url: string) => WebSocketLike;
 }
 
 /**
@@ -48,6 +61,9 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   readonly store: LiveStore<S, Session>;
   readonly #opts: ConnectionOptions;
   #source: EventSourceLike | undefined;
+  #socket: WebSocketLike | undefined;
+  #socketOpen = false;
+  #closed = false;
   #everOpened = false;
 
   constructor(opts: ConnectionOptions) {
@@ -68,8 +84,12 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     }
   }
 
-  /** Open the SSE stream. Reconnects are handled by EventSource itself. */
+  /** Open the transport. SSE reconnects via EventSource; WS retries with backoff. */
   connect(): void {
+    if (this.#opts.transport === "ws") {
+      this.#connectWs();
+      return;
+    }
     if (this.#source) return;
     const base = this.#opts.base ?? "";
     const boot = this.#opts.bootstrap;
@@ -100,15 +120,65 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     });
   }
 
+  #connectWs(): void {
+    if (this.#socket || this.#closed) return;
+    const boot = this.#opts.bootstrap;
+    // Attach params are only valid for the first connect; reconnects resync.
+    const attach = boot && !this.#everOpened ? `?attach=${boot.attachToken}&seq=${boot.seq}` : "";
+    const base = this.#opts.base ?? "";
+    const wsBase = base
+      ? base.replace(/^http/, "ws")
+      : typeof window !== "undefined"
+        ? window.location.origin.replace(/^http/, "ws")
+        : "";
+    const factory =
+      this.#opts.webSocket ?? ((url: string) => new WebSocket(url) as unknown as WebSocketLike);
+    const socket = factory(`${wsBase}/__rpxd/ws${attach}`);
+    this.#socket = socket;
+    this.store.setStatus(this.#everOpened ? "reconnecting" : "connecting");
+
+    socket.addEventListener("open", () => {
+      const reconnected = this.#everOpened;
+      this.#everOpened = true;
+      this.#socketOpen = true;
+      this.store.setStatus("live");
+      if (reconnected) this.store.resendUnacked();
+    });
+    socket.addEventListener("message", (event) => {
+      this.store.applyEnvelope(JSON.parse(String(event.data)) as Envelope);
+      if (this.store.status !== "live") this.store.setStatus("live");
+    });
+    const retry = () => {
+      if (this.#socket !== socket) return;
+      this.#socket = undefined;
+      this.#socketOpen = false;
+      if (this.#closed) return;
+      this.store.setStatus("reconnecting");
+      setTimeout(() => this.#connectWs(), 1000);
+    };
+    socket.addEventListener("close", retry);
+    socket.addEventListener("error", () => {
+      this.store.setStatus("reconnecting");
+    });
+  }
+
   /** Push a search-param change to the `params` reducer (§7) — no remount. */
   patchParams(search: Record<string, string>): void {
+    if (this.#socketOpen && this.#socket) {
+      this.#socket.send(JSON.stringify({ type: "params", instance: this.#opts.instance, search }));
+      return;
+    }
     void this.#control({ type: "params", instance: this.#opts.instance, search });
   }
 
-  /** Close the stream. Server-side warm TTL takes it from here (§11). */
+  /** Close the transport. Server-side warm TTL takes it from here (§11). */
   close(): void {
+    this.#closed = true;
     this.#source?.close();
     this.#source = undefined;
+    this.#socket?.close();
+    this.#socket = undefined;
+    this.#socketOpen = false;
   }
 
   #fetch(): typeof fetch {
@@ -116,6 +186,11 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   }
 
   #send(batch: RpcBatch): void {
+    if (this.#opts.transport === "ws") {
+      // Unacked batches resend on reopen — dropping while closed is safe (§11).
+      if (this.#socketOpen && this.#socket) this.#socket.send(JSON.stringify(batch));
+      return;
+    }
     void this.#fetch()(`${this.#opts.base ?? ""}/__rpxd/rpc`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -129,6 +204,10 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   }
 
   #control(msg: unknown): Promise<unknown> {
+    if (this.#opts.transport === "ws" && this.#socketOpen && this.#socket) {
+      this.#socket.send(JSON.stringify(msg));
+      return Promise.resolve();
+    }
     return this.#fetch()(`${this.#opts.base ?? ""}/__rpxd/control`, {
       method: "POST",
       headers: { "content-type": "application/json" },
