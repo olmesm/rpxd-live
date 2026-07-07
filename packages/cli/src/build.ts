@@ -3,9 +3,13 @@
  * manifest) and SSR bundle (route modules for the pure-Bun `rpxd start`).
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { rpxd as rpxdVitePlugin, runCodegen } from "@rpxd/vite-plugin";
 import type { Plugin } from "vite";
 import { build } from "vite";
+import type { RpxdConfig } from "./config.ts";
 import { CLIENT_ENTRY_URL, rpxdEntryPlugin } from "./entry.ts";
 
 /** Virtual SSR entry: re-exports the generated route map for `rpxd start`. */
@@ -39,11 +43,15 @@ function rpxdServerEntryPlugin(): Plugin {
  */
 export async function buildApp(root: string): Promise<void> {
   runCodegen(root);
+  const configPath = join(root, "rpxd.config.ts");
+  const config: RpxdConfig = existsSync(configPath)
+    ? ((await import(pathToFileURL(configPath).href)).default ?? {})
+    : {};
 
   await build({
     root,
     logLevel: "error",
-    plugins: [rpxdVitePlugin(), rpxdEntryPlugin()],
+    plugins: [rpxdVitePlugin(), rpxdEntryPlugin({ rsc: config.rsc })],
     build: {
       outDir: "dist/client",
       manifest: true,

@@ -107,7 +107,7 @@ export async function createDevServer(
     root,
     appType: "custom",
     logLevel: "error",
-    plugins: [rpxdVitePlugin(), rpxdEntryPlugin()],
+    plugins: [rpxdVitePlugin(), rpxdEntryPlugin({ rsc: config.rsc })],
     server: {
       middlewareMode: true,
       hmr: { server: httpServer },
@@ -130,7 +130,7 @@ export async function createDevServer(
     routes,
     storage: config.storage,
     authenticate: config.session?.authenticate,
-    render: makeDevRender(vite, routeFiles),
+    render: makeDevRender(vite, routeFiles, { rsc: config.rsc }),
     defaultRateLimit: config.rateLimit,
   });
 

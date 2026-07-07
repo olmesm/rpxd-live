@@ -25,6 +25,7 @@
       "dependencies": {
         "@rpxd/client": "workspace:*",
         "@rpxd/core": "workspace:*",
+        "@rpxd/rsc": "workspace:*",
         "react": "^19.0.0",
         "react-dom": "^19.0.0",
       },
@@ -45,6 +46,7 @@
       },
       "dependencies": {
         "@rpxd/core": "workspace:*",
+        "@rpxd/rsc": "workspace:*",
         "@rpxd/server-bun": "workspace:*",
         "@rpxd/vite-plugin": "workspace:*",
         "vite": "^7.0.0",
@@ -89,6 +91,22 @@
       "devDependencies": {
         "typescript": "^5.9.0",
         "zod": "^4.4.3",
+      },
+    },
+    "packages/rsc": {
+      "name": "@rpxd/rsc",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+        "typescript": "^5.9.0",
+        "vitest": "^4.0.0",
+      },
+      "peerDependencies": {
+        "react": ">=18",
+        "react-dom": ">=18",
       },
     },
     "packages/server-bun": {
@@ -351,6 +369,8 @@
 
     "@rpxd/example-todos": ["@rpxd/example-todos@workspace:examples/todos"],
 
+    "@rpxd/rsc": ["@rpxd/rsc@workspace:packages/rsc"],
+
     "@rpxd/server-bun": ["@rpxd/server-bun@workspace:packages/server-bun"],
 
     "@rpxd/spike-vite-bun-ssr": ["@rpxd/spike-vite-bun-ssr@workspace:spikes/vite-bun-ssr"],
@@ -520,6 +540,8 @@
     "@rpxd/core/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
     "@rpxd/example-todos/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "@rpxd/rsc/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
     "@rpxd/server-bun/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 

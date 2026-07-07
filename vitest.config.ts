@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     // spikes/** run under `bun test` (they exercise the Bun runtime itself);
     // e2e/** runs under Playwright. Vitest owns package unit tests only.
-    include: ["packages/*/test/**/*.test.ts", "packages/*/src/**/*.test.ts"],
+    include: ["packages/*/test/**/*.test.{ts,tsx}", "packages/*/src/**/*.test.{ts,tsx}"],
     exclude: ["**/node_modules/**", "spikes/**", "e2e/**"],
     // Type tests (§17 / spec type guarantees): *.test-d.ts files are
     // compiled, not executed.
