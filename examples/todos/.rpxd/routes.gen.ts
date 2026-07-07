@@ -8,11 +8,21 @@ export const routeTree = {
     file: "../routes/index.tsx",
     pattern: "/",
   },
+  "/chat": {
+    file: "../routes/chat.tsx",
+    pattern: "/chat",
+  },
+  "/import": {
+    file: "../routes/import.tsx",
+    pattern: "/import",
+  },
 } as const;
 
 /** Lazy importers for each page route — used by the client router and SSR. */
 export const routeModules = {
   "/": () => import("../routes/index.tsx"),
+  "/chat": () => import("../routes/chat.tsx"),
+  "/import": () => import("../routes/import.tsx"),
 } as const;
 
 /** Shell modules (§14): HTML root, unmatched-URL page, error page. */
