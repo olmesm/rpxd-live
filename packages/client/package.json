@@ -8,7 +8,8 @@
   },
   "dependencies": {
     "@rpxd/core": "workspace:*",
-    "immer": "^11.1.11"
+    "immer": "^11.1.11",
+    "wouter": "^3.10.0"
   },
   "peerDependencies": {
     "react": ">=18"

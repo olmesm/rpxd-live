@@ -146,6 +146,11 @@ export class LiveStore<S = unknown, Session = Record<string, unknown>> {
     return this.#confirmedState;
   }
 
+  /** Current connection status (§11). */
+  get status(): ConnectionStatus {
+    return this.#status;
+  }
+
   /** Subscribe to store changes (useSyncExternalStore-compatible). */
   subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);

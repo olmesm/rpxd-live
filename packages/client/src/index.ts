@@ -6,7 +6,22 @@
  *
  * @packageDocumentation
  */
+export {
+  type Bootstrap,
+  type ConnectionOptions,
+  type EventSourceLike,
+  LiveConnection,
+} from "./connection.ts";
 export { findTempIdLocations, matchIdMap, type TempIdLocation } from "./id-map.ts";
+export {
+  buildHref,
+  Link,
+  type Nav,
+  type Register,
+  type RegisteredPath,
+  RpxdProvider,
+  useNav,
+} from "./router.tsx";
 export {
   type ConnectionStatus,
   LiveStore,
