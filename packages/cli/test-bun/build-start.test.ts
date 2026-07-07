@@ -29,6 +29,12 @@ describe("rpxd build", () => {
     expect(existsSync(join(distDir, "client/.vite/manifest.json"))).toBe(true);
     expect(existsSync(join(distDir, "server/entry-server.js"))).toBe(true);
   });
+
+  it("the server bundle owns rendering: exports the streaming renderer", async () => {
+    const mod = await import(join(distDir, "server/entry-server.js"));
+    expect(typeof mod.renderRoute).toBe("function");
+    expect(typeof mod.makeShellRenderers).toBe("function");
+  });
 });
 
 describe("rpxd start (pure Bun, no Vite)", () => {

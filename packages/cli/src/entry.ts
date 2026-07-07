@@ -4,12 +4,24 @@
  * into the route component. Served as a Vite virtual module — userland never
  * writes an entry file.
  */
+import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
 
 /** Public URL of the client entry, referenced by the SSR HTML shell. */
 export const CLIENT_ENTRY_URL = "/@rpxd-entry.tsx";
 
 const VIRTUAL_ID = "\0rpxd-entry.tsx";
+
+/**
+ * Virtual id of the graph-side SSR runtime (§12): a re-export of the
+ * framework's `ssr.ts` by absolute path, so it loads INSIDE the server
+ * module graph (dev `ssrLoadModule`, prod server bundle) without requiring
+ * apps to depend on `@rpxd/cli` for module resolution.
+ */
+export const SSR_RUNTIME_URL = "/@rpxd-ssr.ts";
+
+const SSR_RUNTIME_VIRTUAL_ID = "\0rpxd-ssr.ts";
+const SSR_RUNTIME_FILE = fileURLToPath(new URL("./ssr.ts", import.meta.url));
 
 const clientEntrySource = (rsc: boolean, transport: "sse" | "ws") => `
 import { createElement } from "react";
@@ -58,10 +70,14 @@ export function rpxdEntryPlugin(opts: { rsc?: boolean; transport?: "sse" | "ws" 
     name: "rpxd-client-entry",
     resolveId(id) {
       if (id === CLIENT_ENTRY_URL) return VIRTUAL_ID;
+      if (id === SSR_RUNTIME_URL) return SSR_RUNTIME_VIRTUAL_ID;
       return undefined;
     },
     load(id) {
       if (id === VIRTUAL_ID) return clientEntrySource(opts.rsc ?? false, opts.transport ?? "sse");
+      if (id === SSR_RUNTIME_VIRTUAL_ID) {
+        return `export * from ${JSON.stringify(SSR_RUNTIME_FILE)};`;
+      }
       return undefined;
     },
   };

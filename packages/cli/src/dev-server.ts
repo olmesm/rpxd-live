@@ -20,8 +20,8 @@ import { WebSocketServer } from "ws";
 import type { RpxdConfig } from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
 import {
+  loadSsrRuntime,
   makeDevRender,
-  makeShellRenderers,
   renderDevErrorPage,
   type ShellComponents,
 } from "./render.ts";
@@ -162,12 +162,14 @@ export async function createDevServer(
   }
 
   const routesDir = join(root, "routes");
+  // The SSR runtime renders in-graph (§12) — same graph the routes load in.
+  const ssrRuntime = await loadSsrRuntime(vite);
   const handler = createRpxdHandler({
     routes,
     storage: config.storage,
     authenticate: config.session?.authenticate,
     render: makeDevRender(vite, routeFiles, { rsc: config.rsc, shell }),
-    ...makeShellRenderers(shell, { mode: "dev" }),
+    ...ssrRuntime.makeShellRenderers(shell, { mode: "dev" }),
     // Dev overlay (§14): runtime errors render the framework page with the
     // real message and a sourcemapped stack instead of the app __error page.
     renderError: (info: { path: string; error: unknown }) => {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { makeShellRenderers, renderDevErrorPage } from "../src/render.ts";
+import { renderDevErrorPage } from "../src/render.ts";
+import { makeShellRenderers } from "../src/ssr.ts";
 
 function ErrorPage({ path, message }: { path: string; message: string }) {
   return (
@@ -13,7 +14,7 @@ describe("prod error hardening (§10)", () => {
   it("never leaks the error message; logs it server-side with a ref id", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { renderError } = makeShellRenderers({ ErrorPage }, { mode: "prod" });
-    const res = renderError?.({ path: "/boom", error: new Error("db password is hunter2") });
+    const res = await renderError?.({ path: "/boom", error: new Error("db password is hunter2") });
     expect(res?.status).toBe(500);
     const html = await res?.text();
     expect(html).not.toContain("hunter2");
@@ -28,7 +29,7 @@ describe("prod error hardening (§10)", () => {
 
   it("keeps the real message in dev mode", async () => {
     const { renderError } = makeShellRenderers({ ErrorPage }, { mode: "dev" });
-    const res = renderError?.({ path: "/boom", error: new Error("mount exploded") });
+    const res = await renderError?.({ path: "/boom", error: new Error("mount exploded") });
     const html = await res?.text();
     expect(html).toContain("mount exploded");
   });
