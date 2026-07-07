@@ -145,9 +145,23 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     });
   };
 
+  // WS transport opt-in (§11): same envelope protocol, duplex framing.
+  const ws =
+    config.transport?.kind === "ws"
+      ? wsTransport(handler, { authenticate: config.session?.authenticate })
+      : undefined;
+
   const handle = bunAdapter().serve({
     port: opts.port ?? 3000,
-    fetch: async (req) => {
+    websocket: ws?.websocket,
+    fetch: async (req, upgrade) => {
+      if (ws) {
+        const upgraded = await ws.handleUpgrade(req, upgrade);
+        if (upgraded) {
+          if (upgraded.status === 101) return undefined;
+          return upgraded;
+        }
+      }
       const url = new URL(req.url);
       if (req.method === "GET" && url.pathname.includes(".")) {
         const asset = await serveStatic(url.pathname);

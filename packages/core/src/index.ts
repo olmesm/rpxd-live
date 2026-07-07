@@ -19,6 +19,9 @@ export {
   type MountCtx,
   type PathParams,
   type PlainReducer,
+  type RpcChain,
+  type RpcChainBuilt,
+  type RpcChainWithInput,
   type RpcCtx,
   type RpcDef,
   type RpcHandler,
@@ -35,6 +38,14 @@ export {
 } from "./protocol.ts";
 export { SerialQueue } from "./queue.ts";
 export { type RateLimit, RateLimitError, TokenBucket } from "./rate-limit.ts";
+export type {
+  ConnectionStatus,
+  NavProp,
+  Pretty,
+  RenderProps,
+  RpcFacade,
+  SyncState,
+} from "./render-props.ts";
 export {
   type InferOutput,
   type StandardSchemaResult,

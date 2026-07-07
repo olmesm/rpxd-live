@@ -6,6 +6,7 @@
  * patches are never merged into confirmed state.
  */
 import {
+  type ConnectionStatus,
   type Envelope,
   type EnvelopeError,
   isLongForm,
@@ -14,6 +15,7 @@ import {
   PROTOCOL_VERSION,
   type RpcBatch,
   type StandardSchemaV1,
+  type SyncState,
   validateInput,
 } from "@rpxd/core";
 import { applyPatches, enablePatches, produceWithPatches } from "immer";
@@ -43,15 +45,7 @@ export function rpcMetaFromDef(
   return meta;
 }
 
-/** Connection status surfaced to the UI (§11). */
-export type ConnectionStatus = "connecting" | "live" | "reconnecting" | "error";
-
-/** The `sync` render prop (§1): in-flight rpcs + surfaced errors. */
-export interface SyncState {
-  pending: boolean;
-  inFlight: number;
-  errors: EnvelopeError[];
-}
+export type { ConnectionStatus, SyncState } from "@rpxd/core";
 
 /** What the React layer renders — stable identity between store changes. */
 export interface StoreSnapshot<S, Session> {
