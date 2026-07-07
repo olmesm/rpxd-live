@@ -10,24 +10,23 @@ Server-side stateful objects with reducers; client is plain React receiving stat
 - Render props: `state`, `session`, `rpc`, `sync` (`pending`, `errors`), `nav`, `keyOf`
 
 ```tsx
-// routes/org.$orgId.board.tsx
-export default live("/org/$orgId/board")({
-  mount: async ({ orgId }, ctx) => {
+// routes/org.$orgId.board.tsx — fluent chain: state locks at .mount(),
+// everything downstream infers from it (zero annotations)
+export default live("/org/$orgId/board")
+  .mount(async ({ orgId }, ctx) => {
     ctx.subscribe(`org:${orgId}`);
     return { projects: await db.project.findMany({ where: { orgId } }) };
-  },
-  params: (session, { filter }) => { session.filter = filter ?? "all"; },
-  rpc: {
-    async create(state, { name }, ctx) {
+  })
+  .params((session, { filter }) => { session.filter = filter ?? "all"; })
+  .rpc("create", (r) =>
+    r.input(z.object({ name: z.string() })).handler(async (state, { name }, ctx) => {
       const p = await db.project.create({ data: { orgId: ctx.params.orgId, name } });
       state.projects.push(p);
       ctx.broadcast(`org:${ctx.params.orgId}`, "project.created", p);
-    },
-  },
-  on: {
-    "project.created": (state, p) => { state.projects.push(p); },
-  },
-})(({ state, session, rpc, sync, keyOf }) => ( /* plain React */ ));
+    }),
+  )
+  .on("project.created", (state, p) => { state.projects.push(p); })
+  .render(({ state, session, rpc, sync, keyOf }) => ( /* plain React */ ));
 ```
 
 ## 2. Patch Protocol & Wire Envelope
@@ -43,7 +42,7 @@ Immer patches over a push stream with seq numbers; full snapshot as recovery.
 ## 3. Generator RPCs (Streaming)
 `yield` = flush patches; `getState()` gives a fresh draft per segment; queue releases at yield.
 
-- Signature signals semantics: plain reducers get `state` (whole-rpc atomic, blocks queue); generators get `getState` (per-segment drafts, **non-blocking**)
+- Terminal signals semantics: `.handler()` reducers get `state` (whole-rpc atomic, blocks queue); `.stream()` generators get `getState` (per-segment drafts, **non-blocking**)
 - Each segment between yields = one `produceWithPatches` = one atomic flush
 - Queue releases at every `yield`; generator re-reads via `getState()` on resume
 - Lintable convention (Biome rule, §17): never hold a `getState()` reference across `yield`/`await`
@@ -52,19 +51,21 @@ Immer patches over a push stream with seq numbers; full snapshot as recovery.
 - `sync.pending` spans the full run
 
 ```ts
-async *importCsv(getState, { url }, ctx) {
-  try {
-    const rows = await fetchCsv(url);
-    if (rows.length === 0) { getState().message = "Nothing to import"; return; }
-    getState().importing = true; yield;
-    for (const chunk of batch(rows)) {
-      getState().projects.push(...await insert(chunk));
-      yield;
+.rpc("importCsv", (r) =>
+  r.input(z.object({ url: z.string().url() })).stream(async function* (getState, { url }, ctx) {
+    try {
+      const rows = await fetchCsv(url);
+      if (rows.length === 0) { getState().message = "Nothing to import"; return; }
+      getState().importing = true; yield;
+      for (const chunk of batch(rows)) {
+        getState().projects.push(...await insert(chunk));
+        yield;
+      }
+    } finally {
+      getState().importing = false; // runs even on disconnect
     }
-  } finally {
-    getState().importing = false; // runs even on disconnect
-  }
-}
+  }),
+)
 ```
 
 ## 4. Optimistic Updates (Fn-Replay)
@@ -81,23 +82,27 @@ Client-side optimistic functions replayed over confirmed state — never merged 
 {state.todos.map((t) => <li key={keyOf(t.todoId)}>{t.text}</li>)}
 ```
 
-## 5. RPC Long Form
-`{ input?, optimistic?, handler, onError? }` — validation, optimism, types, and recovery in one declaration.
+## 5. RPC Fluent Chain
+`.rpc(name, r => r.input().optimistic().handler().onError())` — validation, optimism, types, and recovery in one chain.
 
-- `input`: Standard Schema (Zod/Valibot/ArkType); validated client-side (pre-optimistic) **and** server-side
-- Types inferred through `optimistic`, `handler`, and client `rpc.*` signature
-- **`onError(state, error, payload, ctx)`**: optional, runs as a queued reducer on handler throw → patches push normally. Essential for generators (repairs partially-flushed state). Repairs *state*, not the database — DB atomicity stays userland transactions
-- Short form (bare fn) stays valid
+- `input(schema)`: Standard Schema (Zod/Valibot/ArkType); validated client-side (pre-optimistic) **and** server-side; **locks the payload type** for every later step
+- Terminals: `.handler(fn)` (plain atomic reducer) or `.stream(genFn)` (generator, §3) — distinct terminals mean `state` vs `getState` type correctly with zero annotations
+- **`.onError((state, error, payload, ctx) => ...)`**: optional, runs as a queued reducer on handler throw → patches push normally. Essential for generators (repairs partially-flushed state). Repairs *state*, not the database — DB atomicity stays userland transactions
+- `.rateLimit(limit)`: per-rpc token bucket override (§10)
+- Without `input`, the payload type comes from the reducer's own annotation (or `unknown`)
+- **Typed rpc record**: each `.rpc(name, ...)` extends an accumulated `{ name → payload }` type; `.render()` hands the component a payload-typed, exact-keyed `rpc` facade — unknown names and wrong payloads are compile errors. Types flow through `optimistic`, `handler`, `onError`, **and the client `rpc.*` signature** with no codegen
+- Chains evaluate to the same runtime long-form object (`{ input?, optimistic?, handler, onError?, rateLimit? }`) the server consumes — the fluent API is construction-time only
 
 ```ts
-importCsv: {
-  input: z.object({ url: z.string().url() }),
-  async *handler(getState, { url }, ctx) { ... },
-  onError(state) {
-    state.importing = false;
-    state.lastError = "Import failed";
-  },
-}
+.rpc("importCsv", (r) =>
+  r
+    .input(z.object({ url: z.string().url() }))
+    .stream(async function* (getState, { url }, ctx) { /* §3 */ })
+    .onError((state) => {
+      state.importing = false;
+      state.lastError = "Import failed";
+    }),
+)
 ```
 
 ## 6. Transport Batching

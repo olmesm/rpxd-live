@@ -13,20 +13,16 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const probeFile = join(root, "routes", "hmr-probe.tsx");
 const COOKIE = "rpxd_sid=hmr-session";
 
-const routeSource = (increment: number) => `import type { RenderProps } from "@rpxd/client";
-import { live } from "@rpxd/core";
-import type { Draft } from "immer";
+const routeSource = (increment: number) => `import { live } from "@rpxd/core";
 
-interface ProbeState { n: number }
-
-export default live("/hmr-probe")({
-  mount: async () => ({ n: 0 }),
-  rpc: {
-    async bump(state: Draft<ProbeState>) {
+export default live("/hmr-probe")
+  .mount(async () => ({ n: 0 }))
+  .rpc("bump", (r) =>
+    r.handler(async (state) => {
       state.n += ${increment};
-    },
-  },
-})(({ state }: RenderProps<ProbeState>) => <main data-n={state.n}>{state.n}</main>);
+    }),
+  )
+  .render(({ state }) => <main data-n={state.n}>{state.n}</main>);
 `;
 
 let server: DevServer;

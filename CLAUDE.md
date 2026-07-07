@@ -44,9 +44,9 @@ normative spec is `spec.md`; the wire protocol is `docs/protocol.md`.
   getState violation
 - Web-standard `Request`/`Response` in server code; Bun types only inside
   `bunAdapter` / storage-sqlite
-- Rpc reducer params need explicit annotations (both forms): TS can't
-  contextually type through the plain/generator handler union, and
-  reverse-mapped payload inference from `input` schemas is unreliable on
-  TS 6 (verified — see `packages/core/test/live.test-d.ts` header). Use
-  `InferOutput<typeof schema>` to keep payload annotations DRY. `mount`,
-  `on`, and `params` infer without annotations.
+- `live()` is a fluent chain: `.mount()` locks state, `.rpc(name, r =>
+  r.input().optimistic().handler()/.stream())` locks payloads, `.render()`
+  hands the component fully typed props including the exact-keyed `rpc`
+  facade. Zero annotations needed; the inference contract is locked in
+  `packages/core/test/live.test-d.ts`. Chains build the same runtime
+  `LiveDefinition` the server consumes.

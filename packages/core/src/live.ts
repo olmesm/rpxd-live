@@ -134,7 +134,8 @@ export type EventHandler<S, Params, Session> = (
 ) => void | Promise<void>;
 
 /**
- * A live object definition (§1).
+ * The runtime shape a fluent chain builds (§1) — what `LiveInstance` and the
+ * server handler consume via `route.def`.
  */
 export interface LiveDefinition<S, Path extends string, Session> {
   /** Runs once per page load (SSR included, §12). Returns initial state. May reject → error route. */
@@ -155,38 +156,152 @@ export interface LiveRoute<S, Path extends string, Session, Component> {
   readonly component: Component;
 }
 
+// ---- fluent builder (§1, §5) ------------------------------------------------
+
+import type { Pretty, RenderProps } from "./render-props.ts";
+
+/** Chain state before a reducer is attached: pick `input`/`optimistic`, then a terminal. */
+export interface RpcChain<S, Params, Session> {
+  /** Standard Schema (§5) — validated client-side (pre-optimistic) AND server-side; locks the payload type. */
+  input<In>(schema: StandardSchemaV1<unknown, In>): RpcChainWithInput<S, In, Params, Session>;
+  /** Client-side optimistic fn (§4). Locks the payload type from its annotation when no `input` is used. */
+  optimistic<In>(
+    fn: (state: S, payload: In, ctx: { tempId(): string }) => void,
+  ): RpcChainWithInput<S, In, Params, Session>;
+  /** Plain reducer terminal: whole-rpc atomic, blocks the queue (§3). */
+  handler<In = unknown>(
+    fn: PlainReducer<S, In, Params, Session>,
+  ): RpcChainBuilt<S, In, Params, Session>;
+  /** Generator terminal (§3): fresh draft per segment, flush at every `yield`. */
+  stream<In = unknown>(
+    fn: GeneratorReducer<S, In, Params, Session>,
+  ): RpcChainBuilt<S, In, Params, Session>;
+}
+
+/** Chain state with the payload locked to `In`. */
+export interface RpcChainWithInput<S, In, Params, Session> {
+  optimistic(
+    fn: (state: S, payload: In, ctx: { tempId(): string }) => void,
+  ): RpcChainWithInput<S, In, Params, Session>;
+  handler(fn: PlainReducer<S, In, Params, Session>): RpcChainBuilt<S, In, Params, Session>;
+  stream(fn: GeneratorReducer<S, In, Params, Session>): RpcChainBuilt<S, In, Params, Session>;
+}
+
+/** Terminal chain state: recovery + limits, and the built long-form def. */
+export interface RpcChainBuilt<S, In, Params, Session> {
+  /** Runs as a queued reducer on handler throw; patches ride the error ack (§5). */
+  onError(
+    fn: (
+      state: Draft<S>,
+      error: unknown,
+      payload: In,
+      ctx: RpcCtx<Params, Session>,
+    ) => void | Promise<void>,
+  ): RpcChainBuilt<S, In, Params, Session>;
+  /** Per-session token bucket override (§10). */
+  rateLimit(limit: RateLimit): RpcChainBuilt<S, In, Params, Session>;
+  /** The runtime long-form definition this chain built. */
+  readonly def: RpcLongForm<S, In, Params, Session>;
+}
+
 /**
- * Declare a live object for a route (§1).
+ * The fluent route builder. State `S` is locked by `.mount()`; each
+ * `.rpc(name, ...)` extends the typed rpc record `R`, which `.render()`
+ * hands to the component as an exact-keyed, payload-typed `rpc` facade.
+ */
+export interface LiveBuilder<S, Path extends string, Session, R> {
+  /** Declare an rpc (§5): `r.input(schema).optimistic(fn).handler(fn).onError(fn)`. */
+  rpc<Name extends string, In>(
+    name: Name,
+    build: (
+      r: RpcChain<S, PathParams<Path>, Session>,
+    ) => RpcChainBuilt<S, In, PathParams<Path>, Session>,
+  ): LiveBuilder<S, Path, Session, R & Record<Name, In>>;
+  /** Broadcast handler (§8): mutates state in response to a topic event. */
+  on(
+    event: string,
+    handler: EventHandler<S, PathParams<Path>, Session>,
+  ): LiveBuilder<S, Path, Session, R>;
+  /** Search-param reducer (§7): mutates the session slice, no remount. */
+  params(
+    reducer: (session: Draft<Session>, search: SearchParams) => void,
+  ): LiveBuilder<S, Path, Session, R>;
+  /** Snapshot version tag (§9): mismatch → discard snapshot, re-mount. */
+  version(tag: string): LiveBuilder<S, Path, Session, R>;
+  /** Bind the component (§1) — receives fully typed {@link RenderProps}. */
+  render<Component extends (props: RenderProps<S, Session, Pretty<R>>) => unknown>(
+    component: Component,
+  ): LiveRoute<S, Path, Session, Component>;
+}
+
+/** First (and only) step after `live(path)`: lock state via `mount`. */
+export interface LiveStart<Path extends string> {
+  /** Runs once per page load (SSR included, §12). Returns initial state. May reject → error route. */
+  mount<S, Session = Record<string, unknown>>(
+    fn: (params: PathParams<Path>, ctx: MountCtx<Session>) => S | Promise<S>,
+  ): LiveBuilder<Awaited<S>, Path, Session, Record<never, never>>;
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: runtime chain is shaped by the public interfaces above
+function rpcChain(partial: Record<string, any>): any {
+  return {
+    input: (schema: unknown) => rpcChain({ ...partial, input: schema }),
+    optimistic: (fn: unknown) => rpcChain({ ...partial, optimistic: fn }),
+    handler: (fn: unknown) => rpcChain({ ...partial, handler: fn }),
+    stream: (fn: unknown) => rpcChain({ ...partial, handler: fn }),
+    onError: (fn: unknown) => rpcChain({ ...partial, onError: fn }),
+    rateLimit: (limit: unknown) => rpcChain({ ...partial, rateLimit: limit }),
+    get def() {
+      return partial;
+    },
+  };
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: runtime builder is shaped by LiveBuilder above
+function liveBuilder(path: string, def: Record<string, any>): any {
+  return {
+    rpc: (name: string, build: (r: unknown) => { def: unknown }) =>
+      liveBuilder(path, { ...def, rpc: { ...def.rpc, [name]: build(rpcChain({})).def } }),
+    on: (event: string, handler: unknown) =>
+      liveBuilder(path, { ...def, on: { ...def.on, [event]: handler } }),
+    params: (reducer: unknown) => liveBuilder(path, { ...def, params: reducer }),
+    version: (tag: string) => liveBuilder(path, { ...def, version: tag }),
+    render: (component: unknown) => ({ $live: true, path, def, component }),
+  };
+}
+
+/**
+ * Declare a live object for a route (§1) — fluent: state locks at `.mount()`
+ * and every later step infers from it; `.render()` terminates the chain with
+ * the same `LiveRoute` object the runtime has always consumed.
  *
  * The path literal is scaffolded and maintained by the dev watcher — the
  * filename is truth, the literal is its typed mirror (§7).
  *
  * @example
  * ```tsx
- * export default live("/org/$orgId/board")({
- *   mount: async ({ orgId }, ctx) => {
+ * export default live("/org/$orgId/board")
+ *   .mount(async ({ orgId }, ctx) => {
  *     ctx.subscribe(`org:${orgId}`);
  *     return { projects: await db.project.findMany({ where: { orgId } }) };
- *   },
- *   rpc: {
- *     async create(state, { name }, ctx) {
+ *   })
+ *   .rpc("create", (r) =>
+ *     r.input(z.object({ name: z.string() })).handler(async (state, { name }, ctx) => {
  *       const p = await db.project.create({ data: { name } });
  *       state.projects.push(p);
  *       ctx.broadcast(`org:${ctx.params.orgId}`, "project.created", p);
- *     },
- *   },
- *   on: { "project.created": (state, p) => { state.projects.push(p); } },
- * })(({ state, rpc, keyOf }) => <Board projects={state.projects} />);
+ *     }),
+ *   )
+ *   .on("project.created", (state, p) => {
+ *     state.projects.push(p);
+ *   })
+ *   .render(({ state, rpc, keyOf }) => <Board projects={state.projects} />);
  * ```
  */
-export function live<Path extends string>(path: Path) {
-  return <S, Session = Record<string, unknown>>(def: LiveDefinition<S, Path, Session>) =>
-    <Component>(component: Component): LiveRoute<S, Path, Session, Component> => ({
-      $live: true,
-      path,
-      def,
-      component,
-    });
+export function live<Path extends string>(path: Path): LiveStart<Path> {
+  return {
+    mount: (fn) => liveBuilder(path, { mount: fn }),
+  } as LiveStart<Path>;
 }
 
 /** True when an rpc definition uses the long form (§5). */

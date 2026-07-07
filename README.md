@@ -7,25 +7,23 @@ optimistic updates replay client-side; multiplayer rides pubsub.
 **Spec:** [`spec.md`](./spec.md) · **Wire protocol:** [`docs/protocol.md`](./docs/protocol.md)
 
 ```tsx
-// routes/org.$orgId.board.tsx — one live object per page
-export default live("/org/$orgId/board")({
-  mount: async ({ orgId }, ctx) => {
+// routes/org.$orgId.board.tsx — one live object per page, fully inferred
+export default live("/org/$orgId/board")
+  .mount(async ({ orgId }, ctx) => {
     ctx.subscribe(`org:${orgId}`);
     return { projects: await db.project.findMany({ where: { orgId } }) };
-  },
-  rpc: {
-    async create(state, { name }, ctx) {
+  })
+  .rpc("create", (r) =>
+    r.input(z.object({ name: z.string() })).handler(async (state, { name }, ctx) => {
       const p = await db.project.create({ data: { orgId: ctx.params.orgId, name } });
       state.projects.push(p);
       ctx.broadcast(`org:${ctx.params.orgId}`, "project.created", p);
-    },
-  },
-  on: {
-    "project.created": (state, p) => { state.projects.push(p); },
-  },
-})(({ state, rpc, sync, keyOf }) => (
-  <ul>{state.projects.map((p) => <li key={keyOf(p.id)}>{p.name}</li>)}</ul>
-));
+    }),
+  )
+  .on("project.created", (state, p) => { state.projects.push(p); })
+  .render(({ state, rpc, sync, keyOf }) => (
+    <ul>{state.projects.map((p) => <li key={keyOf(p.id)}>{p.name}</li>)}</ul>
+  ));
 ```
 
 ## Try it
