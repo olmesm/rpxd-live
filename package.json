@@ -1,0 +1,21 @@
+{
+  "name": "rpxd-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "examples/*",
+    "e2e"
+  ],
+  "scripts": {
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}
