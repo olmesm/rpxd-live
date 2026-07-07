@@ -25,7 +25,7 @@ function rpxdServerEntryPlugin(): Plugin {
     },
     load(id) {
       if (id === SERVER_VIRTUAL_ID) {
-        return `export { routeTree, routeModules } from "/.rpxd/routes.gen.ts";`;
+        return `export { routeTree, routeModules, rootModule, notFoundModule, errorModule } from "/.rpxd/routes.gen.ts";`;
       }
       return undefined;
     },

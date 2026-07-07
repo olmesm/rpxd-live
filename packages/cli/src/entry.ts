@@ -16,7 +16,7 @@ import { createElement } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { LiveConnection, rpcMetaFromDef } from "@rpxd/client";
 import { useLiveStore } from "@rpxd/client/react";
-import { routeModules } from "/.rpxd/routes.gen.ts";
+import { routeModules, rootModule } from "/.rpxd/routes.gen.ts";
 ${rsc ? 'import { hydrateRscFields } from "@rpxd/rsc/client";' : ""}
 
 const bootEl = document.getElementById("__rpxd");
@@ -51,7 +51,8 @@ function App() {
   });
 }
 
-hydrateRoot(rootEl, createElement(App));
+const Root = rootModule ? (await rootModule()).default : null;
+hydrateRoot(rootEl, Root ? createElement(Root, null, createElement(App)) : createElement(App));
 `;
 
 /** Vite plugin serving the client entry as a virtual module. */

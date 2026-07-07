@@ -8,6 +8,10 @@ export const routeTree = {
     file: "../routes/index.tsx",
     pattern: "/",
   },
+  "/boom": {
+    file: "../routes/boom.tsx",
+    pattern: "/boom",
+  },
   "/chat": {
     file: "../routes/chat.tsx",
     pattern: "/chat",
@@ -25,15 +29,16 @@ export const routeTree = {
 /** Lazy importers for each page route — used by the client router and SSR. */
 export const routeModules = {
   "/": () => import("../routes/index.tsx"),
+  "/boom": () => import("../routes/boom.tsx"),
   "/chat": () => import("../routes/chat.tsx"),
   "/doc": () => import("../routes/doc.tsx"),
   "/import": () => import("../routes/import.tsx"),
 } as const;
 
 /** Shell modules (§14): HTML root, unmatched-URL page, error page. */
-export const rootModule = undefined;
-export const notFoundModule = undefined;
-export const errorModule = undefined;
+export const rootModule = () => import("../routes/__root.tsx");
+export const notFoundModule = () => import("../routes/__404.tsx");
+export const errorModule = () => import("../routes/__error.tsx");
 
 /** All registered page paths. */
 export type RegisteredPath = keyof typeof routeTree;

@@ -44,6 +44,10 @@ export interface RpxdHandlerOptions {
   authenticate?: (req: Request) => unknown | Promise<unknown>;
   /** SSR renderer (§12). Defaults to a minimal HTML shell embedding the bootstrap payload. */
   render?: (ctx: RenderContext) => Response | Promise<Response>;
+  /** Unmatched-URL page (§14 `__404`). Defaults to a plain-text 404. */
+  renderNotFound?: (info: { path: string }) => Response | Promise<Response>;
+  /** Mount-rejection / crash page (§10, §14 `__error`). Defaults to plain text. */
+  renderError?: (info: { path: string; error: unknown }) => Response | Promise<Response>;
   /** Warm TTL before an unsubscribed instance is snapshotted + evicted (§11). Default 60s. */
   warmTtlMs?: number;
   /** Pending-attach TTL for SSR adoption tokens (§12). Default 10s. */
@@ -338,8 +342,16 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         }
         return new Response("not found", { status: 404 });
       } catch (e) {
-        if (e instanceof NotFoundError) return new Response("not found", { status: 404 });
-        // mount rejection → error route (§10); the shell renders it client-side
+        if (e instanceof NotFoundError) {
+          if (opts.renderNotFound) {
+            return withSession(await opts.renderNotFound({ path: url.pathname }), sid, isNew);
+          }
+          return new Response("not found", { status: 404 });
+        }
+        // mount rejection → error route (§10)
+        if (opts.renderError) {
+          return withSession(await opts.renderError({ path: url.pathname, error: e }), sid, isNew);
+        }
         return new Response(e instanceof Error ? e.message : "internal error", { status: 500 });
       }
     },
@@ -354,6 +366,19 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         if (entry.evictTimer) clearTimeout(entry.evictTimer);
       }
       await Promise.all(all.map((e) => e.instance.dispose()));
+    },
+
+    /**
+     * Swap a route's live definition (§15 reducer HMR): updates the registry
+     * and every mounted instance of the route — state is preserved.
+     */
+    updateRoute(path: string, def: RouteRegistration["def"]): void {
+      const registration = opts.routes.find((r) => r.path === path);
+      if (registration) registration.def = def;
+      else opts.routes.push({ path, def });
+      for (const entry of byInstanceId.values()) {
+        if (entry.path === path) entry.instance.replaceDef(def);
+      }
     },
 
     /** Test/introspection hook: number of live instances across sessions. */

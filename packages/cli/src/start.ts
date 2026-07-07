@@ -10,7 +10,12 @@ import type { LiveRoute } from "@rpxd/core";
 import { bunAdapter, createRpxdHandler, type RouteRegistration } from "@rpxd/server-bun";
 import type { FunctionComponent } from "react";
 import type { RpxdConfig } from "./config.ts";
-import { renderRoute, type ShellAssets } from "./render.ts";
+import {
+  makeShellRenderers,
+  renderRoute,
+  type ShellAssets,
+  type ShellComponents,
+} from "./render.ts";
 
 export interface StartOptions {
   /** Port to bind; 0 picks an ephemeral port. Default 3000. */
@@ -62,7 +67,21 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     : {};
 
   // Route registry from the SSR bundle.
-  const { routeModules } = (await import(pathToFileURL(serverEntry).href)) as {
+  const serverEntryModule = (await import(pathToFileURL(serverEntry).href)) as unknown as {
+    rootModule?: () => Promise<{ default: ShellComponents["Root"] }>;
+    notFoundModule?: () => Promise<{ default: ShellComponents["NotFound"] }>;
+    errorModule?: () => Promise<{ default: ShellComponents["ErrorPage"] }>;
+  };
+  const shell: ShellComponents = {
+    Root: serverEntryModule.rootModule ? (await serverEntryModule.rootModule()).default : undefined,
+    NotFound: serverEntryModule.notFoundModule
+      ? (await serverEntryModule.notFoundModule()).default
+      : undefined,
+    ErrorPage: serverEntryModule.errorModule
+      ? (await serverEntryModule.errorModule()).default
+      : undefined,
+  };
+  const { routeModules } = serverEntryModule as unknown as {
     routeModules: Record<
       string,
       () => Promise<{ default: LiveRoute<unknown, string, unknown, FunctionComponent<object>> }>
@@ -95,6 +114,7 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     storage: config.storage,
     authenticate: config.session?.authenticate,
     defaultRateLimit: config.rateLimit,
+    ...makeShellRenderers(shell),
     render: (ctx) => {
       const route = components.get(ctx.path);
       if (!route) return new Response("not found", { status: 404 });
