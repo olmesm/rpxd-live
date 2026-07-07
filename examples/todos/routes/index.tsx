@@ -44,7 +44,7 @@ export default live("/")({
       {state.todos.map((t) => (
         <li key={keyOf(t.id)} data-id={t.id}>
           <label>
-            <input type="checkbox" checked={t.done} onChange={() => rpc.toggle({ id: t.id })} />
+            <input type="checkbox" checked={t.done} onChange={() => rpc.toggle?.({ id: t.id })} />
             <span style={t.done ? { textDecoration: "line-through" } : undefined}>{t.text}</span>
           </label>
         </li>
@@ -55,7 +55,7 @@ export default live("/")({
       onSubmit={(e) => {
         e.preventDefault();
         const input = e.currentTarget.elements.namedItem("text") as HTMLInputElement;
-        if (input.value.trim()) void rpc.add({ text: input.value.trim() });
+        if (input.value.trim()) void rpc.add?.({ text: input.value.trim() });
         input.value = "";
       }}
     >

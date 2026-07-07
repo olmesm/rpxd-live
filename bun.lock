@@ -17,6 +17,50 @@
     "e2e": {
       "name": "@rpxd/e2e",
     },
+    "examples/todos": {
+      "name": "@rpxd/example-todos",
+      "dependencies": {
+        "@rpxd/client": "workspace:*",
+        "@rpxd/core": "workspace:*",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+      },
+      "devDependencies": {
+        "@rpxd/cli": "workspace:*",
+        "@types/bun": "^1.3.14",
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+        "immer": "^11.1.11",
+        "typescript": "^5.9.0",
+      },
+    },
+    "packages/cli": {
+      "name": "@rpxd/cli",
+      "version": "0.1.0",
+      "bin": {
+        "rpxd": "./src/cli.ts",
+      },
+      "dependencies": {
+        "@rpxd/client": "workspace:*",
+        "@rpxd/core": "workspace:*",
+        "@rpxd/server-bun": "workspace:*",
+        "@rpxd/vite-plugin": "workspace:*",
+        "vite": "^7.0.0",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "@types/node": "^26.0.0",
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.2.3",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+        "typescript": "^5.9.0",
+      },
+      "peerDependencies": {
+        "react": ">=18",
+        "react-dom": ">=18",
+      },
+    },
     "packages/client": {
       "name": "@rpxd/client",
       "version": "0.1.0",
@@ -55,17 +99,6 @@
         "@types/bun": "^1.3.14",
         "immer": "^11.1.11",
         "typescript": "^5.9.0",
-      },
-    },
-    "packages/vite-plugin": {
-      "name": "@rpxd/vite-plugin",
-      "version": "0.1.0",
-      "devDependencies": {
-        "typescript": "^5.9.0",
-        "vite": "^7.0.0",
-      },
-      "peerDependencies": {
-        "vite": ">=6",
       },
     },
     "packages/vite-plugin": {
@@ -260,11 +293,15 @@
 
     "@rollup/rollup-win32-x64-msvc": ["@rollup/rollup-win32-x64-msvc@4.62.2", "", { "os": "win32", "cpu": "x64" }, "sha512-BfzEnDJOt9T8M989/lA37EcJgat01wLRnoi5dQf3QzOH7jzpqTAzdDbVfRljVr5r+jzKqpbHeyOfAaXxAd0PAA=="],
 
+    "@rpxd/cli": ["@rpxd/cli@workspace:packages/cli"],
+
     "@rpxd/client": ["@rpxd/client@workspace:packages/client"],
 
     "@rpxd/core": ["@rpxd/core@workspace:packages/core"],
 
     "@rpxd/e2e": ["@rpxd/e2e@workspace:e2e"],
+
+    "@rpxd/example-todos": ["@rpxd/example-todos@workspace:examples/todos"],
 
     "@rpxd/server-bun": ["@rpxd/server-bun@workspace:packages/server-bun"],
 
@@ -416,9 +453,13 @@
 
     "zod": ["zod@4.4.3", "", {}, "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="],
 
+    "@rpxd/cli/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
     "@rpxd/client/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
     "@rpxd/core/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "@rpxd/example-todos/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
     "@rpxd/server-bun/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 

@@ -49,7 +49,6 @@ function toWebRequest(req: IncomingMessage, res: ServerResponse): Request {
     ...(hasBody
       ? {
           body: Readable.toWeb(req) as unknown as ReadableStream<Uint8Array>,
-          // @ts-expect-error — duplex is required for streaming bodies, missing from lib types
           duplex: "half",
         }
       : {}),
@@ -137,11 +136,6 @@ export async function createDevServer(
 
   httpServer.on("request", (req, res) => {
     const url = req.url ?? "/";
-    const toHandler = () => {
-      void writeWebResponse(res, new Response("internal error", { status: 500 })).catch(() => {});
-    };
-    void toHandler;
-
     if (url.startsWith("/__rpxd/")) {
       void handler
         .fetch(toWebRequest(req, res))
@@ -174,8 +168,12 @@ export async function createDevServer(
     async close() {
       await handler.dispose();
       await vite.close();
-      await new Promise<void>((resolveClose, reject) =>
-        httpServer.close((err) => (err ? reject(err) : resolveClose())),
+      // Open SSE connections would otherwise hold close() forever.
+      httpServer.closeAllConnections?.();
+      await new Promise<void>((resolveClose) =>
+        // vite.close() may have already closed the shared HMR server —
+        // ERR_SERVER_NOT_RUNNING is fine.
+        httpServer.close(() => resolveClose()),
       );
     },
   };
