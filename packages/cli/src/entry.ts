@@ -11,12 +11,13 @@ export const CLIENT_ENTRY_URL = "/@rpxd-entry.tsx";
 
 const VIRTUAL_ID = "\0rpxd-entry.tsx";
 
-const clientEntrySource = `
+const clientEntrySource = (rsc: boolean) => `
 import { createElement } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { LiveConnection, rpcMetaFromDef } from "@rpxd/client";
 import { useLiveStore } from "@rpxd/client/react";
 import { routeModules } from "/.rpxd/routes.gen.ts";
+${rsc ? 'import { hydrateRscFields } from "@rpxd/rsc/client";' : ""}
 
 const bootEl = document.getElementById("__rpxd");
 const rootEl = document.getElementById("root");
@@ -37,7 +38,7 @@ conn.connect();
 function App() {
   const snap = useLiveStore(conn.store);
   return createElement(route.component, {
-    state: snap.state,
+    state: ${rsc ? "hydrateRscFields(snap.state)" : "snap.state"},
     session: snap.session ?? {},
     sync: snap.sync,
     status: snap.status,
@@ -54,7 +55,7 @@ hydrateRoot(rootEl, createElement(App));
 `;
 
 /** Vite plugin serving the client entry as a virtual module. */
-export function rpxdEntryPlugin(): Plugin {
+export function rpxdEntryPlugin(opts: { rsc?: boolean } = {}): Plugin {
   return {
     name: "rpxd-client-entry",
     resolveId(id) {
@@ -62,7 +63,7 @@ export function rpxdEntryPlugin(): Plugin {
       return undefined;
     },
     load(id) {
-      if (id === VIRTUAL_ID) return clientEntrySource;
+      if (id === VIRTUAL_ID) return clientEntrySource(opts.rsc ?? false);
       return undefined;
     },
   };

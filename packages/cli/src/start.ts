@@ -98,7 +98,7 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     render: (ctx) => {
       const route = components.get(ctx.path);
       if (!route) return new Response("not found", { status: 404 });
-      return new Response(renderRoute(route, ctx, assets), {
+      return new Response(renderRoute(route, ctx, assets, { rsc: config.rsc }), {
         headers: { "content-type": "text/html; charset=utf-8" },
       });
     },

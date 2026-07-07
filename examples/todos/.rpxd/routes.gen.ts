@@ -12,6 +12,10 @@ export const routeTree = {
     file: "../routes/chat.tsx",
     pattern: "/chat",
   },
+  "/doc": {
+    file: "../routes/doc.tsx",
+    pattern: "/doc",
+  },
   "/import": {
     file: "../routes/import.tsx",
     pattern: "/import",
@@ -22,6 +26,7 @@ export const routeTree = {
 export const routeModules = {
   "/": () => import("../routes/index.tsx"),
   "/chat": () => import("../routes/chat.tsx"),
+  "/doc": () => import("../routes/doc.tsx"),
   "/import": () => import("../routes/import.tsx"),
 } as const;
 

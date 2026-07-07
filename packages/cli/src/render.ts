@@ -5,6 +5,7 @@
  * module loading.
  */
 import type { LiveRoute } from "@rpxd/core";
+import { hydrateRscFields } from "@rpxd/rsc/client";
 import type { RenderContext } from "@rpxd/server-bun";
 import { createElement, type FunctionComponent } from "react";
 import { renderToString } from "react-dom/server";
@@ -12,9 +13,9 @@ import type { ViteDevServer } from "vite";
 import { CLIENT_ENTRY_URL } from "./entry.ts";
 
 /** Server-side render props: same shape the client hydrates with (§1). */
-function serverRenderProps(ctx: RenderContext) {
+function serverRenderProps(ctx: RenderContext, rsc: boolean) {
   return {
-    state: ctx.state,
+    state: rsc ? hydrateRscFields(ctx.state) : ctx.state,
     session: ctx.session ?? {},
     sync: { pending: false, inFlight: 0, errors: [] },
     status: "connecting" as const,
@@ -68,19 +69,25 @@ export function renderRoute(
   route: LiveRoute<unknown, string, unknown, FunctionComponent<object>>,
   ctx: RenderContext,
   assets: ShellAssets,
+  opts: { rsc?: boolean } = {},
 ): string {
-  const appHtml = renderToString(createElement(route.component, serverRenderProps(ctx)));
+  const props = serverRenderProps(ctx, opts.rsc ?? false);
+  const appHtml = renderToString(createElement(route.component, props));
   return renderHtmlShell(ctx, appHtml, assets);
 }
 
-export function makeDevRender(vite: ViteDevServer, routeFiles: Map<string, string>) {
+export function makeDevRender(
+  vite: ViteDevServer,
+  routeFiles: Map<string, string>,
+  opts: { rsc?: boolean } = {},
+) {
   return async (ctx: RenderContext): Promise<Response> => {
     const file = routeFiles.get(ctx.path);
     if (!file) return new Response("not found", { status: 404 });
 
     const mod = await vite.ssrLoadModule(`/routes/${file}`);
     const route = mod.default as LiveRoute<unknown, string, unknown, FunctionComponent<object>>;
-    const raw = renderRoute(route, ctx, { entrySrc: CLIENT_ENTRY_URL });
+    const raw = renderRoute(route, ctx, { entrySrc: CLIENT_ENTRY_URL }, opts);
 
     // Injects the HMR client and any transformIndexHtml hooks.
     const html = await vite.transformIndexHtml(ctx.path, raw);

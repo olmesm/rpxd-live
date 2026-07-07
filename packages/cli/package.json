@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@rpxd/core": "workspace:*",
+    "@rpxd/rsc": "workspace:*",
     "@rpxd/server-bun": "workspace:*",
     "@rpxd/vite-plugin": "workspace:*",
     "vite": "^7.0.0"
