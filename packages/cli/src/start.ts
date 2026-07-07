@@ -10,7 +10,12 @@ import type { LiveRoute } from "@rpxd/core";
 import { bunAdapter, createRpxdHandler, type RouteRegistration } from "@rpxd/server-bun";
 import type { FunctionComponent } from "react";
 import type { RpxdConfig } from "./config.ts";
-import { makeShellRenderers, renderRoute, type ShellAssets, type ShellComponents } from "./render.ts";
+import {
+  makeShellRenderers,
+  renderRoute,
+  type ShellAssets,
+  type ShellComponents,
+} from "./render.ts";
 
 export interface StartOptions {
   /** Port to bind; 0 picks an ephemeral port. Default 3000. */

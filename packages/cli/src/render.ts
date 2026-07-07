@@ -76,17 +76,73 @@ export function renderRoute(
   route: LiveRoute<unknown, string, unknown, FunctionComponent<object>>,
   ctx: RenderContext,
   assets: ShellAssets,
-  opts: { rsc?: boolean } = {},
+  opts: { rsc?: boolean; shell?: ShellComponents } = {},
 ): string {
   const props = serverRenderProps(ctx, opts.rsc ?? false);
-  const appHtml = renderToString(createElement(route.component, props));
+  const page = createElement(route.component, props);
+  const appHtml = renderToString(wrapWithRoot(page, opts.shell));
   return renderHtmlShell(ctx, appHtml, assets);
+}
+
+function wrapWithRoot(page: ReactElement, shell?: ShellComponents): ReactElement {
+  return shell?.Root ? createElement(shell.Root, null, page) : page;
+}
+
+/** Render a static shell page (__404 / __error, §14) — no live state, no bootstrap. */
+export function renderStaticPage(
+  element: ReactElement,
+  status: number,
+  shell?: ShellComponents,
+): Response {
+  const appHtml = renderToString(wrapWithRoot(element, shell));
+  const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>rpxd</title>
+  </head>
+  <body>
+    <div id="root">${appHtml}</div>
+  </body>
+</html>`;
+  return new Response(html, {
+    status,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
+/** Build the handler's renderNotFound/renderError hooks from shell components (§14). */
+export function makeShellRenderers(shell: ShellComponents) {
+  return {
+    renderNotFound: shell.NotFound
+      ? (info: { path: string }) =>
+          renderStaticPage(
+            createElement(shell.NotFound as FunctionComponent<{ path: string }>, {
+              path: info.path,
+            }),
+            404,
+            shell,
+          )
+      : undefined,
+    renderError: shell.ErrorPage
+      ? (info: { path: string; error: unknown }) =>
+          renderStaticPage(
+            createElement(shell.ErrorPage as FunctionComponent<{ path: string; message: string }>, {
+              path: info.path,
+              message: info.error instanceof Error ? info.error.message : String(info.error),
+            }),
+            500,
+            shell,
+          )
+      : undefined,
+  };
 }
 
 export function makeDevRender(
   vite: ViteDevServer,
   routeFiles: Map<string, string>,
-  opts: { rsc?: boolean } = {},
+  opts: { rsc?: boolean; shell?: ShellComponents } = {},
 ) {
   return async (ctx: RenderContext): Promise<Response> => {
     const file = routeFiles.get(ctx.path);

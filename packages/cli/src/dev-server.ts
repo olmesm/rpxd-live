@@ -138,7 +138,8 @@ export async function createDevServer(
     routes,
     storage: config.storage,
     authenticate: config.session?.authenticate,
-    render: makeDevRender(vite, routeFiles, { rsc: config.rsc }),
+    render: makeDevRender(vite, routeFiles, { rsc: config.rsc, shell }),
+    ...makeShellRenderers(shell),
     defaultRateLimit: config.rateLimit,
   });
 
