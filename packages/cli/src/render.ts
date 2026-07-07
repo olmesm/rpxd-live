@@ -7,7 +7,7 @@
 import type { LiveRoute } from "@rpxd/core";
 import { hydrateRscFields } from "@rpxd/rsc/client";
 import type { RenderContext } from "@rpxd/server-bun";
-import { createElement, type FunctionComponent } from "react";
+import { createElement, type FunctionComponent, type ReactElement, type ReactNode } from "react";
 import { renderToString } from "react-dom/server";
 import type { ViteDevServer } from "vite";
 import { CLIENT_ENTRY_URL } from "./entry.ts";
@@ -24,6 +24,13 @@ function serverRenderProps(ctx: RenderContext, rsc: boolean) {
     rpc: new Proxy({}, { get: () => () => Promise.resolve() }),
     nav: { navigate: () => {}, patch: () => {} },
   };
+}
+
+/** Userland shell components (§14): __root wraps everything. */
+export interface ShellComponents {
+  Root?: FunctionComponent<{ children?: ReactNode }>;
+  NotFound?: FunctionComponent<{ path: string }>;
+  ErrorPage?: FunctionComponent<{ path: string; message: string }>;
 }
 
 export interface ShellAssets {

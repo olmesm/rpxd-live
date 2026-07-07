@@ -18,7 +18,7 @@ import { rpxd as rpxdVitePlugin, runCodegen, scanRoutes } from "@rpxd/vite-plugi
 import { createServer as createViteServer } from "vite";
 import type { RpxdConfig } from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
-import { makeDevRender } from "./render.ts";
+import { makeDevRender, makeShellRenderers, type ShellComponents } from "./render.ts";
 
 export interface DevServerOptions {
   /** Port to bind; 0 picks an ephemeral port. Default 3000. */
@@ -119,11 +119,19 @@ export async function createDevServer(
   const entries = scanRoutes(join(root, "routes"));
   const routeFiles = new Map<string, string>();
   const routes: RouteRegistration[] = [];
+  const shell: ShellComponents = {};
   for (const entry of entries) {
-    if (entry.kind !== "page" || entry.path === null) continue;
-    routeFiles.set(entry.path, entry.file);
+    if (entry.kind === "page" && entry.path !== null) {
+      routeFiles.set(entry.path, entry.file);
+      const mod = await vite.ssrLoadModule(`/routes/${entry.file}`);
+      routes.push({ path: entry.path, def: mod.default.def });
+      continue;
+    }
+    // Shell files (§14): __root / __404 / __error
     const mod = await vite.ssrLoadModule(`/routes/${entry.file}`);
-    routes.push({ path: entry.path, def: mod.default.def });
+    if (entry.kind === "root") shell.Root = mod.default;
+    if (entry.kind === "notFound") shell.NotFound = mod.default;
+    if (entry.kind === "error") shell.ErrorPage = mod.default;
   }
 
   const handler = createRpxdHandler({
