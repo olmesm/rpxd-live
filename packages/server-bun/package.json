@@ -1,0 +1,16 @@
+{
+  "name": "@rpxd/server-bun",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@rpxd/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "immer": "^11.1.11",
+    "typescript": "^5.9.0"
+  }
+}
