@@ -19,7 +19,12 @@ import { createServer as createViteServer } from "vite";
 import { WebSocketServer } from "ws";
 import type { RpxdConfig } from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
-import { makeDevRender, makeShellRenderers, type ShellComponents } from "./render.ts";
+import {
+  makeDevRender,
+  makeShellRenderers,
+  renderDevErrorPage,
+  type ShellComponents,
+} from "./render.ts";
 
 /** Options for {@link createDevServer}. */
 export interface DevServerOptions {
@@ -162,7 +167,13 @@ export async function createDevServer(
     storage: config.storage,
     authenticate: config.session?.authenticate,
     render: makeDevRender(vite, routeFiles, { rsc: config.rsc, shell }),
-    ...makeShellRenderers(shell),
+    ...makeShellRenderers(shell, { mode: "dev" }),
+    // Dev overlay (§14): runtime errors render the framework page with the
+    // real message and a sourcemapped stack instead of the app __error page.
+    renderError: (info: { path: string; error: unknown }) => {
+      if (info.error instanceof Error) vite.ssrFixStacktrace(info.error);
+      return renderDevErrorPage(info.path, info.error);
+    },
     defaultRateLimit: config.rateLimit,
   });
 
