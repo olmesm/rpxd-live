@@ -89,7 +89,7 @@ function wrapWithRoot(page: ReactElement, shell?: ShellComponents): ReactElement
 }
 
 /** Render a static shell page (__404 / __error, §14) — no live state, no bootstrap. */
-export function renderStaticPage(
+function renderStaticPage(
   element: ReactElement,
   status: number,
   shell?: ShellComponents,
