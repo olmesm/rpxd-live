@@ -32,5 +32,5 @@ jobs:
       - name: Unit tests
         run: bun run test
 
-      - name: Smoke test (Vite-on-Bun SSR)
-        run: bun test spikes/vite-bun-ssr
+      - name: Bun-runtime tests (smoke + adapters)
+        run: bun test spikes/vite-bun-ssr packages/server-bun/test-bun
