@@ -14,6 +14,7 @@ export class RateLimitError extends Error {
   }
 }
 
+/** One token bucket — take() consumes a token, time refills them. */
 export class TokenBucket {
   #tokens: number;
   #last: number;

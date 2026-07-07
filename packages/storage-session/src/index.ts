@@ -8,6 +8,7 @@
  */
 import { LocalBus, type Snapshot, type StorageAdapter } from "@rpxd/core";
 
+/** Options for {@link session}. */
 export interface SessionStorageOptions {
   /** Drop snapshots this long after their last write. Default 30 minutes. */
   ttlMs?: number;

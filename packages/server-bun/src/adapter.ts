@@ -16,12 +16,14 @@ export interface SocketLike<T = unknown> {
   close(): void;
 }
 
+/** Socket lifecycle callbacks for the ws transport (§11). */
 export interface WebSocketHandlers<T = unknown> {
   open?(socket: SocketLike<T>): void;
   message?(socket: SocketLike<T>, message: string): void;
   close?(socket: SocketLike<T>): void;
 }
 
+/** Listener options for {@link ServerAdapter.serve}. */
 export interface ServeOptions {
   port?: number;
   hostname?: string;

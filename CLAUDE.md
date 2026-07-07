@@ -36,7 +36,12 @@ normative spec is `spec.md`; the wire protocol is `docs/protocol.md`.
 
 ## Conventions
 
-- TSDoc on all public APIs with `@example` blocks (§17)
+- TSDoc on all public APIs with `@example` blocks (§17) — enforced in CI by
+  `bun scripts/check-tsdoc.ts`
+- Deferred from §17: the custom Biome rules (§3 getState-across-yield, §4
+  identity-based lookups) need flow analysis beyond GritQL plugins today;
+  both conventions are documented in TSDoc and the runtime throws on the
+  getState violation
 - Web-standard `Request`/`Response` in server code; Bun types only inside
   `bunAdapter` / storage-sqlite
 - Rpc reducer params need explicit annotations (both forms): TS can't

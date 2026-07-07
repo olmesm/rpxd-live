@@ -20,11 +20,13 @@ import type { RpxdConfig } from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
 import { makeDevRender, makeShellRenderers, type ShellComponents } from "./render.ts";
 
+/** Options for {@link createDevServer}. */
 export interface DevServerOptions {
   /** Port to bind; 0 picks an ephemeral port. Default 3000. */
   port?: number;
 }
 
+/** A running dev shell. */
 export interface DevServer {
   port: number;
   close(): Promise<void>;

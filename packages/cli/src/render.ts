@@ -33,6 +33,7 @@ export interface ShellComponents {
   ErrorPage?: FunctionComponent<{ path: string; message: string }>;
 }
 
+/** Script/style URLs injected into the HTML shell. */
 export interface ShellAssets {
   /** Client entry script URL (virtual in dev, hashed asset in prod). */
   entrySrc: string;
@@ -139,6 +140,7 @@ export function makeShellRenderers(shell: ShellComponents) {
   };
 }
 
+/** Build the dev SSR renderer over Vite's SSR module graph (§12). */
 export function makeDevRender(
   vite: ViteDevServer,
   routeFiles: Map<string, string>,

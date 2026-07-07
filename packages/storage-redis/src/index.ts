@@ -24,6 +24,7 @@ export interface RedisLikeClient {
   ): (() => void) | Promise<() => void>;
 }
 
+/** Options for {@link redis}. */
 export interface RedisStorageOptions {
   /** Key/channel prefix. Default `rpxd:`. */
   prefix?: string;

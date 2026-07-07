@@ -22,11 +22,13 @@ import {
   type ShellComponents,
 } from "./render.ts";
 
+/** Options for {@link startApp}. */
 export interface StartOptions {
   /** Port to bind; 0 picks an ephemeral port. Default 3000. */
   port?: number;
 }
 
+/** A running production server. */
 export interface StartedApp {
   port: number;
   close(): Promise<void>;
