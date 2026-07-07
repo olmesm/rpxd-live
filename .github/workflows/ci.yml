@@ -36,7 +36,7 @@ jobs:
         run: bun run test
 
       - name: Bun-runtime tests (smoke + adapters)
-        run: bun test spikes/vite-bun-ssr packages/server-bun/test-bun packages/storage-sqlite/test-bun examples/todos/test-bun packages/cli/test-bun
+        run: bun test spikes/vite-bun-ssr spikes/rsc-flight packages/server-bun/test-bun packages/storage-sqlite/test-bun examples/todos/test-bun packages/cli/test-bun
 
   e2e:
     name: Playwright e2e (examples/todos)
