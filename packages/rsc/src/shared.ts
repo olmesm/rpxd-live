@@ -4,7 +4,15 @@ export interface RscField {
   $rsc: string;
 }
 
-/** True when a state value is an RSC field marker. */
+/**
+ * True when a state value is an RSC field marker.
+ *
+ * @example
+ * ```ts
+ * isRscField({ $rsc: "<p>hi</p>" }); // true
+ * isRscField("plain string");        // false
+ * ```
+ */
 export function isRscField(value: unknown): value is RscField {
   return (
     typeof value === "object" &&

@@ -6,6 +6,13 @@
  * Handlers themselves never hold the queue: each flush is its own
  * {@link SerialQueue.run} call, so other work interleaves freely while a
  * handler awaits (§3).
+ *
+ * @example
+ * ```ts
+ * const queue = new SerialQueue();
+ * await queue.run(async () => commit());  // strictly after anything queued before
+ * await queue.idle();                     // drained
+ * ```
  */
 export class SerialQueue {
   #tail: Promise<unknown> = Promise.resolve();

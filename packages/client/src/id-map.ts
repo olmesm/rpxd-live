@@ -18,7 +18,15 @@ export interface TempIdLocation {
   subPath: (string | number)[];
 }
 
-/** Find every location where a registered tempId appears inside patch values. */
+/**
+ * Find every location where a registered tempId appears inside patch values.
+ *
+ * @example
+ * ```ts
+ * findTempIdLocations([{ op: "add", path: ["todos", 0], value: { id: "tmp-1" } }], new Set(["tmp-1"]));
+ * // [{ tempId: "tmp-1", path: ["todos", 0], subPath: ["id"] }]
+ * ```
+ */
 export function findTempIdLocations(patches: Patch[], tempIds: Set<string>): TempIdLocation[] {
   const locations: TempIdLocation[] = [];
   for (const patch of patches) {
@@ -54,6 +62,12 @@ export function findTempIdLocations(patches: Patch[], tempIds: Set<string>): Tem
  * Match optimistic tempId locations against ack patches → `tempId → realId`.
  * An ack patch corresponds when it has the same container path (array indices
  * may differ) and yields a primitive at the recorded sub-path.
+ *
+ * @example
+ * ```ts
+ * matchIdMap(optimisticPatches, ackEnvelope.patches ?? [], op.tempIds);
+ * // { "tmp-1": "srv-42" }
+ * ```
  */
 export function matchIdMap(
   optimisticPatches: Patch[],

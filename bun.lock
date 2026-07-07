@@ -176,6 +176,18 @@
         "typescript": "^5.9.0",
       },
     },
+    "packages/testing": {
+      "name": "@rpxd/testing",
+      "version": "0.1.0",
+      "dependencies": {
+        "@rpxd/core": "workspace:*",
+      },
+      "devDependencies": {
+        "typescript": "^5.9.0",
+        "vitest": "^4.0.0",
+        "zod": "^4.4.3",
+      },
+    },
     "packages/vite-plugin": {
       "name": "@rpxd/vite-plugin",
       "version": "0.1.0",
@@ -396,6 +408,8 @@
 
     "@rpxd/storage-sqlite": ["@rpxd/storage-sqlite@workspace:packages/storage-sqlite"],
 
+    "@rpxd/testing": ["@rpxd/testing@workspace:packages/testing"],
+
     "@rpxd/vite-plugin": ["@rpxd/vite-plugin@workspace:packages/vite-plugin"],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
@@ -567,6 +581,8 @@
     "@rpxd/storage-session/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
     "@rpxd/storage-sqlite/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "@rpxd/testing/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
     "@rpxd/vite-plugin/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 

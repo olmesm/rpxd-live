@@ -90,6 +90,16 @@ function readOnlyView<T extends object>(target: T, cache: WeakMap<object, unknow
 /**
  * A mounted live object. Create via {@link LiveInstance.create} — mount runs
  * exactly once per page load (§12); cold wake always re-mounts (§9).
+ *
+ * @example
+ * ```ts
+ * const inst = await LiveInstance.create({
+ *   id: "inst-1", def: route.def, params: {}, session: {},
+ *   storage: memory(), storageKey: "route:/:session-a",
+ * });
+ * inst.addListener((env) => send(env));
+ * await inst.handleBatch(batch);
+ * ```
  */
 export class LiveInstance<S, Path extends string = string, Session = Record<string, unknown>> {
   readonly id: string;

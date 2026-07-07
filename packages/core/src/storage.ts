@@ -55,7 +55,16 @@ export interface StorageAdapter {
   bus: PubSubBus;
 }
 
-/** In-process pubsub bus used by `memory()` (and reusable by other adapters). */
+/**
+ * In-process pubsub bus used by `memory()` (and reusable by other adapters).
+ *
+ * @example
+ * ```ts
+ * const bus = new LocalBus();
+ * const unsub = bus.subscribe("room:1", "inst-a", (msg) => console.log(msg.event));
+ * bus.publish({ topic: "room:1", event: "hi", payload: {}, senderId: "inst-b", self: false });
+ * ```
+ */
 export class LocalBus implements PubSubBus {
   #topics = new Map<string, Map<string, (msg: BroadcastMessage) => void>>();
 

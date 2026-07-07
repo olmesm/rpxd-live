@@ -31,6 +31,11 @@ export interface RpxdPluginOptions {
  * literals (filename is truth, §7).
  *
  * @returns the generated module source.
+ *
+ * @example
+ * ```ts
+ * runCodegen("/path/to/app"); // writes /path/to/app/.rpxd/routes.gen.ts
+ * ```
  */
 export function runCodegen(root: string, options: RpxdPluginOptions = {}): string {
   const routesDir = resolve(root, options.routesDir ?? "routes");

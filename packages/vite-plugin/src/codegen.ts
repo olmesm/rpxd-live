@@ -5,7 +5,14 @@
 import { readdirSync } from "node:fs";
 import { fileToRoute, pathToPattern, type RouteEntry, sortRoutes } from "./routes.ts";
 
-/** Scan a routes directory (flat, §7) into route entries. */
+/**
+ * Scan a routes directory (flat, §7) into route entries.
+ *
+ * @example
+ * ```ts
+ * scanRoutes("/app/routes"); // [{ file: "index.tsx", path: "/", kind: "page" }, ...]
+ * ```
+ */
 export function scanRoutes(routesDir: string): RouteEntry[] {
   const entries: RouteEntry[] = [];
   for (const file of readdirSync(routesDir)) {
@@ -19,6 +26,11 @@ export function scanRoutes(routesDir: string): RouteEntry[] {
  * Render the `routes.gen.ts` module for a set of entries. Pure — callers
  * decide where to write it. `routesImportPrefix` is the relative path from
  * the generated file to the routes dir (default `../routes`).
+ *
+ * @example
+ * ```ts
+ * const source = generateRoutesModule(scanRoutes(routesDir));
+ * ```
  */
 export function generateRoutesModule(
   entries: RouteEntry[],

@@ -67,7 +67,15 @@ interface InstanceEntry {
 
 const SID_COOKIE = "rpxd_sid";
 
-/** Encode one envelope as an SSE event (`docs/protocol.md` framing). */
+/**
+ * Encode one envelope as an SSE event (`docs/protocol.md` framing).
+ *
+ * @example
+ * ```ts
+ * encodeSse({ seq: 3, instance: "i1", patches: [] });
+ * // "event: env\nid: 3\ndata: {...}\n\n"
+ * ```
+ */
 export function encodeSse(env: Envelope): string {
   return `event: env\nid: ${env.seq}\ndata: ${JSON.stringify(env)}\n\n`;
 }
