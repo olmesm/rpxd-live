@@ -1,0 +1,16 @@
+{
+  "name": "@rpxd/storage-redis",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@rpxd/core": "workspace:*"
+  },
+  "devDependencies": {
+    "immer": "^11.1.11",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  }
+}
