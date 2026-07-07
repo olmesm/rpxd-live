@@ -1,0 +1,21 @@
+{
+  "name": "@rpxd/client",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./react": "./src/react.ts"
+  },
+  "dependencies": {
+    "@rpxd/core": "workspace:*",
+    "immer": "^11.1.11"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "typescript": "^5.9.0"
+  }
+}
