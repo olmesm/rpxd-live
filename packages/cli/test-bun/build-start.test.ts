@@ -102,6 +102,15 @@ describe("rpxd start (pure Bun, no Vite)", () => {
     expect(res.status).toBe(404);
   });
 
+  it("serves Flight RSC fields in production: island SSR'd, renderer stays server-side (§16)", async () => {
+    const res = await fetch(`${base()}/doc`, { headers: { cookie: COOKIE } });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("rpxd doc"); // markdown rendered server-side
+    expect(html).toContain("doc-counter"); // 'use client' island SSR'd in place
+    expect(html).toContain("likes:"); // with its initial state
+  });
+
   it("hardens runtime errors: generic 500 into __error, no message leak (§10)", async () => {
     const res = await fetch(`${base()}/boom`, { headers: { cookie: COOKIE } });
     expect(res.status).toBe(500);

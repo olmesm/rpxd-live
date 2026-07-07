@@ -1,33 +1,100 @@
 /**
- * RSC fields — client half (§16): swap marked state fields for renderable
- * elements at snapshot time, so `{state.body}` renders the server-rendered
- * subtree. Elements are memoized per payload → React reconciles cheaply and
- * unchanged branches keep referential identity (§2 structural sharing).
+ * RSC fields — deserializing half (§16 step 2): swap marked state fields for
+ * renderable elements at snapshot time, so `{state.body}` renders the
+ * Flight-serialized server subtree with its `'use client'` islands hydrated.
+ *
+ * This module is deserializer-agnostic: each environment injects its own
+ * Flight runtime via {@link configureRscRuntime} (`@vitejs/plugin-rsc/ssr`
+ * in the server graph, `/browser` in the client entry) — so neither runtime
+ * ever leaks into the other bundle. Elements are memoized per payload →
+ * React reconciles cheaply and unchanged branches keep referential identity
+ * (§2 structural sharing).
  */
-import { createElement, type ReactElement } from "react";
+import { createElement, type ReactElement, Suspense, use } from "react";
 import { isRscField } from "./shared.ts";
 
 export { isRscField, type RscField } from "./shared.ts";
 
-const CACHE_LIMIT = 256;
-const elementCache = new Map<string, ReactElement>();
+/** Turns a Flight payload string back into a React subtree. */
+export type RscDeserializer = (payload: string) => Promise<ReactElement>;
 
-function elementFor(html: string): ReactElement {
-  const cached = elementCache.get(html);
-  if (cached) return cached;
-  // display:contents keeps the wrapper layout-neutral; the payload is
-  // server-produced markup, not user input.
-  const element = createElement("div", {
-    style: { display: "contents" },
-    "data-rpxd-rsc": true,
-    // biome-ignore lint/security/noDangerouslySetInnerHtml: payload is server-rendered by rsc(), never user input
-    dangerouslySetInnerHTML: { __html: html },
+let deserializer: RscDeserializer | undefined;
+
+/**
+ * Install the environment's Flight deserializer (§16). Called once by the
+ * generated client entry (browser runtime) and by the SSR runtime (server
+ * runtime) before anything renders RSC fields.
+ *
+ * @example
+ * ```ts
+ * import { createFromReadableStream } from "@vitejs/plugin-rsc/browser";
+ * configureRscRuntime((payload) => createFromReadableStream(flightStream(payload)));
+ * ```
+ */
+export function configureRscRuntime(deserialize: RscDeserializer): void {
+  deserializer = deserialize;
+}
+
+/**
+ * Wrap a Flight payload string as the byte stream `createFromReadableStream`
+ * consumes.
+ *
+ * @example
+ * ```ts
+ * const subtree = await createFromReadableStream(flightStream(field.$rsc));
+ * ```
+ */
+export function flightStream(payload: string): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(payload));
+      controller.close();
+    },
   });
-  if (elementCache.size >= CACHE_LIMIT) {
-    const oldest = elementCache.keys().next().value;
-    if (oldest !== undefined) elementCache.delete(oldest);
+}
+
+const CACHE_LIMIT = 64;
+const elementCache = new Map<string, ReactElement>();
+const payloadPromises = new Map<string, Promise<ReactElement>>();
+
+function trim(cache: Map<string, unknown>): void {
+  if (cache.size < CACHE_LIMIT) return;
+  const oldest = cache.keys().next().value;
+  if (oldest !== undefined) cache.delete(oldest);
+}
+
+function promiseFor(payload: string): Promise<ReactElement> {
+  const cached = payloadPromises.get(payload);
+  if (cached) return cached;
+  if (!deserializer) {
+    throw new Error(
+      "RSC field found but no Flight runtime installed — set `rsc: true` in " +
+        "rpxd.config.ts (the framework calls configureRscRuntime for you, §16)",
+    );
   }
-  elementCache.set(html, element);
+  const promise = deserializer(payload);
+  trim(payloadPromises);
+  payloadPromises.set(payload, promise);
+  return promise;
+}
+
+/** Suspends on the payload's deserialization, then renders the subtree. */
+function RscPayload({ payload }: { payload: string }): ReactElement {
+  return use(promiseFor(payload));
+}
+
+function elementFor(payload: string): ReactElement {
+  const cached = elementCache.get(payload);
+  if (cached) return cached;
+  // Suspense boundary: SSR streams through it (allReady waits); hydration
+  // keeps the server HTML until the payload resolves, then attaches.
+  const element = createElement(
+    Suspense,
+    { fallback: null },
+    createElement(RscPayload, { payload }),
+  );
+  trim(elementCache);
+  elementCache.set(payload, element);
   return element;
 }
 

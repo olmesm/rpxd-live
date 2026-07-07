@@ -1,35 +1,47 @@
 /**
- * RSC fields — server half (§16, experimental, `rsc: true` config flag).
+ * RSC fields — server half (§16, `rsc: true` config flag).
  *
- * `rsc(<Component />)` renders a subtree ON THE SERVER into an opaque state
- * value; heavy rendering deps never ship to the client. The field rides
- * patches/snapshots/storage as a plain string — transport, persistence, SSR
- * and reconnect are unchanged.
+ * `rsc(<Component />)` Flight-serializes a subtree ON THE SERVER into an
+ * opaque state value; heavy rendering deps never ship to the client, while
+ * `'use client'` islands inside the subtree ride as module references and
+ * hydrate interactive. The field is a plain string on patches/snapshots/
+ * storage — transport, persistence, SSR and reconnect are unchanged.
  *
- * v1 serializes with `renderToString` (static server markup). The Flight
- * serialization + `'use client'` islands via `@vitejs/plugin-rsc` land
- * behind the same API — the marker shape and constraints are stable.
+ * Requires the Flight runtime: with `rsc: true`, handlers run inside the
+ * react-server Vite environment (§16); calling this without it throws.
  *
  * Constraints (§16): never optimistic; not for keystroke-frequency updates;
  * patches replace the whole field (no diffing) and React reconciles.
  */
 import type { ReactElement } from "react";
-import { renderToString } from "react-dom/server";
 import type { RscField } from "./shared.ts";
 
 export { isRscField, type RscField } from "./shared.ts";
 
 /**
- * Render a component subtree into an opaque state field (§16).
+ * Flight-serialize a component subtree into an opaque state field (§16).
+ * Serialize before `ctx.patchState` — mutators are sync by design (§3).
  *
  * @example
  * ```tsx
- * mount: async ({ slug }) => {
- *   const doc = await db.doc.find(slug);
- *   return { doc, body: rsc(<Markdown source={doc.raw} />) };
- * },
+ * const body = await rsc(<Markdown source={doc.raw} />);
+ * ctx.patchState((s) => {
+ *   s.body = body;
+ * });
  * ```
  */
-export function rsc(element: ReactElement): RscField {
-  return { $rsc: renderToString(element) };
+export async function rsc(element: ReactElement): Promise<RscField> {
+  // This module only resolves under the react-server condition (see the
+  // package's conditional exports) — every other graph gets server-stub.ts,
+  // so the Flight runtime and its build virtuals stay out of their bundles.
+  const { renderToReadableStream } = await import("@vitejs/plugin-rsc/rsc");
+  const reader = renderToReadableStream(element).getReader();
+  const decoder = new TextDecoder();
+  let payload = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    payload += decoder.decode(value, { stream: true });
+  }
+  return { $rsc: payload };
 }

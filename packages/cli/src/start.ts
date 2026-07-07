@@ -92,14 +92,27 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
       () => Promise<{ default: LiveRoute<unknown, string, unknown, FunctionComponent<object>> }>
     >;
   };
+  // With rsc: true (§16), defs come from the react-server bundle so
+  // handlers can Flight-serialize; components stay in the ssr bundle.
+  let defModules = routeModules;
+  if (config.rsc) {
+    const rscEntry = join(root, "dist/rsc/index.js");
+    if (!existsSync(rscEntry)) {
+      throw new Error(`No react-server bundle at ${rscEntry} — run \`rpxd build\` first`);
+    }
+    ({ routeModules: defModules } = (await import(pathToFileURL(rscEntry).href)) as unknown as {
+      routeModules: typeof routeModules;
+    });
+  }
   const routes: RouteRegistration[] = [];
   const components = new Map<
     string,
     LiveRoute<unknown, string, unknown, FunctionComponent<object>>
   >();
   for (const [path, load] of Object.entries(routeModules)) {
+    const defLoad = defModules[path] ?? load;
     const route = (await load()).default;
-    routes.push({ path, def: route.def });
+    routes.push({ path, def: (await defLoad()).default.def });
     components.set(path, route);
   }
 
