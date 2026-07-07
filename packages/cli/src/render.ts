@@ -12,7 +12,7 @@ import type { ViteDevServer } from "vite";
 import { CLIENT_ENTRY_URL } from "./entry.ts";
 
 /** Server-side render props: same shape the client hydrates with (§1). */
-export function serverRenderProps(ctx: RenderContext) {
+function serverRenderProps(ctx: RenderContext) {
   return {
     state: ctx.state,
     session: ctx.session ?? {},
@@ -33,7 +33,7 @@ export interface ShellAssets {
 }
 
 /** Compose the HTML shell around a server-rendered app (§12 bootstrap contract). */
-export function renderHtmlShell(ctx: RenderContext, appHtml: string, assets: ShellAssets): string {
+function renderHtmlShell(ctx: RenderContext, appHtml: string, assets: ShellAssets): string {
   const bootstrap = JSON.stringify({
     instance: ctx.instance,
     seq: ctx.seq,

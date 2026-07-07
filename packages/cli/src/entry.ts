@@ -11,7 +11,7 @@ export const CLIENT_ENTRY_URL = "/@rpxd-entry.tsx";
 
 const VIRTUAL_ID = "\0rpxd-entry.tsx";
 
-export const clientEntrySource = `
+const clientEntrySource = `
 import { createElement } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { LiveConnection, rpcMetaFromDef } from "@rpxd/client";

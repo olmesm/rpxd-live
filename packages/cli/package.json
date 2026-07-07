@@ -9,7 +9,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@rpxd/client": "workspace:*",
     "@rpxd/core": "workspace:*",
     "@rpxd/server-bun": "workspace:*",
     "@rpxd/vite-plugin": "workspace:*",
