@@ -55,6 +55,17 @@
         "vite": ">=6",
       },
     },
+    "packages/vite-plugin": {
+      "name": "@rpxd/vite-plugin",
+      "version": "0.1.0",
+      "devDependencies": {
+        "typescript": "^5.9.0",
+        "vite": "^7.0.0",
+      },
+      "peerDependencies": {
+        "vite": ">=6",
+      },
+    },
     "spikes/vite-bun-ssr": {
       "name": "@rpxd/spike-vite-bun-ssr",
       "dependencies": {
