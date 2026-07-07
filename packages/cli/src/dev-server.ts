@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { createRpxdHandler, type RouteRegistration } from "@rpxd/server-bun";
-import { rpxd as rpxdVitePlugin, runCodegen, scanRoutes } from "@rpxd/vite-plugin";
+import { fileToRoute, rpxd as rpxdVitePlugin, runCodegen, scanRoutes } from "@rpxd/vite-plugin";
 import { createServer as createViteServer } from "vite";
 import type { RpxdConfig } from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
@@ -103,11 +103,21 @@ export async function createDevServer(
   runCodegen(root);
 
   const httpServer = createHttpServer();
+  // Reducer HMR (§15): when a route file changes, reload its module through
+  // the SSR graph and swap the def into the running handler — instance state
+  // is preserved. handleHotUpdate fires after Vite invalidates the module.
+  let onRouteFileChange: ((file: string) => void) | undefined;
+  const reducerHmrPlugin = {
+    name: "rpxd-reducer-hmr",
+    handleHotUpdate(hmrCtx: { file: string }) {
+      onRouteFileChange?.(hmrCtx.file);
+    },
+  };
   const vite = await createViteServer({
     root,
     appType: "custom",
     logLevel: "error",
-    plugins: [rpxdVitePlugin(), rpxdEntryPlugin({ rsc: config.rsc })],
+    plugins: [rpxdVitePlugin(), rpxdEntryPlugin({ rsc: config.rsc }), reducerHmrPlugin],
     server: {
       middlewareMode: true,
       hmr: { server: httpServer },
@@ -134,6 +144,7 @@ export async function createDevServer(
     if (entry.kind === "error") shell.ErrorPage = mod.default;
   }
 
+  const routesDir = join(root, "routes");
   const handler = createRpxdHandler({
     routes,
     storage: config.storage,
@@ -142,6 +153,20 @@ export async function createDevServer(
     ...makeShellRenderers(shell),
     defaultRateLimit: config.rateLimit,
   });
+
+  onRouteFileChange = (file) => {
+    if (!file.startsWith(routesDir)) return;
+    const entry = fileToRoute(file.slice(routesDir.length + 1));
+    if (!entry || entry.kind !== "page" || entry.path === null) return;
+    const routePath = entry.path;
+    routeFiles.set(routePath, entry.file);
+    void vite
+      .ssrLoadModule(`/routes/${entry.file}`)
+      .then((mod) => {
+        handler.updateRoute(routePath, mod.default.def);
+      })
+      .catch((e) => console.error("[rpxd] reducer HMR reload failed:", e));
+  };
 
   httpServer.on("request", (req, res) => {
     const url = req.url ?? "/";

@@ -368,6 +368,19 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       await Promise.all(all.map((e) => e.instance.dispose()));
     },
 
+    /**
+     * Swap a route's live definition (§15 reducer HMR): updates the registry
+     * and every mounted instance of the route — state is preserved.
+     */
+    updateRoute(path: string, def: RouteRegistration["def"]): void {
+      const registration = opts.routes.find((r) => r.path === path);
+      if (registration) registration.def = def;
+      else opts.routes.push({ path, def });
+      for (const entry of byInstanceId.values()) {
+        if (entry.path === path) entry.instance.replaceDef(def);
+      }
+    },
+
     /** Test/introspection hook: number of live instances across sessions. */
     get instanceCount(): number {
       return byInstanceId.size;

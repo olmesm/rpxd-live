@@ -53,7 +53,7 @@ const ACK_CACHE_LIMIT = 64;
  */
 export class LiveInstance<S, Path extends string = string, Session = Record<string, unknown>> {
   readonly id: string;
-  readonly #def: LiveDefinition<S, Path, Session>;
+  #def: LiveDefinition<S, Path, Session>;
   readonly #params: PathParams<Path>;
   readonly #storage: StorageAdapter;
   readonly #storageKey: string;
@@ -129,6 +129,14 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   addListener(fn: (env: Envelope) => void): () => void {
     this.#listeners.add(fn);
     return () => this.#listeners.delete(fn);
+  }
+
+  /**
+   * Swap the live definition in place (§15 reducer HMR): new reducers apply
+   * to subsequent rpcs/broadcasts while runtime state is preserved.
+   */
+  replaceDef(def: LiveDefinition<S, Path, Session>): void {
+    this.#def = def;
   }
 
   /** Resolves once the instance queue has drained (useful for tests and eviction). */
