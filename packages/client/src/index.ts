@@ -13,6 +13,7 @@ export {
   LiveConnection,
 } from "./connection.ts";
 export { findTempIdLocations, matchIdMap, type TempIdLocation } from "./id-map.ts";
+export type { RenderProps } from "./render-props.ts";
 export {
   buildHref,
   Link,

@@ -1,0 +1,30 @@
+{
+  "name": "@rpxd/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "rpxd": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@rpxd/client": "workspace:*",
+    "@rpxd/core": "workspace:*",
+    "@rpxd/server-bun": "workspace:*",
+    "@rpxd/vite-plugin": "workspace:*",
+    "vite": "^7.0.0"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "@types/node": "^26.0.0",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.9.0"
+  }
+}
