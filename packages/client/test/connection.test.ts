@@ -1,5 +1,5 @@
 import type { Envelope, RpcBatch } from "@rpxd/core";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type EventSourceLike, LiveConnection } from "../src/connection.ts";
 import { buildHref } from "../src/router.tsx";
 
@@ -221,5 +221,78 @@ describe("ws transport (§11 opt-in)", () => {
     const resent = second.sent.map((m) => JSON.parse(m)).find((m) => m.rpcId);
     expect(resent?.rpcId).toBe(firstRpc?.rpcId);
     conn.close();
+  });
+
+  describe("reconnect backoff (§11)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it("doubles the retry delay per attempt (with jitter) and caps at 30s", () => {
+      vi.useFakeTimers();
+      // random() = 0 → delay is exactly half the current window: 500, 1000, 2000…
+      vi.spyOn(Math, "random").mockReturnValue(0);
+      const { conn, socket } = makeWsConnection();
+      const count = () => FakeWebSocket.instances.length;
+
+      socket().emit("open");
+      socket().emit("close");
+      const base = count();
+      vi.advanceTimersByTime(499);
+      expect(count()).toBe(base); // not yet
+      vi.advanceTimersByTime(1);
+      expect(count()).toBe(base + 1); // attempt 1 after 500ms
+
+      socket().emit("close");
+      vi.advanceTimersByTime(999);
+      expect(count()).toBe(base + 1);
+      vi.advanceTimersByTime(1);
+      expect(count()).toBe(base + 2); // attempt 2 after 1000ms
+
+      socket().emit("close");
+      vi.advanceTimersByTime(1999);
+      expect(count()).toBe(base + 2);
+      vi.advanceTimersByTime(1);
+      expect(count()).toBe(base + 3); // attempt 3 after 2000ms
+
+      conn.close();
+    });
+
+    it("resets the ladder after a successful open", () => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, "random").mockReturnValue(0);
+      const { conn, socket } = makeWsConnection();
+      const count = () => FakeWebSocket.instances.length;
+
+      socket().emit("open");
+      socket().emit("close");
+      vi.advanceTimersByTime(500); // attempt 1
+      socket().emit("close");
+      vi.advanceTimersByTime(1000); // attempt 2
+      socket().emit("open"); // success resets
+      socket().emit("close");
+
+      const base = count();
+      vi.advanceTimersByTime(500); // back to the base window
+      expect(count()).toBe(base + 1);
+      conn.close();
+    });
+
+    it("spreads retries with jitter inside the window", () => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, "random").mockReturnValue(1); // top of the window
+      const { conn, socket } = makeWsConnection();
+      const count = () => FakeWebSocket.instances.length;
+
+      socket().emit("open");
+      socket().emit("close");
+      const base = count();
+      vi.advanceTimersByTime(999);
+      expect(count()).toBe(base); // window is [500, 1000]
+      vi.advanceTimersByTime(1);
+      expect(count()).toBe(base + 1);
+      conn.close();
+    });
   });
 });

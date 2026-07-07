@@ -22,8 +22,8 @@ export function sse(): TransportConfig {
 
 /**
  * Single duplex WebSocket (opt-in, §11). The envelope is transport-agnostic;
- * API shape identical. (v1 runtime currently serves the SSE path; the ws
- * upgrade lands behind this flag without codegen impact.)
+ * API shape identical. Served by both `rpxd dev` (via `ws` on the shared
+ * port) and `rpxd start` (Bun.serve upgrade) — dev/prod parity.
  *
  * @example
  * ```ts

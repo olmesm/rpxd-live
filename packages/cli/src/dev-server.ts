@@ -13,9 +13,10 @@ import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
-import { createRpxdHandler, type RouteRegistration } from "@rpxd/server-bun";
+import { createRpxdHandler, type RouteRegistration, wsTransport } from "@rpxd/server-bun";
 import { fileToRoute, rpxd as rpxdVitePlugin, runCodegen, scanRoutes } from "@rpxd/vite-plugin";
 import { createServer as createViteServer } from "vite";
+import { WebSocketServer } from "ws";
 import type { RpxdConfig } from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
 import { makeDevRender, makeShellRenderers, type ShellComponents } from "./render.ts";
@@ -32,14 +33,19 @@ export interface DevServer {
   close(): Promise<void>;
 }
 
-/** Convert a node request into a web `Request`, wiring abort on close. */
-function toWebRequest(req: IncomingMessage, res: ServerResponse): Request {
-  const url = `http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`;
+function headersOf(req: IncomingMessage): Headers {
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (typeof value === "string") headers.set(key, value);
     else if (Array.isArray(value)) for (const v of value) headers.append(key, v);
   }
+  return headers;
+}
+
+/** Convert a node request into a web `Request`, wiring abort on close. */
+function toWebRequest(req: IncomingMessage, res: ServerResponse): Request {
+  const url = `http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`;
+  const headers = headersOf(req);
   const abort = new AbortController();
   res.on("close", () => abort.abort());
   const method = req.method ?? "GET";
@@ -119,7 +125,11 @@ export async function createDevServer(
     root,
     appType: "custom",
     logLevel: "error",
-    plugins: [rpxdVitePlugin(), rpxdEntryPlugin({ rsc: config.rsc }), reducerHmrPlugin],
+    plugins: [
+      rpxdVitePlugin(),
+      rpxdEntryPlugin({ rsc: config.rsc, transport: config.transport?.kind }),
+      reducerHmrPlugin,
+    ],
     server: {
       middlewareMode: true,
       hmr: { server: httpServer },
@@ -170,6 +180,37 @@ export async function createDevServer(
       .catch((e) => console.error("[rpxd] reducer HMR reload failed:", e));
   };
 
+  // Dev-mode WS transport (§11, dev/prod parity): the `ws` package in
+  // noServer mode drives the same wsTransport handlers Bun.serve uses.
+  // Vite's HMR socket shares the port — only /__rpxd/ws upgrades are ours.
+  const wsGlue = wsTransport(handler, { authenticate: config.session?.authenticate });
+  const wss = new WebSocketServer({ noServer: true });
+  httpServer.on("upgrade", (req, rawSocket, head) => {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    if (url.pathname !== "/__rpxd/ws") return; // Vite HMR and friends
+    void (async () => {
+      const prepared = await wsGlue.prepare(new Request(url, { headers: headersOf(req) }));
+      if (prepared instanceof Response) {
+        rawSocket.write(`HTTP/1.1 ${prepared.status} Forbidden\r\nconnection: close\r\n\r\n`);
+        rawSocket.destroy();
+        return;
+      }
+      wss.handleUpgrade(req, rawSocket, head, (client) => {
+        const socketLike = {
+          data: prepared,
+          send: (message: string) => client.send(message),
+          close: () => client.close(),
+        };
+        wsGlue.websocket.open?.(socketLike);
+        client.on("message", (raw) => wsGlue.websocket.message?.(socketLike, String(raw)));
+        client.on("close", () => wsGlue.websocket.close?.(socketLike));
+      });
+    })().catch((e) => {
+      console.error("[rpxd] ws upgrade failed:", e);
+      rawSocket.destroy();
+    });
+  });
+
   httpServer.on("request", (req, res) => {
     const url = req.url ?? "/";
     if (url.startsWith("/__rpxd/")) {
@@ -203,6 +244,8 @@ export async function createDevServer(
     port,
     async close() {
       await handler.dispose();
+      for (const client of wss.clients) client.terminate();
+      wss.close();
       await vite.close();
       // Open SSE connections would otherwise hold close() forever.
       httpServer.closeAllConnections?.();

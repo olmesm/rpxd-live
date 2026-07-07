@@ -65,17 +65,13 @@ export function wsTransport(
   };
 
   /**
-   * Returns `undefined` when the request isn't a WS upgrade (caller should
-   * continue with HTTP handling), or a Response for failed upgrades. A
-   * successful upgrade returns a 101-ish sentinel the adapter ignores.
+   * Authenticate the upgrade request and build the per-socket data the
+   * `websocket` handlers expect. Returns a `Response` (403) when
+   * authentication rejects. Adapter-agnostic — the dev server drives the
+   * same handlers from the `ws` package with this.
    */
-  async function handleUpgrade(
-    req: Request,
-    upgrade: ((data: unknown) => boolean) | undefined,
-  ): Promise<Response | undefined> {
+  async function prepare(req: Request): Promise<unknown | Response> {
     const url = new URL(req.url);
-    if (url.pathname !== "/__rpxd/ws" || !upgrade) return undefined;
-
     let sessionData: unknown = {};
     if (opts.authenticate) {
       try {
@@ -93,12 +89,29 @@ export function wsTransport(
       },
       session: null,
     };
-    if (upgrade(data)) {
+    return data;
+  }
+
+  /**
+   * Returns `undefined` when the request isn't a WS upgrade (caller should
+   * continue with HTTP handling), or a Response for failed upgrades. A
+   * successful upgrade returns a 101-ish sentinel the adapter ignores.
+   */
+  async function handleUpgrade(
+    req: Request,
+    upgrade: ((data: unknown) => boolean) | undefined,
+  ): Promise<Response | undefined> {
+    const url = new URL(req.url);
+    if (url.pathname !== "/__rpxd/ws" || !upgrade) return undefined;
+
+    const prepared = await prepare(req);
+    if (prepared instanceof Response) return prepared;
+    if (upgrade(prepared)) {
       // Bun owns the connection now; no Response should be written.
       return new Response(null, { status: 101 });
     }
     return new Response("upgrade failed", { status: 400 });
   }
 
-  return { websocket, handleUpgrade };
+  return { websocket, handleUpgrade, prepare };
 }

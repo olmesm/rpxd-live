@@ -6,6 +6,8 @@
  *
  * @packageDocumentation
  */
+
+export type { RenderProps } from "@rpxd/core";
 export {
   type Bootstrap,
   type ConnectionOptions,
@@ -14,7 +16,6 @@ export {
   type WebSocketLike,
 } from "./connection.ts";
 export { findTempIdLocations, matchIdMap, type TempIdLocation } from "./id-map.ts";
-export type { RenderProps } from "./render-props.ts";
 export {
   buildHref,
   Link,

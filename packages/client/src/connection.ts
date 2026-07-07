@@ -19,6 +19,9 @@ export interface WebSocketLike {
   close(): void;
 }
 
+const WS_BACKOFF_BASE_MS = 1000;
+const WS_BACKOFF_CAP_MS = 30_000;
+
 /** SSR bootstrap payload embedded by the server (§12). */
 export interface Bootstrap {
   instance: string;
@@ -66,6 +69,7 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   #socketOpen = false;
   #closed = false;
   #everOpened = false;
+  #retryAttempt = 0;
 
   constructor(opts: ConnectionOptions) {
     this.#opts = opts;
@@ -142,6 +146,7 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       const reconnected = this.#everOpened;
       this.#everOpened = true;
       this.#socketOpen = true;
+      this.#retryAttempt = 0;
       this.store.setStatus("live");
       if (reconnected) this.store.resendUnacked();
     });
@@ -155,7 +160,13 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       this.#socketOpen = false;
       if (this.#closed) return;
       this.store.setStatus("reconnecting");
-      setTimeout(() => this.#connectWs(), 1000);
+      // Exponential backoff with jitter (§11): the delay lands in
+      // [window/2, window], window doubling per attempt up to the cap —
+      // spreads a fleet of clients after a server bounce.
+      const window = Math.min(WS_BACKOFF_CAP_MS, WS_BACKOFF_BASE_MS * 2 ** this.#retryAttempt);
+      this.#retryAttempt += 1;
+      const delay = window / 2 + Math.random() * (window / 2);
+      setTimeout(() => this.#connectWs(), delay);
     };
     socket.addEventListener("close", retry);
     socket.addEventListener("error", () => {
