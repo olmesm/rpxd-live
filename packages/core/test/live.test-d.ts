@@ -43,11 +43,15 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
             expectTypeOf(ctx.tempId()).toEqualTypeOf<string>();
             state.projects.push({ id: ctx.tempId(), name: payload.name });
           })
-          .handler(async (state, payload, ctx) => {
-            expectTypeOf(state).toEqualTypeOf<Draft<{ projects: Project[]; importing: boolean }>>();
+          .handler(async (payload, ctx) => {
             expectTypeOf(payload).toEqualTypeOf<{ name: string; count: number }>();
             expectTypeOf(ctx.params).toEqualTypeOf<{ orgId: string }>();
-            state.projects.push({ id: "srv", name: payload.name });
+            expectTypeOf(ctx.state.projects[0]?.name).toEqualTypeOf<string | undefined>();
+            expectTypeOf(ctx.signal).toEqualTypeOf<AbortSignal>();
+            ctx.patchState((s) => {
+              expectTypeOf(s).toEqualTypeOf<Draft<{ projects: Project[]; importing: boolean }>>();
+              s.projects.push({ id: "srv", name: payload.name });
+            });
           })
           .onError((state, error, payload) => {
             expectTypeOf(error).toEqualTypeOf<unknown>();
@@ -56,14 +60,14 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
           }),
       )
       .rpc("importCsv", (r) =>
-        r.input(z.object({ url: z.string() })).stream(async function* (getState, payload) {
-          expectTypeOf(getState()).toEqualTypeOf<
-            Draft<{ projects: Project[]; importing: boolean }>
-          >();
+        r.input(z.object({ url: z.string() })).handler(async (payload, ctx) => {
           expectTypeOf(payload.url).toEqualTypeOf<string>();
-          getState().importing = true;
-          yield;
-          getState().importing = false;
+          ctx.patchState((s) => {
+            s.importing = true;
+          });
+          ctx.patchState((s) => {
+            s.importing = false;
+          });
         }),
       )
       .on("project.created", (state, _payload, ctx) => {
@@ -103,8 +107,10 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
     live("/")
       .mount(async () => ({ n: 0 }))
       .rpc("bump", (r) =>
-        r.input(z.object({ by: z.number() })).handler(async (s, p) => {
-          s.n += p.by;
+        r.input(z.object({ by: z.number() })).handler(async (p, ctx) => {
+          ctx.patchState((s) => {
+            s.n += p.by;
+          });
         }),
       )
       .render(({ rpc }) => {
@@ -121,8 +127,10 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
     live("/")
       .mount(async () => ({ log: [] as string[] }))
       .rpc("say", (r) =>
-        r.handler(async (state, payload: { text: string }) => {
-          state.log.push(payload.text);
+        r.handler(async (payload: { text: string }, ctx) => {
+          ctx.patchState((s) => {
+            s.log.push(payload.text);
+          });
         }),
       )
       .render(({ rpc }) => {
@@ -139,9 +147,11 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
           .optimistic((state, payload: { text: string }) => {
             state.items.push(payload.text);
           })
-          .handler(async (state, payload) => {
+          .handler(async (payload, ctx) => {
             expectTypeOf(payload).toEqualTypeOf<{ text: string }>();
-            state.items.push(payload.text);
+            ctx.patchState((s) => {
+              s.items.push(payload.text);
+            });
           }),
       );
   });
@@ -155,9 +165,13 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
     live("/")
       .mount(async () => ({ projects: [] as Project[] }))
       .rpc("bad", (r) =>
-        r.handler(async (state) => {
-          // @ts-expect-error — no such field on the mount state
-          state.nope = true;
+        r.handler(async (_p, ctx) => {
+          ctx.patchState((s) => {
+            // @ts-expect-error — no such field on the mount state
+            s.nope = true;
+          });
+          // @ts-expect-error — ctx.state is read-only
+          ctx.state.projects = [];
         }),
       );
   });
@@ -166,7 +180,7 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
     const route = live("/")
       .mount(async () => ({ n: 0 }))
       .version("v2")
-      .rpc("bump", (r) => r.handler(async (s) => void s.n++))
+      .rpc("bump", (r) => r.atomic().handler(async (_p, ctx) => ctx.patchState((s) => void s.n++)))
       .render(() => null);
     expectTypeOf(route.$live).toEqualTypeOf<true>();
     expectTypeOf(route.def.version).toEqualTypeOf<string | undefined>();

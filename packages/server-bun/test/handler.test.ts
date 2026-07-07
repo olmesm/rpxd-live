@@ -1,5 +1,4 @@
 import type { Envelope, LiveDefinition, PROTOCOL_VERSION } from "@rpxd/core";
-import type { Draft } from "immer";
 import { describe, expect, it } from "vitest";
 import { createRpxdHandler } from "../src/handler.ts";
 import { matchPath, matchRoute } from "../src/match.ts";
@@ -15,8 +14,10 @@ const boardDef: LiveDefinition<BoardState, "/org/$orgId/board", Record<string, u
     session.filter = filter ?? "all";
   },
   rpc: {
-    async add(state: Draft<BoardState>, { item }: { item: string }) {
-      state.items.push(item);
+    async add({ item }: { item: string }, ctx) {
+      ctx.patchState((state) => {
+        state.items.push(item);
+      });
     },
   },
 };

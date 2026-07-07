@@ -18,10 +18,33 @@ import {
   type SyncState,
   validateInput,
 } from "@rpxd/core";
-import { applyPatches, enablePatches, produceWithPatches } from "immer";
+import { applyPatches, enablePatches, type Patch as ImmerPatch, produceWithPatches } from "immer";
 import { matchIdMap } from "./id-map.ts";
 
 enablePatches();
+
+/**
+ * Expand `append` ops (§2) into plain replaces against the base the patches
+ * are about to apply to: new value = current string + delta. Returns `null`
+ * when an append targets a non-string — a protocol error; the caller discards
+ * the envelope and requests a resync.
+ */
+function expandAppends(base: unknown, patches: Patch[]): ImmerPatch[] | null {
+  let out: Patch[] = patches;
+  for (let i = 0; i < patches.length; i++) {
+    const p = patches[i] as Patch;
+    if (p.op !== "append") continue;
+    let target = base;
+    for (const key of p.path) {
+      if (target === null || typeof target !== "object") return null;
+      target = (target as Record<string | number, unknown>)[key];
+    }
+    if (typeof target !== "string" || typeof p.value !== "string") return null;
+    if (out === patches) out = [...patches];
+    out[i] = { op: "replace", path: p.path, value: target + p.value };
+  }
+  return out as ImmerPatch[];
+}
 
 /** Client-relevant slice of an rpc definition: optimistic fn + input schema. */
 export interface RpcMeta {
@@ -265,7 +288,6 @@ export class LiveStore<S = unknown, Session = Record<string, unknown>> {
     }
 
     // In-order patch envelope.
-    this.#seq = env.seq;
     if (env.patches && env.patches.length > 0) {
       const sessionPatches: Patch[] = [];
       const statePatches: Patch[] = [];
@@ -273,16 +295,28 @@ export class LiveStore<S = unknown, Session = Record<string, unknown>> {
         if (p.path[0] === "$session") sessionPatches.push({ ...p, path: p.path.slice(1) });
         else statePatches.push(p);
       }
-      if (statePatches.length > 0) {
-        this.#confirmedState = applyPatches(this.#confirmedState as object, statePatches) as S;
+      // Expand both slices before applying either — a protocol error (append
+      // on a non-string, §2) discards the whole envelope and resyncs.
+      const stateExpanded = expandAppends(this.#confirmedState, statePatches);
+      const sessionExpanded = expandAppends(this.#confirmedSession ?? {}, sessionPatches);
+      if (!stateExpanded || !sessionExpanded) {
+        this.#awaitingFull = true;
+        this.#opts.requestResync(this.#seq);
+        if (env.rpcId) this.#settleOp(env);
+        this.#invalidate();
+        return;
       }
-      if (sessionPatches.length > 0) {
+      if (stateExpanded.length > 0) {
+        this.#confirmedState = applyPatches(this.#confirmedState as object, stateExpanded) as S;
+      }
+      if (sessionExpanded.length > 0) {
         this.#confirmedSession = applyPatches(
           (this.#confirmedSession ?? {}) as object,
-          sessionPatches,
+          sessionExpanded,
         ) as Session;
       }
     }
+    this.#seq = env.seq;
     if (env.rpcId) this.#settleOp(env);
     this.#invalidate();
   }

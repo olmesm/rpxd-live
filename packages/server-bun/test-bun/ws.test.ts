@@ -4,7 +4,6 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { Envelope, LiveDefinition } from "@rpxd/core";
-import type { Draft } from "immer";
 import { bunAdapter, type ServeHandle } from "../src/adapter.ts";
 import { createRpxdHandler } from "../src/handler.ts";
 import { wsTransport } from "../src/ws.ts";
@@ -18,8 +17,10 @@ const def: LiveDefinition<S, "/", { filter?: string }> = {
     session.filter = filter ?? "all";
   },
   rpc: {
-    async add(state: Draft<S>, { item }: { item: string }) {
-      state.items.push(item);
+    async add({ item }: { item: string }, ctx) {
+      ctx.patchState((state) => {
+        state.items.push(item);
+      });
     },
   },
 };

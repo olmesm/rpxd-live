@@ -18,7 +18,7 @@ export default live("/chat")
     return { messages: [] as Message[] };
   })
   .rpc("send", (r) =>
-    r.handler(async (_state, { text }: { text: string }, ctx) => {
+    r.handler(async ({ text }: { text: string }, ctx) => {
       const message = { id: `m-${++messageCounter}`, text };
       ctx.broadcast("chat:lobby", "message.created", message, { self: true });
     }),

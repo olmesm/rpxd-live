@@ -1,9 +1,9 @@
 /**
- * `live()` — the core model (§1). One live object per page; reducers run
- * server-side and mutate Immer drafts; the client is plain React fed via
- * props.
+ * `live()` — the core model (§1). One live object per page; handlers run
+ * server-side as plain async fns and write state through `ctx.patchState`;
+ * the client is plain React fed via props.
  */
-import type { Draft } from "immer";
+import type { Draft, Immutable } from "immer";
 import type { RateLimit } from "./rate-limit.ts";
 import type { StandardSchemaV1 } from "./standard-schema.ts";
 
@@ -39,7 +39,7 @@ export interface MountCtx<Session> {
   subscribe(topic: string): void;
 }
 
-/** Context available to every rpc reducer and `on:` handler. */
+/** Context available to every rpc handler and `on:` handler. */
 export interface RpcCtx<Params, Session> {
   /** Typed path params from the route literal (§7). */
   params: Params;
@@ -59,40 +59,63 @@ export interface RpcCtx<Params, Session> {
 }
 
 /**
- * Plain reducer: receives the whole-rpc draft, runs atomically, blocks the
- * instance queue for its duration (§3).
+ * A synchronous Immer mutator — the only way state changes (§3). Runs against
+ * a fresh draft at flush time; the draft never escapes the callback, so the
+ * stale-draft bug class is structurally impossible.
+ *
+ * @example
+ * ```ts
+ * ctx.patchState((s) => { s.todos.push(todo); });
+ * ```
  */
-export type PlainReducer<S, Payload, Params, Session> = (
-  state: Draft<S>,
+export type Mutator<S> = (state: Draft<S>) => void;
+
+/**
+ * Context available to rpc handlers (§3): everything in {@link RpcCtx} plus
+ * live state reads, `patchState` writes, and cancellation.
+ */
+export interface HandlerCtx<S, Params, Session> extends RpcCtx<Params, Session> {
+  /**
+   * Live read-only view of current state — reads after `await` see writes
+   * that landed meanwhile. Writes throw: use {@link HandlerCtx.patchState}.
+   */
+  readonly state: Immutable<S>;
+  /**
+   * Queue a sync mutator (§3). Same-tick calls from one rpc coalesce into a
+   * single flush; each flush is one atomic patch envelope. Under `.atomic()`
+   * all calls buffer until the handler completes.
+   */
+  patchState(mut: Mutator<S>): void;
+  /**
+   * Aborted on disconnect/eviction or via {@link HandlerCtx.abort} — pass it
+   * to `fetch`/SDK calls so slow work stops with the instance (§3).
+   */
+  readonly signal: AbortSignal;
+  /** Abort in-flight invocations of a named rpc (the stop-generating pattern, §3). */
+  abort(rpc: string): void;
+}
+
+/**
+ * An rpc handler (§3): a plain async fn. Awaits never block the instance —
+ * other rpcs, broadcasts, and `params` run freely while it waits.
+ */
+export type Handler<S, Payload, Params, Session> = (
   payload: Payload,
-  ctx: RpcCtx<Params, Session>,
+  ctx: HandlerCtx<S, Params, Session>,
 ) => void | Promise<void>;
 
 /**
- * Generator reducer: receives `getState` instead of `state` — a fresh draft
- * per segment, one flush per `yield`, queue released at every yield (§3).
- * Never hold a `getState()` result across `yield`/`await` boundaries.
- */
-export type GeneratorReducer<S, Payload, Params, Session> = (
-  getState: () => Draft<S>,
-  payload: Payload,
-  ctx: RpcCtx<Params, Session>,
-) => AsyncGenerator<void, void, void>;
-
-/** Either reducer form — signature signals semantics (§3). */
-export type RpcHandler<S, Payload, Params, Session> =
-  | PlainReducer<S, Payload, Params, Session>
-  | GeneratorReducer<S, Payload, Params, Session>;
-
-/**
- * Rpc long form (§5): validation, optimism, and recovery in one declaration.
- * The short form (a bare reducer function) stays valid.
+ * Rpc long form (§5): validation, optimism, and recovery in one declaration —
+ * the runtime object every fluent chain builds.
  *
  * @example
  * ```ts
  * importCsv: {
  *   input: z.object({ url: z.string().url() }),
- *   async *handler(getState, { url }, ctx) { ... },
+ *   async handler({ url }, ctx) {
+ *     const rows = await fetchCsv(url);
+ *     ctx.patchState((s) => { s.rows = rows; });
+ *   },
  *   onError(state) { state.importing = false; },
  * }
  * ```
@@ -105,33 +128,35 @@ export interface RpcLongForm<S, Payload, Params, Session> {
    * Runs on the client; never on the server.
    */
   optimistic?: (state: S, payload: Payload, ctx: { tempId(): string }) => void;
-  handler: RpcHandler<S, Payload, Params, Session>;
+  handler: Handler<S, Payload, Params, Session>;
   /**
-   * Runs as a queued reducer when `handler` throws — patches push normally.
-   * Repairs *state*, not the database (§5).
+   * Sync mutator run as a queued flush when `handler` throws — its patches
+   * ride the error ack. Repairs *state*, not the database (§5).
    */
   onError?: (
     state: Draft<S>,
     error: unknown,
     payload: Payload,
     ctx: RpcCtx<Params, Session>,
-  ) => void | Promise<void>;
+  ) => void;
+  /** Buffer all patchState calls; flush once on success, discard all on throw (§3). */
+  atomic?: boolean;
   /** Per-session token bucket override for this rpc (§10). */
   rateLimit?: RateLimit;
 }
 
-/** One rpc declaration: short-form reducer or long form (§5). */
+/** One rpc declaration: bare handler or long form (§5). */
 export type RpcDef<S, Params, Session> =
   // biome-ignore lint/suspicious/noExplicitAny: payload type flows from the caller/long form
-  RpcHandler<S, any, Params, Session> | RpcLongForm<S, any, Params, Session>;
+  Handler<S, any, Params, Session> | RpcLongForm<S, any, Params, Session>;
 
-/** Broadcast event handler (§8): mutates state in response to a topic event. */
+/** Broadcast event handler (§8): a sync mutator run in response to a topic event. */
 export type EventHandler<S, Params, Session> = (
   state: Draft<S>,
   // biome-ignore lint/suspicious/noExplicitAny: event payloads are producer-defined
   payload: any,
   ctx: RpcCtx<Params, Session>,
-) => void | Promise<void>;
+) => void;
 
 /**
  * The runtime shape a fluent chain builds (§1) — what `LiveInstance` and the
@@ -148,7 +173,7 @@ export interface LiveDefinition<S, Path extends string, Session> {
   version?: string;
 }
 
-/** The object `live(path)(def)(component)` evaluates to — consumed by the router. */
+/** The object a fluent chain evaluates to — consumed by the router. */
 export interface LiveRoute<S, Path extends string, Session, Component> {
   readonly $live: true;
   readonly path: Path;
@@ -160,7 +185,7 @@ export interface LiveRoute<S, Path extends string, Session, Component> {
 
 import type { Pretty, RenderProps } from "./render-props.ts";
 
-/** Chain state before a reducer is attached: pick `input`/`optimistic`, then a terminal. */
+/** Chain state before a handler is attached: pick `input`/`optimistic`/`atomic`, then the terminal. */
 export interface RpcChain<S, Params, Session> {
   /** Standard Schema (§5) — validated client-side (pre-optimistic) AND server-side; locks the payload type. */
   input<In>(schema: StandardSchemaV1<unknown, In>): RpcChainWithInput<S, In, Params, Session>;
@@ -168,14 +193,10 @@ export interface RpcChain<S, Params, Session> {
   optimistic<In>(
     fn: (state: S, payload: In, ctx: { tempId(): string }) => void,
   ): RpcChainWithInput<S, In, Params, Session>;
-  /** Plain reducer terminal: whole-rpc atomic, blocks the queue (§3). */
-  handler<In = unknown>(
-    fn: PlainReducer<S, In, Params, Session>,
-  ): RpcChainBuilt<S, In, Params, Session>;
-  /** Generator terminal (§3): fresh draft per segment, flush at every `yield`. */
-  stream<In = unknown>(
-    fn: GeneratorReducer<S, In, Params, Session>,
-  ): RpcChainBuilt<S, In, Params, Session>;
+  /** Whole-rpc buffered flush + rollback on throw (§3). */
+  atomic(): RpcChain<S, Params, Session>;
+  /** The single terminal (§3): plain, streaming, and slow work are all just async fns. */
+  handler<In = unknown>(fn: Handler<S, In, Params, Session>): RpcChainBuilt<S, In, Params, Session>;
 }
 
 /** Chain state with the payload locked to `In`. */
@@ -183,20 +204,15 @@ export interface RpcChainWithInput<S, In, Params, Session> {
   optimistic(
     fn: (state: S, payload: In, ctx: { tempId(): string }) => void,
   ): RpcChainWithInput<S, In, Params, Session>;
-  handler(fn: PlainReducer<S, In, Params, Session>): RpcChainBuilt<S, In, Params, Session>;
-  stream(fn: GeneratorReducer<S, In, Params, Session>): RpcChainBuilt<S, In, Params, Session>;
+  atomic(): RpcChainWithInput<S, In, Params, Session>;
+  handler(fn: Handler<S, In, Params, Session>): RpcChainBuilt<S, In, Params, Session>;
 }
 
 /** Terminal chain state: recovery + limits, and the built long-form def. */
 export interface RpcChainBuilt<S, In, Params, Session> {
-  /** Runs as a queued reducer on handler throw; patches ride the error ack (§5). */
+  /** Sync mutator run as a queued flush on handler throw; patches ride the error ack (§5). */
   onError(
-    fn: (
-      state: Draft<S>,
-      error: unknown,
-      payload: In,
-      ctx: RpcCtx<Params, Session>,
-    ) => void | Promise<void>,
+    fn: (state: Draft<S>, error: unknown, payload: In, ctx: RpcCtx<Params, Session>) => void,
   ): RpcChainBuilt<S, In, Params, Session>;
   /** Per-session token bucket override (§10). */
   rateLimit(limit: RateLimit): RpcChainBuilt<S, In, Params, Session>;
@@ -217,7 +233,7 @@ export interface LiveBuilder<S, Path extends string, Session, R> {
       r: RpcChain<S, PathParams<Path>, Session>,
     ) => RpcChainBuilt<S, In, PathParams<Path>, Session>,
   ): LiveBuilder<S, Path, Session, R & Record<Name, In>>;
-  /** Broadcast handler (§8): mutates state in response to a topic event. */
+  /** Broadcast handler (§8): a sync mutator run in response to a topic event. */
   on(
     event: string,
     handler: EventHandler<S, PathParams<Path>, Session>,
@@ -247,8 +263,8 @@ function rpcChain(partial: Record<string, any>): any {
   return {
     input: (schema: unknown) => rpcChain({ ...partial, input: schema }),
     optimistic: (fn: unknown) => rpcChain({ ...partial, optimistic: fn }),
+    atomic: () => rpcChain({ ...partial, atomic: true }),
     handler: (fn: unknown) => rpcChain({ ...partial, handler: fn }),
-    stream: (fn: unknown) => rpcChain({ ...partial, handler: fn }),
     onError: (fn: unknown) => rpcChain({ ...partial, onError: fn }),
     rateLimit: (limit: unknown) => rpcChain({ ...partial, rateLimit: limit }),
     get def() {
@@ -286,9 +302,9 @@ function liveBuilder(path: string, def: Record<string, any>): any {
  *     return { projects: await db.project.findMany({ where: { orgId } }) };
  *   })
  *   .rpc("create", (r) =>
- *     r.input(z.object({ name: z.string() })).handler(async (state, { name }, ctx) => {
+ *     r.input(z.object({ name: z.string() })).handler(async ({ name }, ctx) => {
  *       const p = await db.project.create({ data: { name } });
- *       state.projects.push(p);
+ *       ctx.patchState((s) => { s.projects.push(p); });
  *       ctx.broadcast(`org:${ctx.params.orgId}`, "project.created", p);
  *     }),
  *   )
@@ -309,10 +325,4 @@ export function isLongForm<S, P, Sess>(
   def: RpcDef<S, P, Sess>,
 ): def is RpcLongForm<S, unknown, P, Sess> {
   return typeof def === "object" && def !== null && "handler" in def;
-}
-
-/** True when a reducer is a generator function (signature signals semantics, §3). */
-export function isGeneratorReducer(fn: unknown): boolean {
-  const name = (fn as { constructor?: { name?: string } })?.constructor?.name;
-  return name === "AsyncGeneratorFunction" || name === "GeneratorFunction";
 }

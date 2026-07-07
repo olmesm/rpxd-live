@@ -1,7 +1,7 @@
-/** Generator rpcs (§3): segments stream in patch-by-patch at each yield. */
+/** Streaming rpcs (§3): each patchState tick flushes a patch envelope. */
 import { expect, test } from "@playwright/test";
 
-test("generator segments stream progressively, finally clears the flag", async ({ page }) => {
+test("patchState flushes stream progressively, finally clears the flag", async ({ page }) => {
   await page.goto("/import");
   await page.click("button");
 

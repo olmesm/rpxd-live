@@ -17,8 +17,10 @@ export default live("/")
       .optimistic((state, { text }: { text: string }, ctx) => {
         state.todos.push({ id: ctx.tempId(), text, done: false });
       })
-      .handler(async (state, { text }) => {
-        state.todos.push({ id: `srv-${++counter}`, text, done: false });
+      .handler(async ({ text }, ctx) => {
+        ctx.patchState((s) => {
+          s.todos.push({ id: `srv-${++counter}`, text, done: false });
+        });
       }),
   )
   .rpc("toggle", (r) =>
@@ -27,9 +29,11 @@ export default live("/")
         const todo = state.todos.find((t) => t.id === id);
         if (todo) todo.done = !todo.done;
       })
-      .handler(async (state, { id }) => {
-        const todo = state.todos.find((t) => t.id === id);
-        if (todo) todo.done = !todo.done;
+      .handler(async ({ id }, ctx) => {
+        ctx.patchState((s) => {
+          const todo = s.todos.find((t) => t.id === id);
+          if (todo) todo.done = !todo.done;
+        });
       }),
   )
   .render(({ state, rpc, sync, keyOf }) => (

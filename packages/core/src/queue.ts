@@ -1,10 +1,11 @@
 /**
- * Per-instance FIFO queue. Rpcs AND broadcast handlers serialize through one
- * of these — last-write-wins falls out of strict ordering (§1).
+ * Per-instance FIFO queue. Mutations serialize through one of these —
+ * patchState flushes, broadcast handlers, the `params` reducer — so
+ * last-write-wins falls out of strict ordering (§1).
  *
- * Generator rpcs do NOT hold the queue across `yield`: each segment is its
- * own {@link SerialQueue.run} call, so other work interleaves between
- * segments (§3).
+ * Handlers themselves never hold the queue: each flush is its own
+ * {@link SerialQueue.run} call, so other work interleaves freely while a
+ * handler awaits (§3).
  */
 export class SerialQueue {
   #tail: Promise<unknown> = Promise.resolve();

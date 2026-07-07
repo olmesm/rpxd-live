@@ -38,15 +38,17 @@ normative spec is `spec.md`; the wire protocol is `docs/protocol.md`.
 
 - TSDoc on all public APIs with `@example` blocks (§17) — enforced in CI by
   `bun scripts/check-tsdoc.ts`
-- Deferred from §17: the custom Biome rules (§3 getState-across-yield, §4
-  identity-based lookups) need flow analysis beyond GritQL plugins today;
-  both conventions are documented in TSDoc and the runtime throws on the
-  getState violation
+- Deferred from §17: the custom Biome rule for §4 identity-based lookups
+  needs flow analysis beyond GritQL plugins today; the convention is
+  documented in TSDoc. (§3's getState-across-yield rule is obsolete — the
+  patchState model makes the bug class unexpressible.)
 - Web-standard `Request`/`Response` in server code; Bun types only inside
   `bunAdapter` / storage-sqlite
 - `live()` is a fluent chain: `.mount()` locks state, `.rpc(name, r =>
-  r.input().optimistic().handler()/.stream())` locks payloads, `.render()`
-  hands the component fully typed props including the exact-keyed `rpc`
-  facade. Zero annotations needed; the inference contract is locked in
-  `packages/core/test/live.test-d.ts`. Chains build the same runtime
-  `LiveDefinition` the server consumes.
+  r.input().optimistic().handler())` locks payloads, `.render()` hands the
+  component fully typed props including the exact-keyed `rpc` facade. Zero
+  annotations needed; contract locked in `packages/core/test/live.test-d.ts`.
+- Handlers are async `(payload, ctx)` and never block the instance; ALL
+  state writes go through `ctx.patchState(sync mutator)`; `ctx.state` is a
+  live read-only view. `.atomic()` = whole-rpc rollback. String `+=` growth
+  emits `append` patches.

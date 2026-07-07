@@ -1,20 +1,23 @@
 /**
  * LiveInstance — the server-side runtime for one live object instance (§1).
  *
- * Owns the per-instance FIFO queue, Immer patch production, generator
- * segmenting, pubsub wiring, rate limiting, and write-through snapshots.
+ * Handlers run off-queue (awaits never block the instance, §3); only
+ * mutations serialize through the per-instance FIFO queue: patchState
+ * flushes, `on` handlers, and the `params` reducer. Each flush is one
+ * Immer draft → one atomic patch envelope, with string-suffix growth
+ * compiled to `append` ops (§2).
  */
-import { createDraft, type Draft, enablePatches, finishDraft } from "immer";
+import { createDraft, type Draft, enablePatches, finishDraft, setAutoFreeze } from "immer";
 import {
   type EventHandler,
-  type GeneratorReducer,
-  isGeneratorReducer,
+  type HandlerCtx,
   isLongForm,
   type LiveDefinition,
+  type Mutator,
   type PathParams,
-  type PlainReducer,
   type RpcCtx,
   type RpcDef,
+  type RpcLongForm,
 } from "./live.ts";
 import type { Envelope, Patch, RpcBatch, RpcCall } from "./protocol.ts";
 import { SerialQueue } from "./queue.ts";
@@ -23,6 +26,10 @@ import { validateInput } from "./standard-schema.ts";
 import type { StorageAdapter } from "./storage.ts";
 
 enablePatches();
+// Server state stays unfrozen: ctx.state's read-only proxy guards handler
+// access (a proxy over a frozen target can't wrap nested reads — invariant),
+// and skipping deep-freeze keeps high-frequency streaming flushes cheap.
+setAutoFreeze(false);
 
 /** Path prefix that routes a patch to the session slice instead of page state (§2). */
 export const SESSION_PREFIX = "$session";
@@ -41,12 +48,44 @@ export interface CreateInstanceOptions<S, Path extends string, Session> {
   defaultRateLimit?: RateLimit;
 }
 
-interface GenEntry {
-  gen: AsyncGenerator<void, void, void>;
-  cancelled: boolean;
+/**
+ * Per-batch write buffer. Non-atomic batches push straight to the instance's
+ * global pending list (mutation order is instance-global FIFO); `.atomic()`
+ * batches buffer here instead — one flush at completion, discard on throw (§3).
+ */
+interface FlushBucket<S> {
+  muts: Mutator<S>[];
+  atomic: boolean;
 }
 
 const ACK_CACHE_LIMIT = 64;
+
+const READ_ONLY_HINT = "ctx.state is read-only — writes go through ctx.patchState(mut) (§3)";
+
+/** Deep read-only view: reads pass through, writes throw with a pointer to patchState. */
+function readOnlyView<T extends object>(target: T, cache: WeakMap<object, unknown>): T {
+  const hit = cache.get(target);
+  if (hit) return hit as T;
+  const proxy = new Proxy(target, {
+    get(t, prop, receiver) {
+      const value = Reflect.get(t, prop, receiver);
+      return typeof value === "object" && value !== null
+        ? readOnlyView(value as object, cache)
+        : value;
+    },
+    set() {
+      throw new Error(READ_ONLY_HINT);
+    },
+    defineProperty() {
+      throw new Error(READ_ONLY_HINT);
+    },
+    deleteProperty() {
+      throw new Error(READ_ONLY_HINT);
+    },
+  });
+  cache.set(target, proxy);
+  return proxy as T;
+}
 
 /**
  * A mounted live object. Create via {@link LiveInstance.create} — mount runs
@@ -65,11 +104,19 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   #session: Session;
   #seq = 0;
   readonly #queue = new SerialQueue();
-  #segmentDraft: Draft<S> | undefined;
-  readonly #activeGens = new Set<GenEntry>();
   readonly #listeners = new Set<(env: Envelope) => void>();
   readonly #unsubs = new Map<string, () => void>();
   readonly #buckets = new Map<string, TokenBucket>();
+  /** rpcName → live AbortControllers, for ctx.abort(name) and dispose (§3). */
+  readonly #aborts = new Map<string, Set<AbortController>>();
+  readonly #readOnlyCache = new WeakMap<object, unknown>();
+  /**
+   * Instance-global pending mutators: every commit point (chunk flush, final
+   * flush, `on` handler) drains this first, so writes land in patchState
+   * order across concurrent handlers — LWW by ordering (§1).
+   */
+  #pendingMuts: Mutator<S>[] = [];
+  #flushScheduled = false;
   /** rpcId → ack envelope, for at-least-once dedupe (§11). */
   readonly #acks = new Map<string, Envelope>();
   #disposed = false;
@@ -133,7 +180,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
-   * Swap the live definition in place (§15 reducer HMR): new reducers apply
+   * Swap the live definition in place (§15 reducer HMR): new handlers apply
    * to subsequent rpcs/broadcasts while runtime state is preserved.
    */
   replaceDef(def: LiveDefinition<S, Path, Session>): void {
@@ -151,9 +198,10 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
-   * Execute an rpc batch (§6): one combined patch + one ack for plain calls;
-   * generator calls stream their segment flushes and the ack follows
-   * completion. Resent batches (same `rpcId`) are re-acked, not re-run.
+   * Execute an rpc batch (§6): calls run in order as plain async handlers;
+   * same-tick patchState calls coalesce into flushes, and the final flush at
+   * completion carries the ack (so its patches and idMap ride one envelope).
+   * Resent batches (same `rpcId`) are re-acked, not re-run.
    */
   async handleBatch(batch: RpcBatch): Promise<void> {
     const cached = this.#acks.get(batch.rpcId);
@@ -163,49 +211,36 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     }
 
     const idMap: Record<string, string> = {};
-    const errorOf = (e: unknown, rpc: string) => ({
-      name: e instanceof Error ? e.name : "Error",
-      message: e instanceof Error ? e.message : String(e),
-      rpc,
-    });
+    const bucket: FlushBucket<S> = {
+      muts: [],
+      atomic: batch.calls.some((c) => {
+        const def = this.#def.rpc?.[c.rpc];
+        return def !== undefined && isLongForm(def) && def.atomic === true;
+      }),
+    };
 
-    // Group consecutive plain calls so they share one draft → one combined patch.
-    const groups: { kind: "plain" | "gen"; calls: RpcCall[] }[] = [];
-    for (const call of batch.calls) {
-      const def = this.#def.rpc?.[call.rpc];
-      const handler = def && (isLongForm(def) ? def.handler : def);
-      const kind = handler && isGeneratorReducer(handler) ? "gen" : "plain";
-      const last = groups[groups.length - 1];
-      if (kind === "plain" && last?.kind === "plain") last.calls.push(call);
-      else groups.push({ kind, calls: [call] });
-    }
-
-    let ackSent = false;
-    for (let i = 0; i < groups.length; i++) {
-      const group = groups[i] as { kind: "plain" | "gen"; calls: RpcCall[] };
-      const isLast = i === groups.length - 1;
-      const currentRpc = () => group.calls[group.calls.length - 1]?.rpc ?? "?";
-      try {
-        if (group.kind === "plain") {
-          // The last plain group's flush doubles as the ack envelope.
-          const ack = isLast ? { rpcId: batch.rpcId, idMap } : undefined;
-          await this.#queue.run(() => this.#runPlainGroup(group.calls, idMap, ack));
-          if (isLast) ackSent = true;
-        } else {
-          const call = group.calls[0] as RpcCall;
-          await this.#runGeneratorCall(call, idMap);
+    let current: RpcCall | undefined;
+    try {
+      for (const call of batch.calls) {
+        current = call;
+        const { handler, payload } = await this.#prepare(call);
+        const controller = this.#trackAbort(call.rpc);
+        const ctx = this.#makeHandlerCtx(idMap, bucket, controller.signal);
+        try {
+          await handler(payload, ctx);
+        } finally {
+          this.#untrackAbort(call.rpc, controller);
         }
-      } catch (e) {
-        const failed = group.kind === "gen" ? (group.calls[0] as RpcCall) : undefined;
-        const rpcName = failed?.rpc ?? currentRpc();
-        await this.#ackError(batch.rpcId, errorOf(e, rpcName), rpcName, idMap, batch);
-        return;
       }
-    }
-
-    if (!ackSent) {
-      // Generator-terminated batch: segments already flushed; ack separately.
-      this.#emitAck({ patches: [], rpcId: batch.rpcId, ...this.#idMapField(idMap) });
+      await this.#flushFinal(bucket, batch.rpcId, idMap);
+    } catch (e) {
+      const rpcName = current?.rpc ?? "?";
+      const error = {
+        name: e instanceof Error ? e.name : "Error",
+        message: e instanceof Error ? e.message : String(e),
+        rpc: rpcName,
+      };
+      await this.#ackError(batch.rpcId, error, rpcName, current?.payload, idMap, bucket);
     }
   }
 
@@ -218,7 +253,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       try {
         reducer(draft, search);
       } catch (e) {
-        void this.#discard(draft);
+        this.#discard(draft);
         throw e;
       }
       let patches: Patch[] = [];
@@ -233,13 +268,18 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
-   * Tear down: cancel running generators (their `finally` blocks run, §3),
-   * unsubscribe from all topics, write a final snapshot (§11 eviction).
+   * Tear down: abort every in-flight handler's `ctx.signal` (§3), drain the
+   * mutation queue, unsubscribe from all topics, write a final snapshot
+   * (§11 eviction). Parked handlers resume against a disposed instance —
+   * their late flushes are dropped.
    */
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
-    await this.#cancelGenerators();
+    for (const controllers of this.#aborts.values()) {
+      for (const controller of controllers) controller.abort();
+    }
+    this.#aborts.clear();
     await this.#queue.idle();
     for (const unsub of this.#unsubs.values()) unsub();
     this.#unsubs.clear();
@@ -254,18 +294,134 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       params: this.#params,
       session: this.#session,
       broadcast: (topic, event, payload, opts) => {
-        void this.#storage.bus.publish({
+        const msg = {
           topic,
           event,
           payload,
           senderId: this.id,
           self: opts?.self ?? false,
-        });
+        };
+        // Serialize delivery behind the mutation queue so patchState calls
+        // issued before the broadcast are committed before receivers react.
+        void this.#queue
+          .run(() => this.#storage.bus.publish(msg))
+          .catch((e) => console.error("[rpxd] broadcast publish failed:", e));
       },
       resolveId: (tempId, realId) => {
         idMap[tempId] = realId;
       },
     };
+  }
+
+  #makeHandlerCtx(
+    idMap: Record<string, string>,
+    bucket: FlushBucket<S>,
+    signal: AbortSignal,
+  ): HandlerCtx<S, PathParams<Path>, Session> {
+    const self = this;
+    return {
+      ...this.#makeCtx(idMap),
+      get state() {
+        return readOnlyView(self.#state as object, self.#readOnlyCache) as HandlerCtx<
+          S,
+          PathParams<Path>,
+          Session
+        >["state"];
+      },
+      patchState: (mut) => this.#queueMut(bucket, mut),
+      signal,
+      abort: (rpc) => this.#abortRpc(rpc),
+    };
+  }
+
+  /** Buffer a mutator; schedule the tick's chunk flush unless atomic (§3). */
+  #queueMut(bucket: FlushBucket<S>, mut: Mutator<S>): void {
+    if (this.#disposed) return;
+    if (bucket.atomic) {
+      bucket.muts.push(mut);
+      return;
+    }
+    this.#pendingMuts.push(mut);
+    if (this.#flushScheduled) return;
+    this.#flushScheduled = true;
+    // Macrotask boundary = the coalescing tick: same-tick calls (including
+    // across microtasks) share one flush; a handler completing in the same
+    // tick drains the pending list first, so those patches ride the ack.
+    setTimeout(() => {
+      this.#flushScheduled = false;
+      void this.#flushChunk();
+    }, 0);
+  }
+
+  /** Mid-handler flush: no ack fields, emits only if something changed. */
+  async #flushChunk(): Promise<void> {
+    await this.#queue
+      .run(async () => {
+        if (this.#disposed || this.#pendingMuts.length === 0) return;
+        const patches = this.#applyMuts(this.#pendingMuts.splice(0));
+        if (patches.length > 0) this.#emit({ patches });
+        await this.#writeThrough();
+      })
+      .catch((e) => {
+        console.error("[rpxd] patchState flush failed:", e);
+      });
+  }
+
+  /** Completion flush: drains pending + atomic buffer, always emits the ack. */
+  async #flushFinal(
+    bucket: FlushBucket<S>,
+    rpcId: string,
+    idMap: Record<string, string>,
+  ): Promise<void> {
+    await this.#queue.run(async () => {
+      if (this.#disposed) return;
+      const patches = this.#applyMuts([...this.#pendingMuts.splice(0), ...bucket.muts.splice(0)]);
+      this.#emitAck({ patches, rpcId, ...this.#idMapField(idMap) });
+      await this.#writeThrough();
+    });
+  }
+
+  /** One draft over current state, all mutators, exact patches + append compile. */
+  #applyMuts(muts: Mutator<S>[]): Patch[] {
+    if (muts.length === 0) return [];
+    const draft = createDraft(this.#state as object) as Draft<S>;
+    try {
+      for (const mut of muts) mut(draft);
+    } catch (e) {
+      this.#discard(draft);
+      throw e;
+    }
+    let patches: Patch[] = [];
+    let inverse: Patch[] = [];
+    this.#state = finishDraft(draft, (p, inv) => {
+      patches = p as Patch[];
+      inverse = inv as Patch[];
+    }) as S;
+    return compileAppends(patches, inverse);
+  }
+
+  #trackAbort(rpc: string): AbortController {
+    const controller = new AbortController();
+    let set = this.#aborts.get(rpc);
+    if (!set) {
+      set = new Set();
+      this.#aborts.set(rpc, set);
+    }
+    set.add(controller);
+    return controller;
+  }
+
+  #untrackAbort(rpc: string, controller: AbortController): void {
+    const set = this.#aborts.get(rpc);
+    set?.delete(controller);
+    if (set?.size === 0) this.#aborts.delete(rpc);
+  }
+
+  /** ctx.abort(name): abort every in-flight invocation of a named rpc (§3). */
+  #abortRpc(rpc: string): void {
+    const set = this.#aborts.get(rpc);
+    if (!set) return;
+    for (const controller of set) controller.abort();
   }
 
   #subscribeTopic(topic: string): void {
@@ -284,20 +440,27 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     this.#unsubs.set(topic, unsub);
   }
 
-  async #runEventHandler(handler: EventHandler<S, PathParams<Path>, Session>, payload: unknown) {
-    const draft = createDraft(this.#state as object) as Draft<S>;
-    try {
-      await handler(draft, payload, this.#makeCtx({}));
-    } catch (e) {
-      void this.#discard(draft);
-      throw e;
-    }
-    await this.#commitState(draft);
+  /**
+   * `on` handlers are sync mutators (§8): one draft, one flush, no ack.
+   * Pending patchState muts drain first so a sender's writes issued before
+   * its broadcast are ordered before the reaction.
+   */
+  async #runEventHandler(
+    handler: EventHandler<S, PathParams<Path>, Session>,
+    payload: unknown,
+  ): Promise<void> {
+    const ctx = this.#makeCtx({});
+    const patches = this.#applyMuts([
+      ...this.#pendingMuts.splice(0),
+      (draft) => handler(draft, payload, ctx),
+    ]);
+    if (patches.length > 0) this.#emit({ patches });
+    await this.#writeThrough();
   }
 
+  /** Resolve + gate one call: unknown rpc, rate limit, input validation. */
   async #prepare(call: RpcCall): Promise<{
-    handler: PlainReducer<S, unknown, PathParams<Path>, Session>;
-    genHandler: GeneratorReducer<S, unknown, PathParams<Path>, Session>;
+    handler: RpcLongForm<S, unknown, PathParams<Path>, Session>["handler"];
     payload: unknown;
   }> {
     const def: RpcDef<S, PathParams<Path>, Session> | undefined = this.#def.rpc?.[call.rpc];
@@ -317,151 +480,45 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     if (isLongForm(def) && def.input) {
       payload = await validateInput(def.input, payload, call.rpc);
     }
-    const handler = isLongForm(def) ? def.handler : def;
-    return {
-      handler: handler as PlainReducer<S, unknown, PathParams<Path>, Session>,
-      genHandler: handler as GeneratorReducer<S, unknown, PathParams<Path>, Session>,
-      payload,
-    };
+    return { handler: isLongForm(def) ? def.handler : def, payload };
   }
 
-  async #runPlainGroup(
-    calls: RpcCall[],
-    idMap: Record<string, string>,
-    ack?: { rpcId: string; idMap: Record<string, string> },
-  ): Promise<void> {
-    const draft = createDraft(this.#state as object) as Draft<S>;
-    const ctx = this.#makeCtx(idMap);
-    try {
-      for (const call of calls) {
-        const { handler, payload } = await this.#prepare(call);
-        await handler(draft, payload, ctx);
-      }
-    } catch (e) {
-      void this.#discard(draft);
-      throw e;
-    }
-    await this.#commitState(
-      draft,
-      ack ? { rpcId: ack.rpcId, ...this.#idMapField(ack.idMap) } : undefined,
-    );
-  }
-
-  async #runGeneratorCall(call: RpcCall, idMap: Record<string, string>): Promise<void> {
-    // Validation + rate limiting happen inside the queue so ordering holds.
-    const prepared = await this.#queue.run(() => this.#prepare(call));
-    const ctx = this.#makeCtx(idMap);
-    const gen = prepared.genHandler(() => this.#requireSegmentDraft(), call.payload, ctx);
-    const entry: GenEntry = { gen, cancelled: false };
-    this.#activeGens.add(entry);
-    try {
-      let done = false;
-      while (!done) {
-        done = await this.#queue.run(() => this.#genSegment(entry));
-      }
-    } finally {
-      this.#activeGens.delete(entry);
-    }
-  }
-
-  /** One segment: fresh draft → run to next yield/return → atomic flush (§3). */
-  async #genSegment(entry: GenEntry): Promise<boolean> {
-    const draft = createDraft(this.#state as object) as Draft<S>;
-    this.#segmentDraft = draft;
-    let result: IteratorResult<void, void>;
-    try {
-      result = await entry.gen.next();
-    } catch (e) {
-      void this.#discard(draft);
-      throw e;
-    } finally {
-      this.#segmentDraft = undefined;
-    }
-    await this.#commitState(draft);
-    return result.done ?? false;
-  }
-
-  #requireSegmentDraft(): Draft<S> {
-    if (!this.#segmentDraft) {
-      throw new Error(
-        "getState() called outside a generator segment — never hold a getState() " +
-          "reference across yield/await; call it again after resuming",
-      );
-    }
-    return this.#segmentDraft;
-  }
-
-  /** Disconnect mid-run: `generator.return()` → `finally` blocks run (§3). */
-  async #cancelGenerators(): Promise<void> {
-    const entries = [...this.#activeGens];
-    await Promise.all(
-      entries.map((entry) =>
-        this.#queue.run(async () => {
-          if (entry.cancelled) return;
-          entry.cancelled = true;
-          const draft = createDraft(this.#state as object) as Draft<S>;
-          this.#segmentDraft = draft;
-          try {
-            await entry.gen.return(undefined);
-          } catch (e) {
-            console.error("[rpxd] generator cleanup threw:", e);
-          } finally {
-            this.#segmentDraft = undefined;
-          }
-          await this.#commitState(draft);
-        }),
-      ),
-    );
-  }
-
+  /**
+   * Failure ack (§5): atomic discards its whole buffer (rollback); otherwise
+   * pending same-tick muts commit alongside the `onError` mutator, and the
+   * combined patches ride the error ack.
+   */
   async #ackError(
     rpcId: string,
     error: { name: string; message: string; rpc: string },
     rpcName: string,
+    payload: unknown,
     idMap: Record<string, string>,
-    batch: RpcBatch,
+    bucket: FlushBucket<S>,
   ): Promise<void> {
-    // onError runs as a queued reducer; its patches ride the error ack (§5).
-    let patches: Patch[] = [];
+    bucket.muts.length = 0; // atomic rollback — non-atomic muts live in the pending list
+    const muts = this.#pendingMuts.splice(0);
+
     const def = this.#def.rpc?.[rpcName];
     const onError = def && isLongForm(def) ? def.onError : undefined;
     if (onError) {
-      const payload = batch.calls.find((c) => c.rpc === rpcName)?.payload;
+      const ctx = this.#makeCtx(idMap);
+      muts.push((draft) => onError(draft, error, payload, ctx));
+    }
+
+    let patches: Patch[] = [];
+    if (muts.length > 0) {
       try {
         await this.#queue.run(async () => {
-          const draft = createDraft(this.#state as object) as Draft<S>;
-          try {
-            await onError(draft, error, payload, this.#makeCtx(idMap));
-          } catch (e) {
-            void this.#discard(draft);
-            throw e;
-          }
-          patches = await this.#commitState(draft, undefined, /* emit */ false);
+          patches = this.#applyMuts(muts);
+          await this.#writeThrough();
         });
       } catch (e) {
         console.error(`[rpxd] onError for rpc "${rpcName}" threw:`, e);
+        patches = [];
       }
     }
     this.#emitAck({ patches, rpcId, error, ...this.#idMapField(idMap) });
-  }
-
-  /** Finish a state draft, emit its envelope, write through storage. */
-  async #commitState(
-    draft: Draft<S>,
-    ack?: { rpcId: string; idMap?: Record<string, string> },
-    emit = true,
-  ): Promise<Patch[]> {
-    let patches: Patch[] = [];
-    this.#state = finishDraft(draft, (p) => {
-      patches = p as Patch[];
-    }) as S;
-    if (emit && ack) {
-      this.#emitAck({ patches, rpcId: ack.rpcId, ...this.#idMapField(ack.idMap ?? {}) });
-    } else if (emit && patches.length > 0) {
-      this.#emit({ patches });
-    }
-    await this.#writeThrough();
-    return patches;
   }
 
   /** Finish-and-drop a draft after a throw — immer requires finalization. */
@@ -505,4 +562,25 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       console.error("[rpxd] snapshot write-through failed:", e);
     }
   }
+}
+
+/**
+ * Compile string-suffix growth into `append` ops (§2): a `replace` whose new
+ * string extends the old one ships only the delta. Old values come from the
+ * inverse patches, matched by path (immer's inverse array can carry extra
+ * length-restoring entries, so index alignment isn't reliable).
+ */
+function compileAppends(patches: Patch[], inverse: Patch[]): Patch[] {
+  if (patches.length === 0) return patches;
+  const previous = new Map<string, unknown>();
+  for (const inv of inverse) {
+    if (inv.op === "replace") previous.set(JSON.stringify(inv.path), inv.value);
+  }
+  return patches.map((p) => {
+    if (p.op !== "replace" || typeof p.value !== "string") return p;
+    const old = previous.get(JSON.stringify(p.path));
+    if (typeof old !== "string" || old.length === 0 || old.length >= p.value.length) return p;
+    if (!p.value.startsWith(old)) return p;
+    return { op: "append" as const, path: p.path, value: p.value.slice(old.length) };
+  });
 }

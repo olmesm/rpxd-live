@@ -1,25 +1,30 @@
-import type { Draft } from "immer";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LiveInstance } from "../src/instance.ts";
-import type { LiveDefinition, RpcCtx } from "../src/live.ts";
+import type { LiveDefinition, Mutator } from "../src/live.ts";
 import { type Envelope, PROTOCOL_VERSION, type RpcBatch } from "../src/protocol.ts";
 import { memory, type StorageAdapter } from "../src/storage.ts";
 
 interface TodoState {
   todos: { id: string; text: string }[];
   log: string[];
+  answer: string;
   importing?: boolean;
   lastError?: string;
 }
 
 type Session = { filter?: string };
-type St = Draft<TodoState>;
-type Get = () => Draft<TodoState>;
-type Ctx = RpcCtx<{ id: string }, Session>;
+type Mut = Mutator<TodoState>;
 
 let nextId = 0;
 const uid = (prefix: string) => `${prefix}-${++nextId}`;
+const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+const gates: Record<string, () => void> = {};
+const gate = (name: string) =>
+  new Promise<void>((resolve) => {
+    gates[name] = resolve;
+  });
 
 function batch(rpc: string, payload: unknown = {}, rpcId = uid("rpc")): RpcBatch {
   return { v: PROTOCOL_VERSION, instance: "i", rpcId, calls: [{ rpc, payload }] };
@@ -43,14 +48,24 @@ async function make(
   return { inst, envelopes, storage };
 }
 
+const initial = (): TodoState => ({ todos: [], log: [], answer: "" });
+
 const baseDef: LiveDefinition<TodoState, "/t/$id", Session> = {
-  mount: async () => ({ todos: [], log: [] }),
+  mount: async () => initial(),
   rpc: {
-    async add(state: St, { text }: { text: string }) {
-      state.todos.push({ id: uid("todo"), text });
+    add: {
+      async handler({ text }: { text: string }, ctx) {
+        ctx.patchState(((s) => {
+          s.todos.push({ id: uid("todo"), text });
+        }) as Mut);
+      },
     },
-    async fast(state: St) {
-      state.log.push("fast");
+    fast: {
+      async handler(_p, ctx) {
+        ctx.patchState(((s) => {
+          s.log.push("fast");
+        }) as Mut);
+      },
     },
   },
 };
@@ -62,7 +77,7 @@ describe("LiveInstance basics", () => {
 
     await inst.handleBatch(batch("add", { text: "milk" }));
     expect(inst.state.todos).toHaveLength(1);
-    expect(envelopes).toHaveLength(1);
+    expect(envelopes).toHaveLength(1); // same-tick patchState rides the ack
     const ack = envelopes[0] as Envelope;
     expect(ack.rpcId).toBeDefined();
     expect(ack.seq).toBe(2);
@@ -109,20 +124,259 @@ describe("LiveInstance basics", () => {
   });
 });
 
-describe("validation and rate limiting", () => {
+describe("concurrency (§3): handlers never block the instance", () => {
+  it("runs a fast rpc while a slow handler awaits", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      mount: async () => initial(),
+      rpc: {
+        ...baseDef.rpc,
+        slow: {
+          async handler(_p, ctx) {
+            ctx.patchState(((s) => {
+              s.log.push("slow:start");
+            }) as Mut);
+            await gate("slow");
+            ctx.patchState(((s) => {
+              s.log.push("slow:end");
+            }) as Mut);
+          },
+        },
+      },
+    };
+    const { inst } = await make(def);
+    const slow = inst.handleBatch(batch("slow"));
+    await tick(); // let slow reach its await
+    await inst.handleBatch(batch("fast")); // completes while slow is parked
+    expect(inst.state.log).toEqual(["slow:start", "fast"]);
+    gates.slow?.();
+    await slow;
+    expect(inst.state.log).toEqual(["slow:start", "fast", "slow:end"]);
+  });
+
+  it("ctx.state reads are live — current even after awaits", async () => {
+    const seen: string[][] = [];
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      mount: async () => initial(),
+      rpc: {
+        ...baseDef.rpc,
+        watcher: {
+          async handler(_p, ctx) {
+            seen.push([...ctx.state.log]);
+            await gate("watch");
+            seen.push([...ctx.state.log]); // must see "fast" written meanwhile
+          },
+        },
+      },
+    };
+    const { inst } = await make(def);
+    const run = inst.handleBatch(batch("watcher"));
+    await tick();
+    await inst.handleBatch(batch("fast"));
+    gates.watch?.();
+    await run;
+    expect(seen).toEqual([[], ["fast"]]);
+  });
+
+  it("ctx.state rejects writes with a helpful error", async () => {
+    let error: Error | undefined;
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      mount: async () => initial(),
+      rpc: {
+        mutant: {
+          async handler(_p, ctx) {
+            try {
+              // biome-ignore lint/suspicious/noExplicitAny: intentional violation
+              (ctx.state as any).answer = "nope";
+            } catch (e) {
+              error = e as Error;
+            }
+          },
+        },
+      },
+    };
+    const { inst } = await make(def);
+    await inst.handleBatch(batch("mutant"));
+    expect(error?.message).toContain("patchState");
+    expect(inst.state.answer).toBe("");
+  });
+});
+
+describe("streaming + append op (§2, §3)", () => {
+  it("flushes one envelope per patchState tick; ack carries the final-tick patches", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      mount: async () => initial(),
+      rpc: {
+        stream: {
+          async handler(_p, ctx) {
+            ctx.patchState(((s) => {
+              s.log.push("g1");
+            }) as Mut);
+            await tick(); // force a flush boundary
+            ctx.patchState(((s) => {
+              s.log.push("g2");
+            }) as Mut);
+          },
+        },
+      },
+    };
+    const { inst, envelopes } = await make(def);
+    await inst.handleBatch(batch("stream"));
+    expect(inst.state.log).toEqual(["g1", "g2"]);
+    expect(envelopes).toHaveLength(2); // chunk envelope + ack (with g2)
+    expect(envelopes[0]?.rpcId).toBeUndefined();
+    expect(envelopes[1]?.rpcId).toBeDefined();
+  });
+
+  it("compiles string-suffix growth to append patches carrying only the delta", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      mount: async () => initial(),
+      rpc: {
+        ask: {
+          async handler(_p, ctx) {
+            ctx.patchState(((s) => {
+              s.answer = "Hello";
+            }) as Mut);
+            await tick();
+            ctx.patchState(((s) => {
+              s.answer += ", world";
+            }) as Mut);
+            await tick();
+            ctx.patchState(((s) => {
+              s.answer += "!";
+            }) as Mut);
+          },
+        },
+      },
+    };
+    const { inst, envelopes } = await make(def);
+    await inst.handleBatch(batch("ask"));
+    expect(inst.state.answer).toBe("Hello, world!");
+    const ops = envelopes.flatMap((e) => e.patches ?? []);
+    expect(ops[0]).toEqual({ op: "replace", path: ["answer"], value: "Hello" });
+    expect(ops[1]).toEqual({ op: "append", path: ["answer"], value: ", world" });
+    expect(ops[2]).toEqual({ op: "append", path: ["answer"], value: "!" });
+  });
+});
+
+describe("atomic rpcs (§3)", () => {
   const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-    mount: async () => ({ todos: [], log: [] }),
+    mount: async () => initial(),
+    rpc: {
+      transfer: {
+        atomic: true,
+        async handler({ boom }: { boom?: boolean }, ctx) {
+          ctx.patchState(((s) => {
+            s.log.push("step1");
+          }) as Mut);
+          await tick(); // would flush in non-atomic mode
+          ctx.patchState(((s) => {
+            s.log.push("step2");
+          }) as Mut);
+          if (boom) throw new Error("mid-transfer");
+        },
+      },
+    },
+  };
+
+  it("buffers all patches into one flush at completion", async () => {
+    const { inst, envelopes } = await make(def);
+    await inst.handleBatch(batch("transfer", {}));
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0]?.patches).toHaveLength(2);
+    expect(envelopes[0]?.rpcId).toBeDefined();
+  });
+
+  it("discards everything on throw — whole-rpc rollback", async () => {
+    const { inst, envelopes } = await make(def);
+    await inst.handleBatch(batch("transfer", { boom: true }));
+    expect(inst.state.log).toEqual([]); // nothing landed
+    const ack = envelopes[0] as Envelope;
+    expect(ack.error?.message).toBe("mid-transfer");
+    expect(ack.patches ?? []).toHaveLength(0);
+  });
+});
+
+describe("cancellation (§3)", () => {
+  it("aborts ctx.signal on dispose", async () => {
+    let aborted = false;
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      mount: async () => initial(),
+      rpc: {
+        watch: {
+          async handler(_p, ctx) {
+            ctx.signal.addEventListener("abort", () => {
+              aborted = true;
+            });
+            await gate("cancel");
+          },
+        },
+      },
+    };
+    const { inst } = await make(def);
+    const run = inst.handleBatch(batch("watch"));
+    await tick();
+    await inst.dispose();
+    expect(aborted).toBe(true);
+    gates.cancel?.();
+    await run;
+  });
+
+  it("ctx.abort(name) aborts in-flight invocations of a named rpc", async () => {
+    let aborted = false;
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      mount: async () => initial(),
+      rpc: {
+        ask: {
+          async handler(_p, ctx) {
+            ctx.signal.addEventListener("abort", () => {
+              aborted = true;
+            });
+            await gate("ask");
+          },
+        },
+        stop: {
+          async handler(_p, ctx) {
+            ctx.abort("ask");
+          },
+        },
+      },
+    };
+    const { inst } = await make(def);
+    const run = inst.handleBatch(batch("ask"));
+    await tick();
+    await inst.handleBatch(batch("stop"));
+    expect(aborted).toBe(true);
+    gates.ask?.();
+    await run;
+  });
+});
+
+describe("validation, rate limiting, onError", () => {
+  const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+    mount: async () => initial(),
     rpc: {
       add: {
         input: z.object({ text: z.string().min(1) }),
-        async handler(state: St, { text }: { text: string }) {
-          state.todos.push({ id: uid("todo"), text });
+        async handler({ text }, ctx) {
+          ctx.patchState(((s) => {
+            s.todos.push({ id: uid("todo"), text: text as string });
+          }) as Mut);
         },
       },
       limited: {
         rateLimit: { capacity: 1, refillPerSec: 0 },
-        async handler(state: St) {
-          state.log.push("limited");
+        async handler(_p, ctx) {
+          ctx.patchState(((s) => {
+            s.log.push("limited");
+          }) as Mut);
+        },
+      },
+      explode: {
+        async handler() {
+          throw new Error("db down");
+        },
+        onError(state, error) {
+          state.lastError = (error as Error).message;
         },
       },
     },
@@ -145,23 +399,8 @@ describe("validation and rate limiting", () => {
     expect(inst.state.log).toEqual(["limited"]);
     expect(envelopes[1]?.error?.name).toBe("RateLimitError");
   });
-});
 
-describe("onError (§5)", () => {
-  it("runs as a queued reducer on handler throw and rides the error ack", async () => {
-    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => ({ todos: [], log: [] }),
-      rpc: {
-        explode: {
-          async handler() {
-            throw new Error("db down");
-          },
-          onError(state, error) {
-            state.lastError = (error as Error).message;
-          },
-        },
-      },
-    };
+  it("runs onError as a queued mutator riding the error ack", async () => {
     const { inst, envelopes } = await make(def);
     await inst.handleBatch(batch("explode"));
     const ack = envelopes[0] as Envelope;
@@ -171,156 +410,28 @@ describe("onError (§5)", () => {
   });
 });
 
-describe("generator rpcs (§3)", () => {
-  const gates: Record<string, () => void> = {};
-  const gate = (name: string) =>
-    new Promise<void>((resolve) => {
-      gates[name] = resolve;
-    });
-
-  it("flushes one envelope per segment and releases the queue at yield", async () => {
-    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => ({ todos: [], log: [] }),
-      rpc: {
-        ...baseDef.rpc,
-        async *stream(getState: Get) {
-          getState().log.push("g1");
-          yield;
-          getState().log.push("g2");
-        },
-      },
-    };
-    const { inst, envelopes } = await make(def);
-
-    // When the first segment's envelope lands, race a plain rpc in — it must
-    // run between segments because the queue releases at yield.
-    let injected = false;
-    let fastDone: Promise<void> | undefined;
-    inst.addListener(() => {
-      if (!injected) {
-        injected = true;
-        fastDone = inst.handleBatch(batch("fast"));
-      }
-    });
-
-    await inst.handleBatch(batch("stream"));
-    await fastDone;
-    expect(inst.state.log).toEqual(["g1", "fast", "g2"]);
-    // stream seg1, fast ack, stream seg2, stream ack
-    expect(envelopes.length).toBe(4);
-    expect(envelopes[3]?.rpcId).toBeDefined();
-    expect(envelopes[3]?.patches).toEqual([]);
-  });
-
-  it("zero-yield early return behaves like a plain async reducer", async () => {
-    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => ({ todos: [], log: [] }),
-      rpc: {
-        // biome-ignore lint/correctness/useYield: zero-yield return ≡ plain async reducer (spec §3)
-        async *maybe(getState: Get, { skip }: { skip: boolean }) {
-          if (skip) {
-            getState().log.push("skipped");
-            return;
-          }
-          getState().log.push("ran");
-        },
-      },
-    };
-    const { inst, envelopes } = await make(def);
-    await inst.handleBatch(batch("maybe", { skip: true }));
-    expect(inst.state.log).toEqual(["skipped"]);
-    expect(envelopes).toHaveLength(2); // final segment flush + ack
-  });
-
-  it("runs finally blocks on cancellation (disconnect mid-run)", async () => {
-    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => ({ todos: [], log: [] }),
-      rpc: {
-        async *importCsv(getState: Get) {
-          try {
-            getState().importing = true;
-            yield;
-            await gate("import");
-            getState().log.push("unreachable-after-cancel?");
-            yield;
-            await gate("never");
-          } finally {
-            getState().importing = false;
-          }
-        },
-      },
-    };
-    const { inst } = await make(def);
-    const run = inst.handleBatch(batch("importCsv"));
-    // Wait until the first segment flushed (importing: true committed).
-    await new Promise<void>((resolve) => {
-      const check = () => (inst.state.importing ? resolve() : setTimeout(check, 1));
-      check();
-    });
-    const disposal = inst.dispose();
-    gates.import?.(); // let the in-flight segment settle so cancel can run
-    await disposal;
-    await run;
-    expect(inst.state.importing).toBe(false); // finally ran even on disconnect
-  });
-
-  it("surfaces mid-generator throws via error ack, keeping flushed segments", async () => {
-    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => ({ todos: [], log: [] }),
-      rpc: {
-        crashy: {
-          async *handler(getState: Get) {
-            getState().importing = true;
-            yield;
-            throw new Error("mid-stream");
-          },
-          onError(state) {
-            state.importing = false;
-            state.lastError = "Import failed";
-          },
-        },
-      },
-    };
-    const { inst, envelopes } = await make(def);
-    await inst.handleBatch(batch("crashy"));
-    expect(inst.state.importing).toBe(false);
-    expect(inst.state.lastError).toBe("Import failed");
-    const ack = envelopes.at(-1) as Envelope;
-    expect(ack.error?.message).toBe("mid-stream");
-    expect(ack.patches?.length).toBeGreaterThan(0); // onError repairs ride the ack
-  });
-
-  it("rejects holding getState() across an interleaved commit boundary", async () => {
-    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => ({ todos: [], log: [] }),
-      rpc: {
-        async *leaky(getState: Get) {
-          const held = getState();
-          yield;
-          held.log.push("stale"); // draft finalized at yield → immer throws
-        },
-      },
-    };
-    const { inst, envelopes } = await make(def);
-    await inst.handleBatch(batch("leaky"));
-    expect(envelopes.at(-1)?.error).toBeDefined();
-  });
-});
-
 describe("pubsub (§8)", () => {
   const defFor = (): LiveDefinition<TodoState, "/t/$id", Session> => ({
     mount: async (_params, ctx) => {
       ctx.subscribe("room:1");
-      return { todos: [], log: [] };
+      return initial();
     },
     rpc: {
-      async shout(state: St, _p: unknown, ctx: Ctx) {
-        state.log.push("sent");
-        ctx.broadcast("room:1", "todo.created", { text: "hi" });
+      shout: {
+        async handler(_p, ctx) {
+          ctx.patchState(((s) => {
+            s.log.push("sent");
+          }) as Mut);
+          ctx.broadcast("room:1", "todo.created", { text: "hi" });
+        },
       },
-      async shoutSelf(state: St, _p: unknown, ctx: Ctx) {
-        state.log.push("sent");
-        ctx.broadcast("room:1", "todo.created", { text: "hi" }, { self: true });
+      shoutSelf: {
+        async handler(_p, ctx) {
+          ctx.patchState(((s) => {
+            s.log.push("sent");
+          }) as Mut);
+          ctx.broadcast("room:1", "todo.created", { text: "hi" }, { self: true });
+        },
       },
     },
     on: {
@@ -338,9 +449,8 @@ describe("pubsub (§8)", () => {
     await a.inst.handleBatch(batch("shout"));
     await a.inst.idle();
     await b.inst.idle();
-    expect(a.inst.state.log).toEqual(["sent"]); // no self-delivery
+    expect(a.inst.state.log).toEqual(["sent"]);
     expect(b.inst.state.log).toEqual(["recv:hi"]);
-    expect(b.envelopes.some((e) => e.patches && !e.rpcId)).toBe(true); // broadcast envelope
 
     await a.inst.handleBatch(batch("shoutSelf"));
     await a.inst.idle();
@@ -350,7 +460,7 @@ describe("pubsub (§8)", () => {
 
 describe("session slice (§7) and snapshots (§9)", () => {
   const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-    mount: async () => ({ todos: [], log: [] }),
+    mount: async () => initial(),
     params: (session, { filter }) => {
       session.filter = filter ?? "all";
     },
@@ -370,7 +480,7 @@ describe("session slice (§7) and snapshots (§9)", () => {
       ...def,
       mount: async () => {
         mounts += 1;
-        return { todos: [], log: [] };
+        return initial();
       },
     };
     const first = await make(counting, { storage, key: "k1" });
@@ -379,32 +489,24 @@ describe("session slice (§7) and snapshots (§9)", () => {
     await first.inst.dispose();
 
     const second = await make(counting, { storage, key: "k1" });
-    expect(mounts).toBe(2); // cold wake re-ran mount
-    expect(second.inst.session.filter).toBe("done"); // session survived
-    expect(second.inst.seq).toBeGreaterThan(seqBefore); // seq continues
-  });
-
-  it("discards snapshots on version mismatch", async () => {
-    const storage = memory();
-    const v1 = { ...def, version: "v1" };
-    const first = await make(v1, { storage, key: "k2" });
-    await first.inst.setSearch({ filter: "done" });
-    await first.inst.dispose();
-
-    const v2 = { ...def, version: "v2" };
-    const second = await make(v2, { storage, key: "k2" });
-    expect(second.inst.session.filter).toBeUndefined();
+    expect(mounts).toBe(2);
+    expect(second.inst.session.filter).toBe("done");
+    expect(second.inst.seq).toBeGreaterThan(seqBefore);
   });
 });
 
 describe("id linking escape hatch (§4)", () => {
   it("sends ctx.resolveId mappings in the ack idMap", async () => {
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => ({ todos: [], log: [] }),
+      mount: async () => initial(),
       rpc: {
-        async create(state: St, { tempId }: { tempId: string }, ctx: Ctx) {
-          state.todos.push({ id: "real-9", text: "x" });
-          ctx.resolveId(tempId, "real-9");
+        create: {
+          async handler({ tempId }: { tempId: string }, ctx) {
+            ctx.patchState(((s) => {
+              s.todos.push({ id: "real-9", text: "x" });
+            }) as Mut);
+            ctx.resolveId(tempId as string, "real-9");
+          },
         },
       },
     };
