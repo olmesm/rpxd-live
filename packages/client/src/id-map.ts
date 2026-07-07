@@ -9,6 +9,7 @@
  */
 import type { Patch } from "@rpxd/core";
 
+/** Where a tempId landed inside the optimistic patches (§4). */
 export interface TempIdLocation {
   tempId: string;
   /** Path of the optimistic patch the tempId landed in. */

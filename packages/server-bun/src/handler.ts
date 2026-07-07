@@ -34,6 +34,7 @@ export interface RenderContext {
   attachToken: string;
 }
 
+/** Options for {@link createRpxdHandler}. */
 export interface RpxdHandlerOptions {
   routes: RouteRegistration[];
   storage?: StorageAdapter;

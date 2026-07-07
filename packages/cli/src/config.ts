@@ -22,6 +22,7 @@ export function ws(): TransportConfig {
   return { kind: "ws" };
 }
 
+/** The shape `defineConfig` accepts (§14). */
 export interface RpxdConfig {
   /** Storage adapter (§9). Default: `memory()`. */
   storage?: StorageAdapter;

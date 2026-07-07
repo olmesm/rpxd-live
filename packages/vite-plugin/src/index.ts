@@ -17,6 +17,7 @@ export {
 } from "./codegen.ts";
 export { fileToRoute, pathToPattern, type RouteEntry, sortRoutes } from "./routes.ts";
 
+/** Options for {@link rpxd} and {@link runCodegen}. */
 export interface RpxdPluginOptions {
   /** Routes directory, relative to the Vite root. Default `routes`. */
   routesDir?: string;

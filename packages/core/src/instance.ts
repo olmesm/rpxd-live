@@ -27,6 +27,7 @@ enablePatches();
 /** Path prefix that routes a patch to the session slice instead of page state (§2). */
 export const SESSION_PREFIX = "$session";
 
+/** Options for {@link LiveInstance.create}. */
 export interface CreateInstanceOptions<S, Path extends string, Session> {
   /** Unique instance id — also the pubsub subscriber id (self-exclusion, §8). */
   id: string;

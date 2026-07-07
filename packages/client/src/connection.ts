@@ -27,6 +27,7 @@ export interface Bootstrap {
   snapshot: { state: unknown; session: unknown };
 }
 
+/** Constructor options for {@link LiveConnection}. */
 export interface ConnectionOptions {
   /** Instance id (from SSR bootstrap or a control mount response). */
   instance: string;

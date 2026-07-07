@@ -29,6 +29,9 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: TSDoc on public APIs (§17)
+        run: bun scripts/check-tsdoc.ts
+
       - name: Unit tests
         run: bun run test
 

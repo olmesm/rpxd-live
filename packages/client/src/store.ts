@@ -84,6 +84,7 @@ interface PendingOp {
   dead: boolean;
 }
 
+/** Constructor options for {@link LiveStore}. */
 export interface LiveStoreOptions {
   instance: string;
   meta?: Record<string, RpcMeta>;

@@ -14,6 +14,7 @@ export interface StandardSchemaV1<Input = unknown, Output = Input> {
   };
 }
 
+/** Result union produced by a Standard Schema `validate` call. */
 export type StandardSchemaResult<Output> =
   | { readonly value: Output; readonly issues?: undefined }
   | { readonly issues: ReadonlyArray<{ readonly message: string }> };

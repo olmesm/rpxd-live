@@ -79,6 +79,7 @@ export type GeneratorReducer<S, Payload, Params, Session> = (
   ctx: RpcCtx<Params, Session>,
 ) => AsyncGenerator<void, void, void>;
 
+/** Either reducer form — signature signals semantics (§3). */
 export type RpcHandler<S, Payload, Params, Session> =
   | PlainReducer<S, Payload, Params, Session>
   | GeneratorReducer<S, Payload, Params, Session>;
@@ -119,6 +120,7 @@ export interface RpcLongForm<S, Payload, Params, Session> {
   rateLimit?: RateLimit;
 }
 
+/** One rpc declaration: short-form reducer or long form (§5). */
 export type RpcDef<S, Params, Session> =
   // biome-ignore lint/suspicious/noExplicitAny: payload type flows from the caller/long form
   RpcHandler<S, any, Params, Session> | RpcLongForm<S, any, Params, Session>;
