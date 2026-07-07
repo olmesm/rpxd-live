@@ -15,12 +15,7 @@ import {
 } from "@rpxd/server-bun";
 import type { FunctionComponent } from "react";
 import type { RpxdConfig } from "./config.ts";
-import {
-  makeShellRenderers,
-  renderRoute,
-  type ShellAssets,
-  type ShellComponents,
-} from "./render.ts";
+import type { ShellAssets, ShellComponents, SsrRuntime } from "./render.ts";
 
 /** Options for {@link startApp}. */
 export interface StartOptions {
@@ -73,8 +68,11 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     ? ((await import(pathToFileURL(configPath).href)).default ?? {})
     : {};
 
-  // Route registry from the SSR bundle.
-  const serverEntryModule = (await import(pathToFileURL(serverEntry).href)) as unknown as {
+  // Route registry + SSR runtime from the server bundle — the bundle owns
+  // rendering (§12); this process is pure transport.
+  const serverEntryModule = (await import(
+    pathToFileURL(serverEntry).href
+  )) as unknown as SsrRuntime & {
     rootModule?: () => Promise<{ default: ShellComponents["Root"] }>;
     notFoundModule?: () => Promise<{ default: ShellComponents["NotFound"] }>;
     errorModule?: () => Promise<{ default: ShellComponents["ErrorPage"] }>;
@@ -121,11 +119,12 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     storage: config.storage,
     authenticate: config.session?.authenticate,
     defaultRateLimit: config.rateLimit,
-    ...makeShellRenderers(shell),
-    render: (ctx) => {
+    ...serverEntryModule.makeShellRenderers(shell),
+    render: async (ctx) => {
       const route = components.get(ctx.path);
       if (!route) return new Response("not found", { status: 404 });
-      return new Response(renderRoute(route, ctx, assets, { rsc: config.rsc }), {
+      const html = await serverEntryModule.renderRoute(route, ctx, assets, { rsc: config.rsc });
+      return new Response(html, {
         headers: { "content-type": "text/html; charset=utf-8" },
       });
     },

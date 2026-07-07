@@ -10,7 +10,7 @@ import { rpxd as rpxdVitePlugin, runCodegen } from "@rpxd/vite-plugin";
 import type { Plugin } from "vite";
 import { build } from "vite";
 import type { RpxdConfig } from "./config.ts";
-import { CLIENT_ENTRY_URL, rpxdEntryPlugin } from "./entry.ts";
+import { CLIENT_ENTRY_URL, rpxdEntryPlugin, SSR_RUNTIME_URL } from "./entry.ts";
 
 /** Virtual SSR entry: re-exports the generated route map for `rpxd start`. */
 export const SERVER_ENTRY_URL = "/@rpxd-entry-server.ts";
@@ -25,7 +25,11 @@ function rpxdServerEntryPlugin(): Plugin {
     },
     load(id) {
       if (id === SERVER_VIRTUAL_ID) {
-        return `export { routeTree, routeModules, rootModule, notFoundModule, errorModule } from "/.rpxd/routes.gen.ts";`;
+        // The server bundle owns rendering (§12): routes + the SSR runtime.
+        return [
+          `export { routeTree, routeModules, rootModule, notFoundModule, errorModule } from "/.rpxd/routes.gen.ts";`,
+          `export * from "${SSR_RUNTIME_URL}";`,
+        ].join("\n");
       }
       return undefined;
     },
@@ -66,7 +70,8 @@ export async function buildApp(root: string): Promise<void> {
   await build({
     root,
     logLevel: "error",
-    plugins: [rpxdVitePlugin(), rpxdServerEntryPlugin()],
+    // rpxdEntryPlugin resolves the SSR runtime virtual for the server bundle.
+    plugins: [rpxdVitePlugin(), rpxdServerEntryPlugin(), rpxdEntryPlugin()],
     build: {
       ssr: true,
       outDir: "dist/server",

@@ -1,168 +1,32 @@
 /**
- * SSR rendering (§12): render props construction, HTML shell with the
- * `{ snapshot, seq, attachToken }` bootstrap, and the dev renderer (Vite SSR
- * module graph). The prod renderer in `start.ts` shares everything but the
- * module loading.
+ * CLI-space rendering glue (§12, §14): the dev renderer wrapper (loads the
+ * graph-side SSR runtime through Vite) and the framework dev error page.
+ * The actual React rendering lives in `./ssr.ts`, which runs inside the
+ * server module graph — see that module for why.
  */
 import type { LiveRoute } from "@rpxd/core";
-import { hydrateRscFields } from "@rpxd/rsc/client";
 import type { RenderContext } from "@rpxd/server-bun";
-import { createElement, type FunctionComponent, type ReactElement, type ReactNode } from "react";
-import { renderToString } from "react-dom/server";
+import type { FunctionComponent } from "react";
 import type { ViteDevServer } from "vite";
-import { CLIENT_ENTRY_URL } from "./entry.ts";
+import { CLIENT_ENTRY_URL, SSR_RUNTIME_URL } from "./entry.ts";
+import type { ShellComponents } from "./ssr.ts";
 
-/** Server-side render props: same shape the client hydrates with (§1). */
-function serverRenderProps(ctx: RenderContext, rsc: boolean) {
-  return {
-    state: rsc ? hydrateRscFields(ctx.state) : ctx.state,
-    session: ctx.session ?? {},
-    sync: { pending: false, inFlight: 0, errors: [] },
-    status: "connecting" as const,
-    keyOf: (id: string | number) => String(id),
-    // rpcs fire from event handlers — inert during SSR
-    rpc: new Proxy({}, { get: () => () => Promise.resolve() }),
-    nav: { navigate: () => {}, patch: () => {} },
-  };
-}
+export type { ShellAssets, ShellComponents } from "./ssr.ts";
 
-/** Userland shell components (§14): __root wraps everything. */
-export interface ShellComponents {
-  Root?: FunctionComponent<{ children?: ReactNode }>;
-  NotFound?: FunctionComponent<{ path: string }>;
-  ErrorPage?: FunctionComponent<{ path: string; message: string }>;
-}
-
-/** Script/style URLs injected into the HTML shell. */
-export interface ShellAssets {
-  /** Client entry script URL (virtual in dev, hashed asset in prod). */
-  entrySrc: string;
-  /** Stylesheet URLs emitted by the client build. */
-  css?: string[];
-}
-
-/** Compose the HTML shell around a server-rendered app (§12 bootstrap contract). */
-function renderHtmlShell(ctx: RenderContext, appHtml: string, assets: ShellAssets): string {
-  const bootstrap = JSON.stringify({
-    instance: ctx.instance,
-    seq: ctx.seq,
-    attachToken: ctx.attachToken,
-    snapshot: { state: ctx.state, session: ctx.session },
-    path: ctx.path,
-    params: ctx.params,
-  }).replaceAll("</", "<\\/");
-
-  const links = (assets.css ?? [])
-    .map((href) => `    <link rel="stylesheet" href="${href}" />`)
-    .join("\n");
-
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>rpxd</title>
-${links}
-  </head>
-  <body>
-    <div id="root">${appHtml}</div>
-    <script id="__rpxd" type="application/json">${bootstrap}</script>
-    <script type="module" src="${assets.entrySrc}"></script>
-  </body>
-</html>`;
-}
+/** The graph-side SSR runtime module's shape (`@rpxd/cli`'s ssr.ts). */
+export type SsrRuntime = typeof import("./ssr.ts");
 
 /**
- * Render one route component to a full HTML response.
+ * Load the SSR runtime through the Vite server graph (dev).
  *
  * @example
  * ```ts
- * const html = renderRoute(route, { path: "/", instance, attachToken }, assets);
+ * const runtime = await loadSsrRuntime(vite);
+ * const html = await runtime.renderRoute(route, ctx, assets);
  * ```
  */
-export function renderRoute(
-  route: LiveRoute<unknown, string, unknown, FunctionComponent<object>>,
-  ctx: RenderContext,
-  assets: ShellAssets,
-  opts: { rsc?: boolean; shell?: ShellComponents } = {},
-): string {
-  const props = serverRenderProps(ctx, opts.rsc ?? false);
-  const page = createElement(route.component, props);
-  const appHtml = renderToString(wrapWithRoot(page, opts.shell));
-  return renderHtmlShell(ctx, appHtml, assets);
-}
-
-function wrapWithRoot(page: ReactElement, shell?: ShellComponents): ReactElement {
-  return shell?.Root ? createElement(shell.Root, null, page) : page;
-}
-
-/** Render a static shell page (__404 / __error, §14) — no live state, no bootstrap. */
-function renderStaticPage(
-  element: ReactElement,
-  status: number,
-  shell?: ShellComponents,
-): Response {
-  const appHtml = renderToString(wrapWithRoot(element, shell));
-  const html = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>rpxd</title>
-  </head>
-  <body>
-    <div id="root">${appHtml}</div>
-  </body>
-</html>`;
-  return new Response(html, {
-    status,
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
-}
-
-/**
- * Build the handler's renderNotFound/renderError hooks from shell components
- * (§14). In `"prod"` mode (the default) the error page receives a generic
- * message with a ref id and the real error goes to the server log — never
- * the wire (§10). `"dev"` passes the real message through.
- *
- * @example
- * ```ts
- * const { renderNotFound, renderError } = makeShellRenderers(await loadShell(root));
- * ```
- */
-export function makeShellRenderers(shell: ShellComponents, opts: { mode?: "dev" | "prod" } = {}) {
-  const mode = opts.mode ?? "prod";
-  return {
-    renderNotFound: shell.NotFound
-      ? (info: { path: string }) =>
-          renderStaticPage(
-            createElement(shell.NotFound as FunctionComponent<{ path: string }>, {
-              path: info.path,
-            }),
-            404,
-            shell,
-          )
-      : undefined,
-    renderError: shell.ErrorPage
-      ? (info: { path: string; error: unknown }) => {
-          let message = info.error instanceof Error ? info.error.message : String(info.error);
-          if (mode === "prod") {
-            const ref = crypto.randomUUID().slice(0, 8);
-            console.error(`[rpxd] error ${ref} at ${info.path}:`, info.error);
-            message = `Internal error (ref: ${ref})`;
-          }
-          return renderStaticPage(
-            createElement(shell.ErrorPage as FunctionComponent<{ path: string; message: string }>, {
-              path: info.path,
-              message,
-            }),
-            500,
-            shell,
-          );
-        }
-      : undefined,
-  };
+export async function loadSsrRuntime(vite: ViteDevServer): Promise<SsrRuntime> {
+  return (await vite.ssrLoadModule(SSR_RUNTIME_URL)) as SsrRuntime;
 }
 
 function escapeHtml(text: string): string {
@@ -173,7 +37,7 @@ function escapeHtml(text: string): string {
  * Framework dev error page (§14): the real message plus a sourcemapped stack
  * (run the error through `vite.ssrFixStacktrace` first) — Remix/Next-style.
  * Dev only; prod goes through the app's `__error` page with a generic
- * message (see {@link makeShellRenderers}).
+ * message (see `makeShellRenderers` in `./ssr.ts`).
  *
  * @example
  * ```ts
@@ -210,7 +74,8 @@ export function renderDevErrorPage(path: string, error: unknown): Response {
 }
 
 /**
- * Build the dev SSR renderer over Vite's SSR module graph (§12).
+ * Build the dev SSR renderer: route module AND the SSR runtime both load
+ * through Vite's server graph (§12), so rendering runs in-graph.
  *
  * @example
  * ```ts
@@ -227,9 +92,10 @@ export function makeDevRender(
     const file = routeFiles.get(ctx.path);
     if (!file) return new Response("not found", { status: 404 });
 
+    const runtime = await loadSsrRuntime(vite);
     const mod = await vite.ssrLoadModule(`/routes/${file}`);
     const route = mod.default as LiveRoute<unknown, string, unknown, FunctionComponent<object>>;
-    const raw = renderRoute(route, ctx, { entrySrc: CLIENT_ENTRY_URL }, opts);
+    const raw = await runtime.renderRoute(route, ctx, { entrySrc: CLIENT_ENTRY_URL }, opts);
 
     // Injects the HMR client and any transformIndexHtml hooks.
     const html = await vite.transformIndexHtml(ctx.path, raw);
