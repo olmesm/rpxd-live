@@ -262,6 +262,9 @@ export class LiveStore<S = unknown, Session = Record<string, unknown>> {
 
   /** Apply a downstream envelope per the protocol rules (§2). */
   applyEnvelope(env: Envelope): void {
+    // The stream multiplexes every instance of the session (§2) — only this
+    // store's instance is ours to apply.
+    if (env.instance !== this.#opts.instance) return;
     if (env.full) {
       this.#confirmedState = env.full.state as S;
       this.#confirmedSession = env.full.session as Session;

@@ -88,7 +88,7 @@ describe("codegen end-to-end", () => {
     expect(generated).toContain('"/org/$orgId/board"');
     expect(generated).toContain('pattern: "/org/:orgId/board"');
     expect(generated).toContain("routeModules");
-    expect(generated).toContain('declare module "@rpxd/client"');
+    expect(generated).toContain('declare module "@rpxd/core"');
     expect(generated).toContain("Auto-generated route map — do not edit");
     expect(generated).toContain("rootModule");
     // written to .rpxd/routes.gen.ts

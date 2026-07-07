@@ -14,8 +14,7 @@ const VIRTUAL_ID = "\0rpxd-entry.tsx";
 const clientEntrySource = (rsc: boolean, transport: "sse" | "ws") => `
 import { createElement } from "react";
 import { hydrateRoot } from "react-dom/client";
-import { LiveConnection, rpcMetaFromDef } from "@rpxd/client";
-import { useLiveStore } from "@rpxd/client/react";
+import { LiveApp, LiveConnection, rpcMetaFromDef } from "@rpxd/client";
 import { routeModules, rootModule } from "/.rpxd/routes.gen.ts";
 ${rsc ? 'import { hydrateRscFields } from "@rpxd/rsc/client";' : ""}
 
@@ -35,24 +34,14 @@ const conn = new LiveConnection({
 });
 conn.connect();
 
-function App() {
-  const snap = useLiveStore(conn.store);
-  return createElement(route.component, {
-    state: ${rsc ? "hydrateRscFields(snap.state)" : "snap.state"},
-    session: snap.session ?? {},
-    sync: snap.sync,
-    status: snap.status,
-    keyOf: snap.keyOf,
-    rpc: conn.store.rpc,
-    nav: {
-      navigate: (to) => { window.location.href = to; },
-      patch: (search) => conn.patchParams(search),
-    },
-  });
-}
+const app = createElement(LiveApp, {
+  route,
+  connection: conn,
+  routeModules,${transport === "ws" ? '\n  transport: "ws",' : ""}${rsc ? "\n  transformState: hydrateRscFields," : ""}
+});
 
 const Root = rootModule ? (await rootModule()).default : null;
-hydrateRoot(rootEl, Root ? createElement(Root, null, createElement(App)) : createElement(App));
+hydrateRoot(rootEl, Root ? createElement(Root, null, app) : app);
 `;
 
 /**

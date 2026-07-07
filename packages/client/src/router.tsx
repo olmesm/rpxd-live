@@ -3,23 +3,14 @@
  * unexported. Path params are identity (navigate = remount); search params
  * are view state (`nav.patch` → `params` reducer, no remount).
  */
-import type { PathParams } from "@rpxd/core";
-import { createContext, type ReactNode, useContext } from "react";
-import { useLocation, Link as WouterLink } from "wouter";
+import type { NavProp, PathParams, RegisteredPath } from "@rpxd/core";
+import { createContext, type MouseEvent, type ReactNode, useContext } from "react";
+import { navigate } from "wouter/use-browser-location";
 import type { LiveConnection } from "./connection.ts";
 
-/**
- * Route registration merge point (§7): `.rpxd/routes.gen.ts` augments this
- * with `{ routes: typeof routeTree }`, making `Link`/`nav.navigate` typed
- * for every route in the app.
- */
-// biome-ignore lint/suspicious/noEmptyInterface: interface-merge target for generated code
-export interface Register {}
-
-type Routes = Register extends { routes: infer R } ? R : Record<string, never>;
-
-/** All registered route paths — falls back to `string` before codegen runs. */
-export type RegisteredPath = [keyof Routes] extends [never] ? string : keyof Routes & string;
+// The registration merge point lives in core (§7) so the `nav` render prop
+// is typed there too; re-exported here for app-side imports.
+export type { Register, RegisteredPath } from "@rpxd/core";
 
 /**
  * Build a concrete href from a route path literal + params + search.
@@ -89,27 +80,21 @@ export function Link<P extends RegisteredPath>(props: {
   className?: string;
 }) {
   const { to, params, search, ...rest } = props;
-  return (
-    <WouterLink
-      href={buildHref(to, params as Record<string, string> | undefined, search)}
-      {...rest}
-    />
-  );
+  const href = buildHref(to, params as Record<string, string> | undefined, search);
+  // Plain anchor (SSR-safe, no router context); soft navigation happens in
+  // the click handler, which only ever runs in the browser (§7).
+  const onClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    const plainLeftClick =
+      event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+    if (event.defaultPrevented || !plainLeftClick) return;
+    event.preventDefault();
+    navigate(href);
+  };
+  return <a href={href} onClick={onClick} {...rest} />;
 }
 
-/** The `nav` render prop (§1, §7). */
-export interface Nav {
-  /** Path params are identity: navigating remounts the live object. */
-  navigate<P extends RegisteredPath>(
-    to: P,
-    opts?: { params?: PathParams<P>; search?: Record<string, string> },
-  ): void;
-  /**
-   * Search params are view state: updates the URL query in place and runs
-   * the `params` reducer server-side — no remount.
-   */
-  patch(search: Record<string, string>): void;
-}
+/** The `nav` render prop (§1, §7) — the core {@link NavProp}, typed via `Register`. */
+export type Nav = NavProp;
 
 /**
  * Hook form of `nav` — the shell passes its result into the render props.
@@ -121,11 +106,10 @@ export interface Nav {
  * ```
  */
 export function useNav(): Nav {
-  const [, setLocation] = useLocation();
   const connection = useContext(ConnectionContext);
   return {
     navigate: (to, opts) =>
-      setLocation(buildHref(to, opts?.params as Record<string, string> | undefined, opts?.search)),
+      navigate(buildHref(to, opts?.params as Record<string, string> | undefined, opts?.search)),
     patch: (search) => {
       if (typeof window !== "undefined") {
         const url = new URL(window.location.href);

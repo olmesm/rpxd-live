@@ -8,6 +8,7 @@
  */
 
 export type { RenderProps } from "@rpxd/core";
+export { LiveApp, type LiveAppProps } from "./app.tsx";
 export {
   type Bootstrap,
   type ConnectionOptions,

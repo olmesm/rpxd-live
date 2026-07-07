@@ -217,7 +217,8 @@ export async function createDevServer(
       void handler
         .fetch(toWebRequest(req, res))
         .then((webRes) => writeWebResponse(res, webRes))
-        .catch(() => {
+        .catch((e) => {
+          console.error("[rpxd] request failed:", e);
           res.statusCode = 500;
           res.end("internal error");
         });
@@ -228,7 +229,8 @@ export async function createDevServer(
       void handler
         .fetch(toWebRequest(req, res))
         .then((webRes) => writeWebResponse(res, webRes))
-        .catch(() => {
+        .catch((e) => {
+          console.error("[rpxd] request failed:", e);
           res.statusCode = 500;
           res.end("internal error");
         });

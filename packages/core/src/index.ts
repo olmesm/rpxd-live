@@ -27,6 +27,26 @@ export {
   type RpcLongForm,
   type SearchParams,
 } from "./live.ts";
+export { matchPath, matchRoute, type RouteMatch } from "./match.ts";
+
+/**
+ * Route registration merge point (§7): `.rpxd/routes.gen.ts` augments this
+ * with `{ routes: typeof routeTree }`, typing `Link`, `useNav`, and the
+ * `nav` render prop for every route in the app. Declared here (not
+ * re-exported) because module augmentation only merges with declarations
+ * in the augmented module itself.
+ *
+ * @example
+ * ```ts
+ * declare module "@rpxd/core" {
+ *   interface Register {
+ *     routes: typeof routeTree;
+ *   }
+ * }
+ * ```
+ */
+// biome-ignore lint/suspicious/noEmptyInterface: interface-merge target for generated code
+export interface Register {}
 export {
   type Envelope,
   type EnvelopeError,
@@ -37,6 +57,7 @@ export {
 } from "./protocol.ts";
 export { SerialQueue } from "./queue.ts";
 export { type RateLimit, RateLimitError, TokenBucket } from "./rate-limit.ts";
+export type { RegisteredPath } from "./register.ts";
 export type {
   ConnectionStatus,
   NavProp,

@@ -79,10 +79,10 @@ ${shellEntry("error", "errorModule")}
 /** All registered page paths. */
 export type RegisteredPath = keyof typeof routeTree;
 
-declare module "@rpxd/client" {
+declare module "@rpxd/core" {
   /**
-   * Route registration merge (§7): gives \`Link\` and \`nav.navigate\` typed
-   * \`to\`/\`params\` for every route in this app.
+   * Route registration merge (§7): gives \`Link\`, \`useNav\`, and the \`nav\`
+   * render prop typed \`to\`/\`params\` for every route in this app.
    */
   interface Register {
     routes: typeof routeTree;
