@@ -72,7 +72,14 @@ ${links}
 </html>`;
 }
 
-/** Render one route component to a full HTML response. */
+/**
+ * Render one route component to a full HTML response.
+ *
+ * @example
+ * ```ts
+ * const html = renderRoute(route, { path: "/", instance, attachToken }, assets);
+ * ```
+ */
 export function renderRoute(
   route: LiveRoute<unknown, string, unknown, FunctionComponent<object>>,
   ctx: RenderContext,
@@ -113,7 +120,14 @@ function renderStaticPage(
   });
 }
 
-/** Build the handler's renderNotFound/renderError hooks from shell components (§14). */
+/**
+ * Build the handler's renderNotFound/renderError hooks from shell components (§14).
+ *
+ * @example
+ * ```ts
+ * const { renderNotFound, renderError } = makeShellRenderers(await loadShell(root));
+ * ```
+ */
 export function makeShellRenderers(shell: ShellComponents) {
   return {
     renderNotFound: shell.NotFound
@@ -140,7 +154,15 @@ export function makeShellRenderers(shell: ShellComponents) {
   };
 }
 
-/** Build the dev SSR renderer over Vite's SSR module graph (§12). */
+/**
+ * Build the dev SSR renderer over Vite's SSR module graph (§12).
+ *
+ * @example
+ * ```ts
+ * const render = makeDevRender(vite, routeFiles, { shell });
+ * const response = await render({ path: "/", instance, attachToken });
+ * ```
+ */
 export function makeDevRender(
   vite: ViteDevServer,
   routeFiles: Map<string, string>,

@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 /**
  * TSDoc enforcement (§17): every exported declaration in package src dirs must
- * carry a doc comment. Re-exports (`export { ... } from`) and type-only
- * re-exports are exempt — they're documented at their definition.
+ * carry a doc comment, and exported functions/classes (the callable API
+ * surface) must include an `@example` block. Re-exports (`export { ... } from`)
+ * and type-only re-exports are exempt — they're documented at their definition.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -46,7 +47,24 @@ for (const root of roots) {
         j--;
       const prev = (lines[j] ?? "").trim();
       const documented = prev.endsWith("*/");
-      if (!documented) failures.push(`${file}:${i + 1}  ${line.trim().slice(0, 80)}`);
+      if (!documented) {
+        failures.push(`${file}:${i + 1}  ${line.trim().slice(0, 80)}`);
+        continue;
+      }
+      // Callable surface (§17): functions and classes need an @example block.
+      const kind = DECL.exec(line)?.[1];
+      if (kind !== "function" && kind !== "class" && kind !== "abstract class") continue;
+      let k = j;
+      let hasExample = false;
+      while (k >= 0) {
+        const doc = (lines[k] as string).trim();
+        if (doc.includes("@example")) hasExample = true;
+        if (doc.startsWith("/**") || doc.startsWith("/*")) break;
+        k--;
+      }
+      if (!hasExample) {
+        failures.push(`${file}:${i + 1}  missing @example — ${line.trim().slice(0, 60)}`);
+      }
     }
   }
 }

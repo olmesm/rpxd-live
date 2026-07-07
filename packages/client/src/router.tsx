@@ -52,7 +52,14 @@ const ConnectionContext = createContext<LiveConnection<unknown, Record<string, u
   null,
 );
 
-/** Provides the active connection to `useNav()` (installed by the app shell). */
+/**
+ * Provides the active connection to `useNav()` (installed by the app shell).
+ *
+ * @example
+ * ```tsx
+ * <RpxdProvider connection={connection}><App /></RpxdProvider>
+ * ```
+ */
 export function RpxdProvider(props: {
   // biome-ignore lint/suspicious/noExplicitAny: provider accepts any route's connection
   connection: LiveConnection<any, any>;
@@ -104,7 +111,15 @@ export interface Nav {
   patch(search: Record<string, string>): void;
 }
 
-/** Hook form of `nav` — the shell passes its result into the render props. */
+/**
+ * Hook form of `nav` — the shell passes its result into the render props.
+ *
+ * @example
+ * ```tsx
+ * const nav = useNav();
+ * nav.navigate("/org/$orgId/board", { params: { orgId: "acme" } });
+ * ```
+ */
 export function useNav(): Nav {
   const [, setLocation] = useLocation();
   const connection = useContext(ConnectionContext);

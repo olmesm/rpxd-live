@@ -40,7 +40,14 @@ export function fileToRoute(file: string): RouteEntry | null {
   return { file, path: `/${base.split(".").join("/")}`, kind: "page" };
 }
 
-/** Convert a route path to the wouter pattern it matches (`$x` → `:x`). */
+/**
+ * Convert a route path to the wouter pattern it matches (`$x` → `:x`).
+ *
+ * @example
+ * ```ts
+ * pathToPattern("/org/$orgId/board"); // "/org/:orgId/board"
+ * ```
+ */
 export function pathToPattern(path: string): string {
   return path
     .split("/")
@@ -48,7 +55,14 @@ export function pathToPattern(path: string): string {
     .join("/");
 }
 
-/** Sort pages for deterministic output: static segments before params, then alpha. */
+/**
+ * Sort pages for deterministic output: static segments before params, then alpha.
+ *
+ * @example
+ * ```ts
+ * sortRoutes(entries).map((e) => e.path); // ["/", "/about", "/org/$orgId"]
+ * ```
+ */
 export function sortRoutes(entries: RouteEntry[]): RouteEntry[] {
   return [...entries].sort((a, b) => (a.path ?? "").localeCompare(b.path ?? ""));
 }

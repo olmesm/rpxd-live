@@ -28,7 +28,15 @@ export function matchPath(routePath: string, pathname: string): Record<string, s
   return params;
 }
 
-/** Find the first matching route path in a table (static beats param by sort order). */
+/**
+ * Find the first matching route path in a table (static beats param by sort order).
+ *
+ * @example
+ * ```ts
+ * matchRoute(["/about", "/$slug"], "/about"); // { path: "/about", params: {} }
+ * matchRoute(["/org/$orgId"], "/org/acme");   // { path: "/org/$orgId", params: { orgId: "acme" } }
+ * ```
+ */
 export function matchRoute(paths: string[], pathname: string): RouteMatch | null {
   // Prefer routes with fewer params so `/about` beats `/$slug`.
   const sorted = [...paths].sort(

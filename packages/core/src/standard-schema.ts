@@ -22,7 +22,18 @@ export type StandardSchemaResult<Output> =
 /** Infer the validated output type of a Standard Schema. */
 export type InferOutput<S> = S extends StandardSchemaV1<unknown, infer O> ? O : never;
 
-/** Thrown when an rpc payload fails its `input` schema. */
+/**
+ * Thrown when an rpc payload fails its `input` schema.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   await validateInput(schema, payload, "add");
+ * } catch (e) {
+ *   if (e instanceof ValidationError) console.log(e.issues);
+ * }
+ * ```
+ */
 export class ValidationError extends Error {
   override name = "ValidationError";
   constructor(
@@ -33,7 +44,14 @@ export class ValidationError extends Error {
   }
 }
 
-/** Validate `value` against a Standard Schema, throwing {@link ValidationError} on failure. */
+/**
+ * Validate `value` against a Standard Schema, throwing {@link ValidationError} on failure.
+ *
+ * @example
+ * ```ts
+ * const payload = await validateInput(z.object({ text: z.string() }), raw, "add");
+ * ```
+ */
 export async function validateInput<S extends StandardSchemaV1>(
   schema: S,
   value: unknown,

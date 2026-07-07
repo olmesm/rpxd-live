@@ -56,6 +56,11 @@ export interface RpcMeta {
 /**
  * Extract client-side rpc metadata (optimistic fns, input schemas) from a
  * live definition — the part of the def the client bundle actually uses.
+ *
+ * @example
+ * ```ts
+ * const store = new LiveStore({ instance, meta: rpcMetaFromDef(route.def), send, requestResync });
+ * ```
  */
 export function rpcMetaFromDef(
   // biome-ignore lint/suspicious/noExplicitAny: accepts any route's definition

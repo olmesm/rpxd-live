@@ -55,7 +55,14 @@ const Root = rootModule ? (await rootModule()).default : null;
 hydrateRoot(rootEl, Root ? createElement(Root, null, createElement(App)) : createElement(App));
 `;
 
-/** Vite plugin serving the client entry as a virtual module. */
+/**
+ * Vite plugin serving the client entry as a virtual module.
+ *
+ * @example
+ * ```ts
+ * createServer({ plugins: [rpxdEntryPlugin({ rsc: true })] });
+ * ```
+ */
 export function rpxdEntryPlugin(opts: { rsc?: boolean } = {}): Plugin {
   return {
     name: "rpxd-client-entry",

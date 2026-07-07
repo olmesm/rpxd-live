@@ -6,7 +6,14 @@ export interface RateLimit {
   refillPerSec: number;
 }
 
-/** Thrown (and surfaced as an rpc error ack) when a bucket is exhausted. */
+/**
+ * Thrown (and surfaced as an rpc error ack) when a bucket is exhausted.
+ *
+ * @example
+ * ```ts
+ * if (!bucket.take()) throw new RateLimitError("add");
+ * ```
+ */
 export class RateLimitError extends Error {
   override name = "RateLimitError";
   constructor(rpc: string) {
@@ -14,7 +21,19 @@ export class RateLimitError extends Error {
   }
 }
 
-/** One token bucket — take() consumes a token, time refills them. */
+/**
+ * One token bucket — take() consumes a token, time refills them.
+ *
+ * Buckets live per rpc *per instance* — with per-session instances (§1)
+ * that is effectively per session per route, which satisfies §10's
+ * per-session intent at a finer grain.
+ *
+ * @example
+ * ```ts
+ * const bucket = new TokenBucket({ capacity: 5, refillPerSec: 1 });
+ * bucket.take(); // true until the burst is spent
+ * ```
+ */
 export class TokenBucket {
   #tokens: number;
   #last: number;

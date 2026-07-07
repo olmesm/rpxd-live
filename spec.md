@@ -148,7 +148,7 @@ Connection authenticated once; context flows to every reducer.
 - `mount` can reject → error route (403 path)
 - Handler throws: draft discarded, ack rejected, `onError` runs if declared (§5), `sync.errors` populated
 - **DB writes are userland's transaction responsibility** (documented)
-- Per-session rate limiting (token bucket), configurable per rpc
+- Per-session rate limiting (token bucket), configurable per rpc — buckets are per rpc *per instance*; with per-session instances (§1) that is per session per route, a finer grain than a shared per-session pool
 
 ## 11. Connection Lifecycle & Transport
 Connections are disposable; state is not. SSE default, WS opt-in.

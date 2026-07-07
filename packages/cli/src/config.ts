@@ -8,7 +8,14 @@ export interface TransportConfig {
   kind: "sse" | "ws";
 }
 
-/** Server → client over SSE, client → server over HTTP POST (default, §11). */
+/**
+ * Server → client over SSE, client → server over HTTP POST (default, §11).
+ *
+ * @example
+ * ```ts
+ * export default defineConfig({ transport: sse() });
+ * ```
+ */
 export function sse(): TransportConfig {
   return { kind: "sse" };
 }
@@ -17,6 +24,11 @@ export function sse(): TransportConfig {
  * Single duplex WebSocket (opt-in, §11). The envelope is transport-agnostic;
  * API shape identical. (v1 runtime currently serves the SSE path; the ws
  * upgrade lands behind this flag without codegen impact.)
+ *
+ * @example
+ * ```ts
+ * export default defineConfig({ transport: ws() });
+ * ```
  */
 export function ws(): TransportConfig {
   return { kind: "ws" };

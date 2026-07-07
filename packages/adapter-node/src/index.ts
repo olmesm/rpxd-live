@@ -11,7 +11,15 @@
  */
 export type { ServeHandle, ServeOptions, ServerAdapter } from "@rpxd/server-bun";
 
-/** Placeholder — throws until the Node adapter ships (v2, §13). */
+/**
+ * Placeholder — throws until the Node adapter ships (v2, §13).
+ *
+ * @example
+ * ```ts
+ * import { nodeAdapter } from "@rpxd/adapter-node";
+ * nodeAdapter(); // throws: run rpxd on Bun (bunAdapter) for now
+ * ```
+ */
 export function nodeAdapter(): never {
   throw new Error(
     "@rpxd/adapter-node is a v2 stub — run rpxd on Bun (bunAdapter) for now. " +

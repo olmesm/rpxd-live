@@ -30,6 +30,8 @@ normative spec is `spec.md`; the wire protocol is `docs/protocol.md`.
 - `packages/server-bun` — ServerAdapter seam + HTTP/SSE runtime handler
 - `packages/vite-plugin` — route codegen, path-literal maintenance
 - `packages/storage-*` — memory/session/sqlite/redis adapters
+- `packages/testing` — `testLive(route)` harness: typed `t.rpc.*`, envelope
+  capture, broadcast injection, `t.settled()`
 - `examples/todos` — the demo app; doubles as the acceptance suite target
 - Tests live next to their package: `test/` (Vitest, Node) vs `test-bun/`
   (Bun runtime required).

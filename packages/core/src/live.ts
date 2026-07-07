@@ -320,7 +320,14 @@ export function live<Path extends string>(path: Path): LiveStart<Path> {
   } as LiveStart<Path>;
 }
 
-/** True when an rpc definition uses the long form (§5). */
+/**
+ * True when an rpc definition uses the long form (§5).
+ *
+ * @example
+ * ```ts
+ * const optimistic = isLongForm(def) ? def.optimistic : undefined;
+ * ```
+ */
 export function isLongForm<S, P, Sess>(
   def: RpcDef<S, P, Sess>,
 ): def is RpcLongForm<S, unknown, P, Sess> {
