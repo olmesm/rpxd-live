@@ -179,51 +179,71 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     }, graceMs);
   }
 
+  /**
+   * Subscribe every session instance to `send` (shared by SSE and WS, §11 —
+   * the envelope is transport-agnostic). Returns a cleanup that also
+   * re-arms eviction timers.
+   */
+  function subscribeSession(
+    sid: string,
+    send: (env: Envelope) => void,
+    attach?: { token: string | null; seq: number },
+  ): { subscribeInstance: (entry: InstanceEntry) => void; cleanup: () => void } {
+    const entries = entriesFor(sid);
+    const unsubs: (() => void)[] = [];
+
+    const subscribeInstance = (entry: InstanceEntry, initial = false) => {
+      if (entry.evictTimer) {
+        clearTimeout(entry.evictTimer);
+        entry.evictTimer = undefined;
+      }
+      unsubs.push(entry.instance.addListener(send));
+      const adopted =
+        initial &&
+        attach?.token != null &&
+        entry.attach !== undefined &&
+        entry.attach.token === attach.token &&
+        entry.attach.expires > Date.now() &&
+        attach.seq === entry.instance.seq;
+      if (adopted) {
+        // SSR adoption (§12): resume from seq — no full snapshot needed.
+        entry.attach = undefined;
+      } else {
+        entry.instance.resync();
+      }
+    };
+
+    for (const entry of entries.values()) subscribeInstance(entry, true);
+
+    return {
+      subscribeInstance: (entry) => subscribeInstance(entry, false),
+      cleanup: () => {
+        for (const unsub of unsubs) unsub();
+        for (const [key, entry] of entries) scheduleEvictionIfIdle(sid, key, entry);
+      },
+    };
+  }
+
   async function handleStream(req: Request, sid: string): Promise<Response> {
     const url = new URL(req.url);
     const attachToken = url.searchParams.get("attach");
     const attachSeq = Number(url.searchParams.get("seq") ?? "-1");
-    const entries = entriesFor(sid);
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         const encoder = new TextEncoder();
-        const unsubs: (() => void)[] = [];
         controller.enqueue(encoder.encode("retry: 1000\n\n"));
-
-        for (const [key, entry] of entries) {
-          if (entry.evictTimer) {
-            clearTimeout(entry.evictTimer);
-            entry.evictTimer = undefined;
-          }
-          const unsub = entry.instance.addListener((env) => {
+        const { cleanup } = subscribeSession(
+          sid,
+          (env) => {
             try {
               controller.enqueue(encoder.encode(encodeSse(env)));
             } catch {
               // stream already closed; eviction handles cleanup
             }
-          });
-          unsubs.push(unsub);
-
-          const adopted =
-            attachToken !== null &&
-            entry.attach !== undefined &&
-            entry.attach.token === attachToken &&
-            entry.attach.expires > Date.now() &&
-            attachSeq === entry.instance.seq;
-          if (adopted) {
-            // SSR adoption (§12): resume from seq — no full snapshot needed.
-            entry.attach = undefined;
-          } else {
-            entry.instance.resync();
-          }
-          void key;
-        }
-
-        const cleanup = () => {
-          for (const unsub of unsubs) unsub();
-          for (const [key, entry] of entries) scheduleEvictionIfIdle(sid, key, entry);
-        };
+          },
+          { token: attachToken, seq: attachSeq },
+        );
         req.signal.addEventListener("abort", () => {
           cleanup();
           try {
@@ -366,6 +386,48 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         if (entry.evictTimer) clearTimeout(entry.evictTimer);
       }
       await Promise.all(all.map((e) => e.instance.dispose()));
+    },
+
+    /**
+     * Open a duplex session socket (§11 `transport: ws()`): envelopes flow
+     * out through `send`; rpc batches and control messages come in through
+     * `message`. Same protocol as SSE — only the framing differs.
+     */
+    socket(
+      sid: string,
+      sessionData: unknown,
+      send: (env: Envelope) => void,
+      attach?: { token: string | null; seq: number },
+    ): { message(raw: string): Promise<void>; close(): void } {
+      const { subscribeInstance, cleanup } = subscribeSession(sid, send, attach);
+      return {
+        async message(raw: string): Promise<void> {
+          const msg = JSON.parse(raw) as
+            | RpcBatch
+            | {
+                type: "resync" | "params" | "mount";
+                instance?: string;
+                path?: string;
+                search?: Record<string, string>;
+              };
+          if ("calls" in msg) {
+            const entry = byInstanceId.get(msg.instance);
+            if (entry) void entry.instance.handleBatch(msg);
+            return;
+          }
+          if (msg.type === "mount" && msg.path) {
+            const known = entriesFor(sid).get(msg.path);
+            const entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
+            if (!known) subscribeInstance(entry); // late mounts join this socket
+            return;
+          }
+          const entry = msg.instance ? byInstanceId.get(msg.instance) : undefined;
+          if (!entry) return;
+          if (msg.type === "resync") entry.instance.resync();
+          if (msg.type === "params" && msg.search) await entry.instance.setSearch(msg.search);
+        },
+        close: cleanup,
+      };
     },
 
     /**

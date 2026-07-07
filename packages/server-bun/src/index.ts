@@ -4,7 +4,14 @@
  *
  * @packageDocumentation
  */
-export { bunAdapter, type ServeHandle, type ServeOptions, type ServerAdapter } from "./adapter.ts";
+export {
+  bunAdapter,
+  type ServeHandle,
+  type ServeOptions,
+  type ServerAdapter,
+  type SocketLike,
+  type WebSocketHandlers,
+} from "./adapter.ts";
 export {
   createRpxdHandler,
   encodeSse,
@@ -13,3 +20,4 @@ export {
   type RpxdHandlerOptions,
 } from "./handler.ts";
 export { matchPath, matchRoute, type RouteMatch } from "./match.ts";
+export { wsTransport } from "./ws.ts";
