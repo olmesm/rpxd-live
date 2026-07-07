@@ -17,11 +17,19 @@ switch (command) {
     console.log(`rpxd dev → http://localhost:${server.port}`);
     break;
   }
-  case "build":
-  case "start":
-    console.error(`rpxd ${command}: not implemented yet — coming with the production build step`);
-    process.exit(1);
+  case "build": {
+    const { buildApp } = await import("./build.ts");
+    await buildApp(process.cwd());
+    console.log("rpxd build → dist/client + dist/server");
     break;
+  }
+  case "start": {
+    const { startApp } = await import("./start.ts");
+    const port = Number(process.env.PORT ?? 3000);
+    const app = await startApp(process.cwd(), { port });
+    console.log(`rpxd start → http://localhost:${app.port}`);
+    break;
+  }
   default:
     console.error(`Unknown command "${command}". Usage: rpxd dev|build|start`);
     process.exit(1);

@@ -1,7 +1,8 @@
 /**
- * Dev SSR renderer (§12): loads the route module through Vite's SSR module
- * graph, renders the live component with server-side render props, and
- * emits the HTML shell with the `{ snapshot, seq, attachToken }` bootstrap.
+ * SSR rendering (§12): render props construction, HTML shell with the
+ * `{ snapshot, seq, attachToken }` bootstrap, and the dev renderer (Vite SSR
+ * module graph). The prod renderer in `start.ts` shares everything but the
+ * module loading.
  */
 import type { LiveRoute } from "@rpxd/core";
 import type { RenderContext } from "@rpxd/server-bun";
@@ -11,7 +12,7 @@ import type { ViteDevServer } from "vite";
 import { CLIENT_ENTRY_URL } from "./entry.ts";
 
 /** Server-side render props: same shape the client hydrates with (§1). */
-function serverRenderProps(ctx: RenderContext) {
+export function serverRenderProps(ctx: RenderContext) {
   return {
     state: ctx.state,
     session: ctx.session ?? {},
@@ -24,6 +25,54 @@ function serverRenderProps(ctx: RenderContext) {
   };
 }
 
+export interface ShellAssets {
+  /** Client entry script URL (virtual in dev, hashed asset in prod). */
+  entrySrc: string;
+  /** Stylesheet URLs emitted by the client build. */
+  css?: string[];
+}
+
+/** Compose the HTML shell around a server-rendered app (§12 bootstrap contract). */
+export function renderHtmlShell(ctx: RenderContext, appHtml: string, assets: ShellAssets): string {
+  const bootstrap = JSON.stringify({
+    instance: ctx.instance,
+    seq: ctx.seq,
+    attachToken: ctx.attachToken,
+    snapshot: { state: ctx.state, session: ctx.session },
+    path: ctx.path,
+    params: ctx.params,
+  }).replaceAll("</", "<\\/");
+
+  const links = (assets.css ?? [])
+    .map((href) => `    <link rel="stylesheet" href="${href}" />`)
+    .join("\n");
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>rpxd</title>
+${links}
+  </head>
+  <body>
+    <div id="root">${appHtml}</div>
+    <script id="__rpxd" type="application/json">${bootstrap}</script>
+    <script type="module" src="${assets.entrySrc}"></script>
+  </body>
+</html>`;
+}
+
+/** Render one route component to a full HTML response. */
+export function renderRoute(
+  route: LiveRoute<unknown, string, unknown, FunctionComponent<object>>,
+  ctx: RenderContext,
+  assets: ShellAssets,
+): string {
+  const appHtml = renderToString(createElement(route.component, serverRenderProps(ctx)));
+  return renderHtmlShell(ctx, appHtml, assets);
+}
+
 export function makeDevRender(vite: ViteDevServer, routeFiles: Map<string, string>) {
   return async (ctx: RenderContext): Promise<Response> => {
     const file = routeFiles.get(ctx.path);
@@ -31,30 +80,7 @@ export function makeDevRender(vite: ViteDevServer, routeFiles: Map<string, strin
 
     const mod = await vite.ssrLoadModule(`/routes/${file}`);
     const route = mod.default as LiveRoute<unknown, string, unknown, FunctionComponent<object>>;
-    const appHtml = renderToString(createElement(route.component, serverRenderProps(ctx)));
-
-    const bootstrap = JSON.stringify({
-      instance: ctx.instance,
-      seq: ctx.seq,
-      attachToken: ctx.attachToken,
-      snapshot: { state: ctx.state, session: ctx.session },
-      path: ctx.path,
-      params: ctx.params,
-    }).replaceAll("</", "<\\/");
-
-    const raw = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>rpxd</title>
-  </head>
-  <body>
-    <div id="root">${appHtml}</div>
-    <script id="__rpxd" type="application/json">${bootstrap}</script>
-    <script type="module" src="${CLIENT_ENTRY_URL}"></script>
-  </body>
-</html>`;
+    const raw = renderRoute(route, ctx, { entrySrc: CLIENT_ENTRY_URL });
 
     // Injects the HMR client and any transformIndexHtml hooks.
     const html = await vite.transformIndexHtml(ctx.path, raw);
