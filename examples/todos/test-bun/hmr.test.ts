@@ -18,8 +18,10 @@ const routeSource = (increment: number) => `import { live } from "@rpxd/core";
 export default live("/hmr-probe")
   .mount(async () => ({ n: 0 }))
   .rpc("bump", (r) =>
-    r.handler(async (state) => {
-      state.n += ${increment};
+    r.handler(async (_payload, ctx) => {
+      ctx.patchState((state) => {
+        state.n += ${increment};
+      });
     }),
   )
   .render(({ state }) => <main data-n={state.n}>{state.n}</main>);

@@ -1,12 +1,7 @@
 import type { BroadcastMessage, LiveDefinition } from "@rpxd/core";
 import { LiveInstance } from "@rpxd/core";
-import type { Draft } from "immer";
 import { describe, expect, it } from "vitest";
 import { type RedisLikeClient, redis } from "../src/index.ts";
-
-type Ctx = Parameters<
-  NonNullable<LiveDefinition<{ log: string[] }, "/room", Record<string, unknown>>["on"]>[string]
->[2];
 
 /** In-memory fake standing in for a shared redis server. */
 function fakeRedisServer() {
@@ -62,8 +57,10 @@ describe("redis storage adapter", () => {
         return { log: [] };
       },
       rpc: {
-        async shout(state: Draft<S>, _payload: unknown, ctx: Ctx) {
-          state.log.push("sent");
+        async shout(_payload: unknown, ctx) {
+          ctx.patchState((state) => {
+            state.log.push("sent");
+          });
           ctx.broadcast("room:1", "hi", { from: "A" });
         },
       },

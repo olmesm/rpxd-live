@@ -18,14 +18,17 @@ export default live("/doc")
     return { source: INITIAL, body: rsc(renderMarkdown(INITIAL)) as unknown };
   })
   .rpc("append", (r) =>
-    r.handler(async (state, { text }: { text: string }) => {
+    r.handler(async ({ text }: { text: string }, ctx) => {
       const [{ rsc }, { renderMarkdown }] = await Promise.all([
         import("@rpxd/rsc"),
         import("../lib/markdown.tsx"),
       ]);
-      state.source = `${state.source}\n${text}`;
-      // Patches replace the whole field — React reconciles (§16).
-      state.body = rsc(renderMarkdown(state.source)) as unknown;
+      const source = `${ctx.state.source}\n${text}`;
+      ctx.patchState((s) => {
+        s.source = source;
+        // Patches replace the whole field — React reconciles (§16).
+        s.body = rsc(renderMarkdown(source)) as unknown;
+      });
     }),
   )
   .render(({ state, rpc }) => (

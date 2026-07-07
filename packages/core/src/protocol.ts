@@ -22,9 +22,14 @@ export const PROTOCOL_VERSION = 1;
  * A single state mutation, as produced by Immer's `produceWithPatches`.
  * Paths starting with `"$session"` target the session slice instead of page
  * state.
+ *
+ * `append` is an rpxd extension (§2): concatenate the string `value` onto the
+ * string at `path` — string-suffix growth ships only the delta, so LLM/token
+ * streams are O(delta) on the wire. A non-string target is a protocol error;
+ * the client discards the envelope and requests a full resync.
  */
 export interface Patch {
-  op: "replace" | "add" | "remove";
+  op: "replace" | "add" | "remove" | "append";
   path: (string | number)[];
   value?: unknown;
 }

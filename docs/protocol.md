@@ -33,7 +33,15 @@ type Envelope = {
   error?: { name: string; message: string; rpc?: string };
 };
 
-type Patch = { op: "replace" | "add" | "remove"; path: (string | number)[]; value?: unknown };
+type Patch = {
+  op: "replace" | "add" | "remove" | "append";
+  path: (string | number)[];
+  value?: unknown;
+};
+// `append`: concatenate `value` (string) onto the string at `path`.
+// Emitted when a flush grows a string by a suffix (token streams) — the
+// wire carries only the delta. Applying `append` to a non-string is a
+// protocol error → client resyncs.
 ```
 
 Rules:
@@ -46,8 +54,8 @@ Rules:
   the session slice, not page state.
 - One rpc **batch** (see upstream) produces exactly one ack envelope: combined patches from all
   rpcs in the batch, one `rpcId`. Broadcast-driven envelopes carry no `rpcId`.
-- `error` and `patches` may coexist: a failed rpc whose `onError` reducer produced repairs, or a
-  generator that flushed segments before throwing.
+- `error` and `patches` may coexist: a failed rpc whose `onError` mutator produced repairs, or
+  pending same-tick `patchState` writes committing alongside the error ack.
 
 ## Upstream: rpc batch
 
@@ -63,8 +71,9 @@ type RpcBatch = {
 - Client coalesces same-tick calls (`queueMicrotask` flush) into one batch → one ack.
 - **At-least-once delivery**: unacked batches are resent after reconnect with the same `rpcId`;
   the server keeps a short per-session dedupe window and re-acks (without re-running) duplicates.
-- Generator rpcs stream their segment flushes as ordinary non-ack envelopes; the ack (with
-  `rpcId`) is sent on completion (or `error` on throw). `sync.pending` spans call → ack.
+- Streaming rpcs push their mid-handler `patchState` flushes as ordinary non-ack envelopes; the
+  ack (with `rpcId`) rides the final flush at handler completion (or `error` on throw).
+  `sync.pending` spans call → ack.
 
 ## Control messages (upstream)
 
@@ -90,8 +99,8 @@ type Control =
 - Server evicts an instance when subscribers reach 0, after a warm TTL (~60s): snapshot to
   storage, drop from memory. Cold wake re-runs `mount` (snapshots are session continuity, not
   cache — spec §9).
-- Disconnect mid-generator → runtime calls `generator.return()`; `finally` blocks run; no ack is
-  sent (client will resend on reconnect; dedupe window decides).
+- Disconnect mid-handler → runtime aborts `ctx.signal`; the handler winds down cooperatively
+  (`finally` blocks run); no ack is sent (client will resend on reconnect; dedupe window decides).
 
 ## SSE framing
 

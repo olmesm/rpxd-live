@@ -6,7 +6,6 @@ import {
   PROTOCOL_VERSION,
   type RpcBatch,
 } from "@rpxd/core";
-import type { Draft } from "immer";
 import { describe, expect, it } from "vitest";
 import { LiveStore, type RpcMeta, rpcMetaFromDef } from "../src/store.ts";
 
@@ -235,6 +234,49 @@ describe("seq handling (§2)", () => {
   });
 });
 
+describe("append op (§2)", () => {
+  it("expands append against the confirmed string before applying", () => {
+    const { store } = makeStore();
+    store.applyEnvelope({
+      seq: 2,
+      instance: "i1",
+      patches: [{ op: "append", path: ["todos", 0, "text"], value: " and more" }],
+    });
+    expect(store.confirmed.todos[0]?.text).toBe("existing and more");
+
+    store.applyEnvelope({
+      seq: 3,
+      instance: "i1",
+      patches: [{ op: "append", path: ["todos", 0, "text"], value: "!" }],
+    });
+    expect(store.snapshot().state.todos[0]?.text).toBe("existing and more!");
+  });
+
+  it("routes $session appends to the session slice", () => {
+    const { store } = makeStore();
+    store.applyEnvelope({
+      seq: 2,
+      instance: "i1",
+      patches: [{ op: "append", path: ["$session", "filter"], value: "-done" }],
+    });
+    expect(store.snapshot().session).toEqual({ filter: "all-done" });
+  });
+
+  it("treats a non-string target as a protocol error: skip + resync", () => {
+    const { store, resyncs } = makeStore();
+    store.applyEnvelope({
+      seq: 2,
+      instance: "i1",
+      patches: [
+        { op: "replace", path: ["todos", 0, "text"], value: "should-not-apply" },
+        { op: "append", path: ["todos"], value: "boom" },
+      ],
+    });
+    expect(resyncs).toEqual([1]);
+    expect(store.confirmed.todos[0]?.text).toBe("existing"); // whole envelope discarded
+  });
+});
+
 describe("server ↔ client integration", () => {
   interface SrvState {
     todos: Todo[];
@@ -250,8 +292,10 @@ describe("server ↔ client integration", () => {
           optimistic: (state: SrvState, { text }: { text: string }, ctx) => {
             state.todos.push({ id: ctx.tempId(), text });
           },
-          async handler(state: Draft<SrvState>, { text }: { text: string }) {
-            state.todos.push({ id: `srv-${++n}`, text });
+          async handler({ text }: { text: string }, ctx) {
+            ctx.patchState((state) => {
+              state.todos.push({ id: `srv-${++n}`, text });
+            });
           },
         },
       },

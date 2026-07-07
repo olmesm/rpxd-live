@@ -1,23 +1,28 @@
 import { live } from "@rpxd/core";
 
 /**
- * Generator rpc demo (§3): each `yield` flushes a patch segment, so the
- * client watches items stream in while the import runs.
+ * Streaming rpc demo (§3): streaming is just a loop — each `patchState` tick
+ * flushes a patch envelope, so the client watches items appear while the
+ * import runs. The `finally` flush rides the ack.
  */
 export default live("/import")
   .mount(async () => ({ items: [] as string[], importing: false }))
   .rpc("importDemo", (r) =>
-    r.stream(async function* (getState) {
+    r.handler(async (_payload, ctx) => {
+      ctx.patchState((s) => {
+        s.importing = true;
+      });
       try {
-        getState().importing = true;
-        yield;
         for (let i = 1; i <= 3; i++) {
           await new Promise((resolve) => setTimeout(resolve, 150));
-          getState().items.push(`item-${i}`);
-          yield;
+          ctx.patchState((s) => {
+            s.items.push(`item-${i}`);
+          });
         }
       } finally {
-        getState().importing = false;
+        ctx.patchState((s) => {
+          s.importing = false;
+        });
       }
     }),
   )

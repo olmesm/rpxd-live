@@ -5,8 +5,8 @@ Server-side stateful objects with reducers; client is plain React receiving stat
 
 - One live object per page; everything below is ordinary React fed via props
 - Instances are **per-session**; multiplayer via pubsub (no shared instances, no `key`/`scope`)
-- Reducers run server-side, async allowed, mutate Immer drafts (no return spreads)
-- Per-instance FIFO queue: rpcs **and** broadcast handlers serialize through one queue (LWW by ordering)
+- Handlers run server-side as plain async fns; state writes go through `ctx.patchState(mut)` — sync Immer mutators, exact patches; `ctx.state` is a live read-only view (always current, even after awaits)
+- Per-instance FIFO queue serializes **mutations** (patchState flushes, `on` handlers, `params`) — LWW by ordering. Handlers never hold it: awaits don't block the instance (concurrency by default)
 - Render props: `state`, `session`, `rpc`, `sync` (`pending`, `errors`), `nav`, `keyOf`
 
 ```tsx
@@ -19,9 +19,9 @@ export default live("/org/$orgId/board")
   })
   .params((session, { filter }) => { session.filter = filter ?? "all"; })
   .rpc("create", (r) =>
-    r.input(z.object({ name: z.string() })).handler(async (state, { name }, ctx) => {
+    r.input(z.object({ name: z.string() })).handler(async ({ name }, ctx) => {
       const p = await db.project.create({ data: { orgId: ctx.params.orgId, name } });
-      state.projects.push(p);
+      ctx.patchState((s) => { s.projects.push(p); });
       ctx.broadcast(`org:${ctx.params.orgId}`, "project.created", p);
     }),
   )
@@ -32,40 +32,37 @@ export default live("/org/$orgId/board")
 ## 2. Patch Protocol & Wire Envelope
 Immer patches over a push stream with seq numbers; full snapshot as recovery.
 
-- Every rpc/handler wrapped in `produceWithPatches`; patches pushed to subscriber
+- Every `patchState`/handler flush wrapped in `produceWithPatches`; patches pushed to subscriber
+- String-suffix growth (`s.text += delta`) compiles to an **`append` patch op** carrying only the delta — LLM/token streams are O(delta) on the wire, not O(total)
 - Envelope: `{ seq, patches | full, rpcId?, idMap?, error? }` — **transport-agnostic**; written as one-page protocol doc first
 - Session-slice patches share the stream, namespaced paths (`["$session", ...]`)
 - Seq gap detected client-side → request full snapshot
 - Batched rpcs (§6) emit one combined patch + one ack
 - Structural sharing preserved end-to-end (patch apply + optimistic view derivation via `produce`) → memoized children skip re-renders off the patch path
 
-## 3. Generator RPCs (Streaming)
-`yield` = flush patches; `getState()` gives a fresh draft per segment; queue releases at yield.
+## 3. Async Handlers & patchState (Streaming)
+Handlers are plain async fns; `ctx.patchState(mut)` is the only write; every flush is one atomic patch.
 
-- Terminal signals semantics: `.handler()` reducers get `state` (whole-rpc atomic, blocks queue); `.stream()` generators get `getState` (per-segment drafts, **non-blocking**)
-- Each segment between yields = one `produceWithPatches` = one atomic flush
-- Queue releases at every `yield`; generator re-reads via `getState()` on resume
-- Lintable convention (Biome rule, §17): never hold a `getState()` reference across `yield`/`await`
-- **Early `return` allowed**: final segment flushed, ack sent; zero-yield return ≡ plain async reducer
-- **Cancellation** (disconnect mid-run): runtime calls `generator.return()` → `finally` blocks run
-- `sync.pending` spans the full run
+- `handler(payload, ctx)` — awaits **never block the instance**; other rpcs, broadcasts, and `params` run freely while a handler waits (concurrency by default, no flag)
+- `ctx.state`: live read-only view — reads after `await` see current state; writes throw ("use ctx.patchState")
+- `ctx.patchState(mut)`: `mut` is a **sync** Immer mutator on a fresh draft → exact patches. Same-tick calls from one rpc coalesce into one flush; each flush = one atomic envelope. Drafts never escape the callback → the stale-draft bug class is structurally impossible (no lint rule needed)
+- **Streaming = a loop**: `for await (chunk) { ctx.patchState(...) }` — one envelope per chunk tick
+- **`.atomic()`**: buffer all patchState calls; flush once on success, discard all on throw (whole-rpc rollback — the old plain-reducer semantics, now opt-in)
+- **Cancellation**: `ctx.signal` aborts on disconnect/eviction — pass it to fetch/SDKs; `ctx.abort(name)` aborts in-flight invocations of a named rpc (the stop-generating pattern)
+- `sync.pending` spans call → ack (handler completion)
 
 ```ts
-.rpc("importCsv", (r) =>
-  r.input(z.object({ url: z.string().url() })).stream(async function* (getState, { url }, ctx) {
-    try {
-      const rows = await fetchCsv(url);
-      if (rows.length === 0) { getState().message = "Nothing to import"; return; }
-      getState().importing = true; yield;
-      for (const chunk of batch(rows)) {
-        getState().projects.push(...await insert(chunk));
-        yield;
-      }
-    } finally {
-      getState().importing = false; // runs even on disconnect
+.rpc("ask", (r) =>
+  r.input(z.object({ prompt: z.string() })).handler(async ({ prompt }, ctx) => {
+    ctx.patchState((s) => { s.answer = ""; s.thinking = true; });
+    const stream = llm.stream(prompt, { signal: ctx.signal });
+    for await (const delta of stream) {
+      ctx.patchState((s) => { s.answer += delta; });   // → append op, O(delta) wire
     }
+    ctx.patchState((s) => { s.thinking = false; });
   }),
 )
+.rpc("stop", (r) => r.handler(async (_p, ctx) => { ctx.abort("ask"); }))
 ```
 
 ## 4. Optimistic Updates (Fn-Replay)
@@ -86,18 +83,24 @@ Client-side optimistic functions replayed over confirmed state — never merged 
 `.rpc(name, r => r.input().optimistic().handler().onError())` — validation, optimism, types, and recovery in one chain.
 
 - `input(schema)`: Standard Schema (Zod/Valibot/ArkType); validated client-side (pre-optimistic) **and** server-side; **locks the payload type** for every later step
-- Terminals: `.handler(fn)` (plain atomic reducer) or `.stream(genFn)` (generator, §3) — distinct terminals mean `state` vs `getState` type correctly with zero annotations
-- **`.onError((state, error, payload, ctx) => ...)`**: optional, runs as a queued reducer on handler throw → patches push normally. Essential for generators (repairs partially-flushed state). Repairs *state*, not the database — DB atomicity stays userland transactions
-- `.rateLimit(limit)`: per-rpc token bucket override (§10)
-- Without `input`, the payload type comes from the reducer's own annotation (or `unknown`)
+- `.handler(async (payload, ctx) => ...)`: the single terminal — plain, streaming, and slow work are all just async fns (§3)
+- **`.onError((state, error, payload, ctx) => ...)`**: sync mutator run as a queued flush on handler throw → patches ride the error ack. Repairs *state*, not the database — DB atomicity stays userland transactions
+- `.atomic()`: whole-rpc buffered flush + rollback (§3); `.rateLimit(limit)`: per-rpc token bucket (§10)
+- Without `input`, the payload type comes from the handler's own annotation (or `unknown`)
 - **Typed rpc record**: each `.rpc(name, ...)` extends an accumulated `{ name → payload }` type; `.render()` hands the component a payload-typed, exact-keyed `rpc` facade — unknown names and wrong payloads are compile errors. Types flow through `optimistic`, `handler`, `onError`, **and the client `rpc.*` signature** with no codegen
-- Chains evaluate to the same runtime long-form object (`{ input?, optimistic?, handler, onError?, rateLimit? }`) the server consumes — the fluent API is construction-time only
+- Chains evaluate to the same runtime long-form object the server consumes — the fluent API is construction-time only
 
 ```ts
 .rpc("importCsv", (r) =>
   r
     .input(z.object({ url: z.string().url() }))
-    .stream(async function* (getState, { url }, ctx) { /* §3 */ })
+    .handler(async ({ url }, ctx) => {
+      const rows = await fetchCsv(url);                       // instance not blocked
+      for (const chunk of batches(rows)) {
+        const inserted = await insert(chunk);
+        ctx.patchState((s) => { s.projects.push(...inserted); }); // flush per chunk
+      }
+    })
     .onError((state) => {
       state.importing = false;
       state.lastError = "Import failed";
@@ -125,7 +128,7 @@ File-based with codegen; wouter under the hood; URL is identity.
 ## 8. Pubsub (Multiplayer)
 Per-session instances coordinated by broadcast; persistence layer carries the bus.
 
-- `ctx.subscribe(topic)` in mount; `ctx.broadcast(topic, event, payload)` in rpcs; `on: {}` handlers mutate state
+- `ctx.subscribe(topic)` in mount; `ctx.broadcast(topic, event, payload)` in rpcs; `.on(event, ...)` handlers are sync mutators
 - **Exclude-self by default**; `{ self: true }` opt-in enables single-code-path pattern (rpc broadcasts only, all mutation in `on`)
 - Kills instance affinity: any node hosts any session
 
@@ -133,7 +136,7 @@ Per-session instances coordinated by broadcast; persistence layer carries the bu
 Write-through snapshots behind a small interface; also hosts the pubsub bus.
 
 - `StorageAdapter`: `get/set` of `{ state, seq, version }` + pubsub; adapters: `memory()` (default), `session()`, `sqlite()` (via `bun:sqlite`; Node adapter uses `better-sqlite3`), `redis()`
-- Write-through on rpc completion / yield flush
+- Write-through on every patchState flush / rpc completion
 - **Snapshots = session continuity only**; cold wake always re-runs `mount` (avoids missed-broadcast staleness)
 - Version tag mismatch → discard, re-mount (no migrations)
 - Whole-state snapshots, never patch logs
@@ -156,7 +159,7 @@ Connections are disposable; state is not. SSE default, WS opt-in.
 - Reconnect: resubscribe with last seq → full snapshot + new seq (identical either transport)
 - Unacked optimistic rpcs resent with client-generated rpc ids (server dedupes)
 - Eviction: subscribers = 0 → warm TTL (~60s) → snapshot + evict
-- Disconnect mid-generator → cancellation (§3)
+- Disconnect mid-handler → `ctx.signal` aborts (§3)
 
 ## 12. SSR
 Mount runs during SSR; connection adopts the warm instance.
@@ -245,11 +248,11 @@ rpxd/
     cli/             # rpxd dev/build/start
   examples/
     todos/           # demo app — Playwright runs against this
-  e2e/               # Playwright: SSR attach, reconnect, optimistic, multiplayer, generators
+  e2e/               # Playwright: SSR attach, reconnect, optimistic, multiplayer, streaming
 ```
 
 - **Bun workspaces** (no turborepo/nx in v1 — `bun run --filter` covers it)
-- **Biome** — lint + format, single root config; home for custom rules (§3 getState-across-yield, §4 identity-based lookups)
+- **Biome** — lint + format, single root config; home for custom rules (§4 identity-based lookups)
 - **Vitest** — unit tests: reducers/queue/replay per package
 - **Playwright** — e2e against `examples/todos`; the demo doubles as the acceptance suite for §1–§12
 - **Latest TS** (5.9+), latest deps, `"type": "module"` throughout
