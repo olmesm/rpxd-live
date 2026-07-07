@@ -39,5 +39,9 @@ normative spec is `spec.md`; the wire protocol is `docs/protocol.md`.
 - TSDoc on all public APIs with `@example` blocks (§17)
 - Web-standard `Request`/`Response` in server code; Bun types only inside
   `bunAdapter` / storage-sqlite
-- Short-form rpc reducers need explicit param annotations in strict TS; the
-  long form (`{ handler }`) infers fully
+- Rpc reducer params need explicit annotations (both forms): TS can't
+  contextually type through the plain/generator handler union, and
+  reverse-mapped payload inference from `input` schemas is unreliable on
+  TS 6 (verified — see `packages/core/test/live.test-d.ts` header). Use
+  `InferOutput<typeof schema>` to keep payload annotations DRY. `mount`,
+  `on`, and `params` infer without annotations.
