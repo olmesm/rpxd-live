@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "type": "module",
   "exports": {
-    ".": "./src/server.ts",
+    ".": {
+      "react-server": "./src/server.ts",
+      "default": "./src/server-stub.ts"
+    },
     "./client": "./src/client.ts"
   },
   "peerDependencies": {
@@ -17,5 +20,9 @@
     "react-dom": "^19.0.0",
     "typescript": "^5.9.0",
     "vitest": "^4.0.0"
+  },
+  "dependencies": {
+    "@vitejs/plugin-rsc": "^0.5.27",
+    "react-server-dom-webpack": "^19.0.0"
   }
 }

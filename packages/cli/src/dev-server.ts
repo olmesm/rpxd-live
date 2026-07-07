@@ -15,7 +15,8 @@ import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { createRpxdHandler, type RouteRegistration, wsTransport } from "@rpxd/server-bun";
 import { fileToRoute, rpxd as rpxdVitePlugin, runCodegen, scanRoutes } from "@rpxd/vite-plugin";
-import { createServer as createViteServer } from "vite";
+import rscFlightPlugin from "@vitejs/plugin-rsc";
+import { createServerModuleRunner, createServer as createViteServer } from "vite";
 import { WebSocketServer } from "ws";
 import type { RpxdConfig } from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
@@ -134,15 +135,37 @@ export async function createDevServer(
       rpxdVitePlugin(),
       rpxdEntryPlugin({ rsc: config.rsc, transport: config.transport?.kind }),
       reducerHmrPlugin,
+      // Flight runtime (§16): the plugin only contributes environments —
+      // rpxd owns the request loop.
+      ...(config.rsc ? [rscFlightPlugin({ serverHandler: false })] : []),
     ],
+    // The deserializing half of @rpxd/rsc picks its runtime via
+    // import.meta.env.SSR — it must stay inside the graph (§16).
+    ssr: { noExternal: ["@rpxd/rsc"] },
+    // One plugin instance everywhere: @rpxd/rsc's dynamic imports must
+    // resolve to the same copy the registered plugin serves virtuals for.
+    resolve: config.rsc ? { dedupe: ["@vitejs/plugin-rsc"] } : undefined,
+    environments: config.rsc ? { rsc: { resolve: { noExternal: ["@rpxd/rsc"] } } } : undefined,
     server: {
       middlewareMode: true,
       hmr: { server: httpServer },
     },
   });
 
-  // Register live routes with the runtime (defs loaded via the SSR graph so
-  // reducer edits flow through Vite's module invalidation).
+  // Defs come from the react-server graph when rsc is on (§16): handlers run
+  // under the react-server condition so rsc() can Flight-serialize. Page
+  // components keep loading through the ssr graph for SSR.
+  const rscRunner =
+    config.rsc && vite.environments.rsc
+      ? createServerModuleRunner(vite.environments.rsc)
+      : undefined;
+  const loadDefModule = (file: string): Promise<{ default: { def: unknown } }> =>
+    rscRunner
+      ? rscRunner.import(`/routes/${file}`)
+      : (vite.ssrLoadModule(`/routes/${file}`) as Promise<{ default: { def: unknown } }>);
+
+  // Register live routes with the runtime (defs loaded via the server graph
+  // so reducer edits flow through Vite's module invalidation).
   const entries = scanRoutes(join(root, "routes"));
   const routeFiles = new Map<string, string>();
   const routes: RouteRegistration[] = [];
@@ -150,8 +173,8 @@ export async function createDevServer(
   for (const entry of entries) {
     if (entry.kind === "page" && entry.path !== null) {
       routeFiles.set(entry.path, entry.file);
-      const mod = await vite.ssrLoadModule(`/routes/${entry.file}`);
-      routes.push({ path: entry.path, def: mod.default.def });
+      const mod = await loadDefModule(entry.file);
+      routes.push({ path: entry.path, def: mod.default.def } as RouteRegistration);
       continue;
     }
     // Shell files (§14): __root / __404 / __error
@@ -185,10 +208,12 @@ export async function createDevServer(
     if (!entry || entry.kind !== "page" || entry.path === null) return;
     const routePath = entry.path;
     routeFiles.set(routePath, entry.file);
-    void vite
-      .ssrLoadModule(`/routes/${entry.file}`)
+    void loadDefModule(entry.file)
       .then((mod) => {
-        handler.updateRoute(routePath, mod.default.def);
+        handler.updateRoute(
+          routePath,
+          mod.default.def as Parameters<typeof handler.updateRoute>[1],
+        );
       })
       .catch((e) => console.error("[rpxd] reducer HMR reload failed:", e));
   };
@@ -261,6 +286,8 @@ export async function createDevServer(
       await handler.dispose();
       for (const client of wss.clients) client.terminate();
       wss.close();
+      // The react-server module runner holds an HMR channel open (§16).
+      await rscRunner?.close();
       await vite.close();
       // Open SSE connections would otherwise hold close() forever.
       httpServer.closeAllConnections?.();

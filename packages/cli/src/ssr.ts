@@ -11,10 +11,20 @@
  * suspends — which `renderToString` cannot do.
  */
 import type { LiveRoute } from "@rpxd/core";
-import { hydrateRscFields } from "@rpxd/rsc/client";
+import { configureRscRuntime, flightStream, hydrateRscFields } from "@rpxd/rsc/client";
 import type { RenderContext } from "@rpxd/server-bun";
 import { createElement, type FunctionComponent, type ReactElement, type ReactNode } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
+
+let flightRuntimeReady: Promise<void> | undefined;
+
+/** Install the server-graph Flight deserializer once (§16). */
+function ensureFlightRuntime(): Promise<void> {
+  flightRuntimeReady ??= import("@vitejs/plugin-rsc/ssr").then(({ createFromReadableStream }) => {
+    configureRscRuntime((payload) => createFromReadableStream(flightStream(payload)));
+  });
+  return flightRuntimeReady;
+}
 
 /** Server-side render props: same shape the client hydrates with (§1). */
 function serverRenderProps(ctx: RenderContext, rsc: boolean) {
@@ -109,6 +119,7 @@ export async function renderRoute(
   assets: ShellAssets,
   opts: { rsc?: boolean; shell?: ShellComponents } = {},
 ): Promise<string> {
+  if (opts.rsc) await ensureFlightRuntime();
   const props = serverRenderProps(ctx, opts.rsc ?? false);
   const page = createElement(route.component, props);
   const appHtml = await streamToHtml(wrapWithRoot(page, opts.shell));

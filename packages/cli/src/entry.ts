@@ -28,7 +28,13 @@ import { createElement } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { LiveApp, LiveConnection, rpcMetaFromDef } from "@rpxd/client";
 import { routeModules, rootModule } from "/.rpxd/routes.gen.ts";
-${rsc ? 'import { hydrateRscFields } from "@rpxd/rsc/client";' : ""}
+${
+  rsc
+    ? `import { configureRscRuntime, flightStream, hydrateRscFields } from "@rpxd/rsc/client";
+import { createFromReadableStream } from "@vitejs/plugin-rsc/browser";
+configureRscRuntime((payload) => createFromReadableStream(flightStream(payload)));`
+    : ""
+}
 
 const bootEl = document.getElementById("__rpxd");
 const rootEl = document.getElementById("root");

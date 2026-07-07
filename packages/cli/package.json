@@ -13,6 +13,7 @@
     "@rpxd/rsc": "workspace:*",
     "@rpxd/server-bun": "workspace:*",
     "@rpxd/vite-plugin": "workspace:*",
+    "@vitejs/plugin-rsc": "^0.5.27",
     "vite": "^7.0.0",
     "ws": "^8.21.0"
   },
