@@ -213,6 +213,22 @@ describe("seq handling (§2)", () => {
     expect(store.confirmed.todos[0]?.text).toBe("existing");
   });
 
+  it("ignores envelopes for other instances (multiplexed stream, §2)", () => {
+    const { store } = makeStore();
+    store.applyEnvelope({
+      seq: 99,
+      instance: "someone-else",
+      full: { state: { todos: [], other: { untouched: true } }, session: {} },
+    });
+    store.applyEnvelope({
+      seq: 2,
+      instance: "someone-else",
+      patches: [{ op: "replace", path: ["todos", 0, "text"], value: "not-mine" }],
+    });
+    expect(store.seq).toBe(1); // untouched
+    expect(store.confirmed.todos[0]?.text).toBe("existing");
+  });
+
   it("routes $session patches to the session slice", () => {
     const { store } = makeStore();
     store.applyEnvelope({

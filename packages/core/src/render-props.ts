@@ -5,6 +5,8 @@
  * annotations; `@rpxd/client` re-exports these types and provides the
  * runtime.
  */
+import type { PathParams } from "./live.ts";
+import type { RegisteredPath } from "./register.ts";
 
 /** Flatten an intersection for readable hovers. */
 export type Pretty<T> = { [K in keyof T]: T[K] } & {};
@@ -32,14 +34,14 @@ export type RpcFacade<R> = Pretty<{
 
 /**
  * Navigation (§7): path params are identity (navigate = remount); search
- * params are view state (`patch` → `params` reducer, no remount). Route-path
- * autocomplete for `navigate` comes from `Link`/`useNav` in `@rpxd/client`,
- * which see the generated `Register` merge.
+ * params are view state (`patch` → `params` reducer, no remount). `navigate`
+ * autocompletes registered routes via the generated `Register` merge — the
+ * same typing `Link`/`useNav` get in `@rpxd/client`.
  */
 export interface NavProp {
-  navigate(
-    to: string,
-    opts?: { params?: Record<string, string>; search?: Record<string, string> },
+  navigate<P extends RegisteredPath>(
+    to: P,
+    opts?: { params?: PathParams<P>; search?: Record<string, string> },
   ): void;
   patch(search: Record<string, string>): void;
 }
