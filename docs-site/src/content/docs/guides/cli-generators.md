@@ -80,12 +80,20 @@ map to TypeScript and Prisma:
 | `json`     | `unknown`  | `Json`     |
 | `references` | (foreign key `string`) | `String` + `@relation` |
 
-| Flag          | Effect                                                          |
-| ------------- | -------------------------------------------------------------- |
-| `--kind http` | Emit a `route()` endpoint (`routes/<plural>.ts`) instead of a page |
-| `--protected` | Gate the page behind the mount → `/login` redirect (auth apps)  |
-| `--no-test`   | Skip the test                                                   |
-| `--force`     | Overwrite existing files                                        |
+| Flag             | Effect                                                          |
+| ---------------- | -------------------------------------------------------------- |
+| `--kind http`    | Emit a `route()` endpoint (`routes/<plural>.ts`) instead of a page |
+| `--no-protected` | Make the page public (see below)                               |
+| `--protected`    | Force the mount → `/login` gate (auth apps only)               |
+| `--no-test`      | Skip the test                                                  |
+| `--force`        | Overwrite existing files                                       |
+
+**Auth apps protect pages by default.** When the app has auth, a scaffolded
+page's `mount` redirects to `/login` when signed out, and the generated test
+signs in so it still passes — pass `--no-protected` for a public page. Without
+auth, pages are public (there's no login route to bounce to), and `--protected`
+is ignored with a note. An `http` route has no mount gate, so protection never
+applies to it.
 
 ### Relationships
 
