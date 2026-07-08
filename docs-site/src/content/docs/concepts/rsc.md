@@ -1,0 +1,53 @@
+---
+title: RSC fields (experimental)
+description: Server-rendered component subtrees as opaque state values — Flight is the serialization, patches are the transport. Opt-in behind rsc:true.
+sidebar:
+  order: 6
+---
+
+:::caution[Experimental]
+RSC fields are behind the opt-in `rsc: true` flag. v1 is complete and shippable
+with `rsc: false` (the default); the flag flips only once the core is stable.
+:::
+
+RSC fields let a piece of state be a **server-rendered component subtree** — the
+markdown renderer, the syntax highlighter, and their heavy dependencies stay on
+the server and never ship to the client. The React Flight format is the
+serialization; rpxd's [patches](/rpxd-live/concepts/wire-protocol/) are the
+transport.
+
+## How it works
+
+Wrap a component in `rsc(...)` inside `mount` or a reducer. It becomes a Flight
+string — an opaque field in your state:
+
+```tsx
+mount: async ({ slug }) => {
+  const doc = await getDoc(slug);
+  return {
+    doc,
+    body: rsc(<Markdown source={doc.raw} />), // → Flight string in state
+  };
+};
+```
+
+On the client, marked fields are deserialized when a patch or snapshot applies,
+and `{state.body}` renders the hydrated subtree. To the rest of the system it's
+just a string in state — so it flows through storage, SSR, and reconnect
+unchanged.
+
+## Constraints
+
+- **Never optimistic.** RSC fields can't be part of an optimistic update.
+- **Not for keystroke-frequency updates.** A patch replaces the *whole* field
+  (there's no Flight diffing); React reconciles the result. That's cheap for a
+  rendered document, wasteful for a rapidly-changing value.
+- **`'use client'` islands** hydrate via the plugin manifest.
+
+## Under the hood
+
+RSC is built on
+[`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react) — rpxd
+integrates it rather than owning the bundler layer. Enable it with `rsc: true`
+in `rpxd.config.ts`, or per-run with `rpxd dev --rsc` / `--no-rsc`. The todos
+example's `/doc` page is a live RSC field.
