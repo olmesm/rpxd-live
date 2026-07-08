@@ -1,17 +1,10 @@
 /**
- * Casing + (naive) inflection helpers for the scaffold generator. Deliberately
- * simple — English-ish `s`/`es`/`y→ies` rules cover the identifiers a scaffold
- * produces; irregular nouns can be passed explicitly (`scaffold People Person people`).
+ * Casing + (naive) inflection helpers for the scaffold generator. Casing is
+ * delegated to es-toolkit (well-tested Unicode-aware word splitting); the
+ * English-ish `s`/`es`/`y→ies` inflection is naive on purpose — irregular
+ * nouns can be passed explicitly (`scaffold People Person people`).
  */
-
-/** Split an identifier on separators and camelCase humps into lowercase words. */
-function words(input: string): string[] {
-  return input
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .split(/[\s_-]+/)
-    .filter(Boolean)
-    .map((w) => w.toLowerCase());
-}
+import { camelCase as esCamelCase, kebabCase as esKebabCase, upperFirst } from "es-toolkit";
 
 /**
  * `todo_items` → `TodoItems`.
@@ -22,22 +15,19 @@ function words(input: string): string[] {
  * ```
  */
 export function pascalCase(input: string): string {
-  return words(input)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join("");
+  return upperFirst(esCamelCase(input));
 }
 
 /**
- * `TodoItems` → `todoItems`.
+ * `TodoItems` / `todo_items` → `todoItems`.
  *
  * @example
  * ```ts
- * camelCase("TodoItems"); // "todoItems"
+ * camelCase("author_id"); // "authorId"
  * ```
  */
 export function camelCase(input: string): string {
-  const p = pascalCase(input);
-  return p.charAt(0).toLowerCase() + p.slice(1);
+  return esCamelCase(input);
 }
 
 /**
@@ -49,7 +39,7 @@ export function camelCase(input: string): string {
  * ```
  */
 export function kebabCase(input: string): string {
-  return words(input).join("-");
+  return esKebabCase(input);
 }
 
 /**

@@ -74,6 +74,23 @@ jobs:
           bunx tsc --noEmit -p tsconfig.json
           bun node_modules/.bin/rpxd build
 
+      # DB + relation path: init auth+db, scaffold a resource with a references
+      # (belongs_to) + json + date, append the model, run `prisma format` (which
+      # inserts the inverse relation on User), generate the client, and typecheck.
+      - name: rpxd scaffold with a relation (append + prisma format + typecheck)
+        run: |
+          set -euxo pipefail
+          CLI="$GITHUB_WORKSPACE/packages/cli/src/cli.ts"
+          bun "$CLI" init .ci-gen-db --force
+          ln -s "$GITHUB_WORKSPACE/examples/todos/node_modules" .ci-gen-db/node_modules
+          cd .ci-gen-db
+          bun "$CLI" scaffold Posts Post posts title:string author_id:references:User meta:json due:date
+          grep -q "@relation(fields: \[authorId\]" prisma/schema.prisma
+          DATABASE_URL="file:./prisma/dev.db" bunx prisma format
+          grep -q "posts.*Post\[\]" prisma/schema.prisma   # inverse added by prisma format
+          DATABASE_URL="file:./prisma/dev.db" bun node_modules/.bin/prisma generate
+          bunx tsc --noEmit -p tsconfig.json
+
   scaffold:
     name: Scaffold (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -92,6 +109,8 @@ jobs:
             cmd: scaffold Notes Note notes title:string body:text
           - name: http-route
             cmd: scaffold Feeds Feed feeds url:string --kind http
+          - name: references
+            cmd: scaffold Posts Post posts title:string author_id:references:User meta:json
     steps:
       - uses: actions/checkout@v4
 

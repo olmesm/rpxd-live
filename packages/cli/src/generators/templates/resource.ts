@@ -67,14 +67,27 @@ function defaultFor(field: Field): string {
     case "float":
       return "0";
     case "datetime":
+    case "date":
       return "new Date()";
+    case "json":
+      return "{}";
     default:
       return '""';
   }
 }
 
-const fieldLines = (fields: Field[], indent = "  "): string =>
-  fields.map((f) => `${indent}${f.name}: ${f.tsType};`).join("\n");
+/**
+ * Render `name: type;` lines. `jsonAs` overrides the TS type of `json` fields —
+ * a row reads Prisma's `JsonValue` (assignable to `unknown`), but a create input
+ * must be `Prisma.InputJsonValue`, so the two differ in the Prisma variant.
+ */
+const fieldLines = (fields: Field[], jsonAs?: string, indent = "  "): string =>
+  fields
+    .map((f) => `${indent}${f.name}: ${f.type === "json" && jsonAs ? jsonAs : f.tsType};`)
+    .join("\n");
+
+/** Whether any field is a `json` — drives the `Prisma` type import in the db variant. */
+const hasJson = (fields: Field[]): boolean => fields.some((f) => f.type === "json");
 
 // ── Domain modules ──────────────────────────────────────────────────────────
 
@@ -156,13 +169,16 @@ export async function ${n.toggleFn}(scope: Scope, id: string): Promise<${n.rowTy
 }
 `
     : "";
+  const prismaImport = hasJson(spec.fields)
+    ? '\nimport type { Prisma } from "../generated/prisma/client";'
+    : "";
   return `/**
  * ${spec.context} domain module — the service-layer boundary (Phoenix "context").
  * \`routes/\` calls these; only the domain layer touches \`db\`. Prisma is loaded
  * lazily + server-only (\`import.meta.env.SSR\` is a static \`false\` in the client
  * build, so it tree-shakes out). Queries scope by {@link Scope}.
  */
-import type { Scope } from "./scope";
+import type { Scope } from "./scope";${prismaImport}
 
 /** A persisted ${spec.schema} row (the subset the UI needs). */
 export interface ${n.rowType} {
@@ -172,7 +188,7 @@ ${fieldLines(spec.fields)}
 
 /** Fields accepted when creating a ${spec.schema}. */
 export type ${n.inputType} = {
-${fieldLines(spec.fields)}
+${fieldLines(spec.fields, "Prisma.InputJsonValue")}
 };
 
 const select = { ${selectFields} } as const;
@@ -421,25 +437,39 @@ describe("${spec.context} domain (in-memory)", () => {
 }
 
 /**
- * The printed (never written) Prisma model — pasted into `prisma/schema.prisma`.
+ * The Prisma model for a resource — appended to `prisma/schema.prisma`. A
+ * `references` field emits its foreign-key column plus a `@relation` to the
+ * parent (run `prisma format` to add the inverse field on the parent), and each
+ * relation gets its own `@@index`.
  *
  * @example
  * ```ts
- * prismaModel({ schema: "Todo", plural: "todos", fields: [], … }); // "model Todo { … }"
+ * prismaModel({ schema: "Post", fields: [{ name: "authorId", type: "references",
+ *   reference: { model: "User", relationName: "author" }, … }], … });
  * ```
  */
 export function prismaModel(spec: ResourceSpec): string {
-  const cols = spec.fields.map((f) => {
-    const def = f.type === "boolean" ? " @default(false)" : "";
-    return `  ${f.name.padEnd(9)} ${f.prismaType}${def}`;
-  });
+  const cols: string[] = [];
+  const indexes = ["  @@index([owner])"];
+  for (const f of spec.fields) {
+    if (f.type === "references" && f.reference) {
+      cols.push(`  ${f.name.padEnd(9)} ${f.prismaType}`);
+      cols.push(
+        `  ${f.reference.relationName.padEnd(9)} ${f.reference.model} @relation(fields: [${f.name}], references: [id])`,
+      );
+      indexes.push(`  @@index([${f.name}])`);
+    } else {
+      const def = f.type === "boolean" ? " @default(false)" : "";
+      cols.push(`  ${f.name.padEnd(9)} ${f.prismaType}${def}`);
+    }
+  }
   return `model ${spec.schema} {
   id      String   @id @default(cuid())
   owner   String
 ${cols.join("\n")}
   created DateTime @default(now())
 
-  @@index([owner])
+${indexes.join("\n")}
 }`;
 }
 

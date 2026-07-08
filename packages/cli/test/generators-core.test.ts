@@ -37,6 +37,45 @@ describe("parseFields (Phoenix-style field:type)", () => {
     expect(parseFields(["title"])[0]).toMatchObject({ name: "title", type: "string" });
   });
 
+  it("maps date and json", () => {
+    expect(parseFields(["due:date"])[0]).toMatchObject({
+      name: "due",
+      type: "date",
+      tsType: "Date",
+      prismaType: "DateTime",
+    });
+    expect(parseFields(["meta:json"])[0]).toMatchObject({
+      type: "json",
+      tsType: "unknown",
+      prismaType: "Json",
+    });
+  });
+
+  it("normalizes field names to camelCase", () => {
+    expect(parseFields(["full_name:string"])[0]?.name).toBe("fullName");
+    expect(parseFields(["is_active:boolean"])[0]?.name).toBe("isActive");
+  });
+
+  it("parses a references (belongs_to) field", () => {
+    const [f] = parseFields(["author_id:references:User"]);
+    expect(f).toMatchObject({
+      name: "authorId",
+      type: "references",
+      tsType: "string",
+      prismaType: "String",
+      reference: { model: "User", relationName: "author" },
+    });
+  });
+
+  it("derives the FK when references omits the _id suffix", () => {
+    const [f] = parseFields(["author:references:User"]);
+    expect(f).toMatchObject({ name: "authorId", reference: { relationName: "author" } });
+  });
+
+  it("rejects a references field without a target model", () => {
+    expect(() => parseFields(["author_id:references"])).toThrow(/needs a model/);
+  });
+
   it("rejects an unknown type", () => {
     expect(() => parseFields(["title:wat"])).toThrow(/unknown field type "wat"/);
   });
@@ -124,5 +163,52 @@ describe("applyPlan (no-clobber fs shell)", () => {
     );
     expect(res.skipped).toEqual(["a.txt"]);
     expect(existsSync(join(root, "a.txt"))).toBe(true);
+  });
+
+  it("appends a block to an existing file when the marker is absent", () => {
+    writeFileSync(join(root, "schema.prisma"), "datasource db {}\n");
+    const res = applyPlan(
+      root,
+      {
+        files: [],
+        appends: [{ path: "schema.prisma", marker: "model Post ", content: "model Post {\n}" }],
+        steps: [],
+        commands: [],
+      },
+      {},
+    );
+    expect(res.appended).toEqual(["schema.prisma"]);
+    expect(readFileSync(join(root, "schema.prisma"), "utf-8")).toContain("model Post {");
+  });
+
+  it("skips the append when the marker is already present (idempotent)", () => {
+    writeFileSync(join(root, "schema.prisma"), "model Post {\n  id String @id\n}\n");
+    const res = applyPlan(
+      root,
+      {
+        files: [],
+        appends: [{ path: "schema.prisma", marker: "model Post ", content: "model Post {\n}" }],
+        steps: [],
+        commands: [],
+      },
+      {},
+    );
+    expect(res.appended).toEqual([]);
+    expect(res.appendSkipped).toEqual(["schema.prisma"]);
+  });
+
+  it("skips the append (never creates) when the target file is missing", () => {
+    const res = applyPlan(
+      root,
+      {
+        files: [],
+        appends: [{ path: "schema.prisma", marker: "model Post ", content: "x" }],
+        steps: [],
+        commands: [],
+      },
+      {},
+    );
+    expect(res.appendSkipped).toEqual(["schema.prisma"]);
+    expect(existsSync(join(root, "schema.prisma"))).toBe(false);
   });
 });

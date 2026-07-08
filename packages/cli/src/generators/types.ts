@@ -2,10 +2,11 @@
  * Shared shapes for the file-generating commands (`init`, `auth`, `scaffold`).
  *
  * A generator is a pure `plan()` that returns a {@link GeneratorPlan} — the
- * files to write plus the steps/commands to *print*. It never edits an existing
- * config or `package.json` (docs/routes-and-auth.md: "the framework maintains
- * the mirror, not the logic"): anything that would touch a hand-owned file is
- * surfaced as a printed instruction instead. {@link applyPlan} does the disk IO.
+ * files to write, blocks to *append*, and the steps/commands to *print*. It
+ * never rewrites existing content in a hand-owned file (docs/routes-and-auth.md:
+ * "the framework maintains the mirror, not the logic"): it only writes new files
+ * or appends new blocks; anything else is surfaced as a printed instruction.
+ * {@link applyPlan} does the disk IO.
  */
 
 /** One file a generator wants to write, path relative to the project root. */
@@ -14,6 +15,20 @@ export interface FileWrite {
   path: string;
   /** Full file contents. */
   contents: string;
+}
+
+/**
+ * A block appended to an existing file (e.g. a Prisma model into
+ * `schema.prisma`). Append-only and idempotent: skipped when `marker` is
+ * already present in the file, and when the file doesn't exist.
+ */
+export interface AppendBlock {
+  /** Target file, relative to the project root. */
+  path: string;
+  /** Substring whose presence means the block is already there (e.g. `model Post `). */
+  marker: string;
+  /** The block to append. */
+  content: string;
 }
 
 /**
@@ -32,6 +47,8 @@ export interface FileWrite {
 export interface GeneratorPlan {
   /** Files to write (skipped if they already exist unless `--force`). */
   files: FileWrite[];
+  /** Blocks to append to existing files (append-only, idempotent). */
+  appends?: AppendBlock[];
   /** Prose follow-ups to print — e.g. config snippets to paste. */
   steps: string[];
   /** Copy-pasteable shell commands to run after generation. */

@@ -71,11 +71,26 @@ export function planScaffold(options: ScaffoldOptions): GeneratorPlan {
   let files = resourceFiles(spec);
   if (options.test === false) files = files.filter((f) => !f.path.endsWith(".test.ts"));
 
+  const appends: GeneratorPlan["appends"] = [];
   const commands: string[] = [];
   if (spec.hasDb) {
-    steps.push(`Add this model to prisma/schema.prisma:\n\n${prismaModel(spec)}`);
-    commands.push("bun run db:push");
+    // Append the model to schema.prisma (append-only, idempotent via the marker).
+    appends.push({
+      path: "prisma/schema.prisma",
+      marker: `model ${spec.schema} `,
+      content: prismaModel(spec),
+    });
+    const hasRelation = fields.some((f) => f.type === "references");
+    if (hasRelation) {
+      steps.push(
+        "Run `prisma format` — it inserts the inverse relation field on the parent model(s).",
+      );
+      steps.push(
+        "Decide scoping for this resource: it's scoped by `owner` (the acting user/session) — adjust the domain queries if it should be reached through its parent instead.",
+      );
+    }
+    commands.push("bunx prisma format", "bun run db:push");
   }
 
-  return { files, steps, commands };
+  return { files, appends, steps, commands };
 }

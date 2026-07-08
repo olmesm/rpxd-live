@@ -53,22 +53,65 @@ rpxd scaffold Todos Todo todos text:string done:boolean
 ```
 
 This writes a live route (`routes/todos.tsx`), a scoped domain module
-(`domain/todos.ts`), and a test (`domain/todos.test.ts`). The generator is
-**auth- and db-aware**: it reads whether your app has `adapters/db.ts` /
-`adapters/auth.ts` and generates a Prisma-backed or in-memory domain, scoped by
-the acting user or session accordingly. When your app has a database, the Prisma
-model is _printed_ for you to paste into `prisma/schema.prisma`.
+(`domain/todos.ts`), and a test (`test/todos.test.ts` — a `testLive` route test
+that drives the real live object). The generator is **auth- and db-aware**: it
+reads whether your app has `adapters/db.ts` / `adapters/auth.ts` and generates a
+Prisma-backed or in-memory domain, scoped by the acting user or session
+accordingly. When your app has a database, the Prisma model is **appended** to
+`prisma/schema.prisma` (append-only — it never rewrites your existing models,
+and re-running is a no-op).
 
-Field types map to TypeScript and Prisma: `string`/`text` → `String`,
-`boolean` → `Boolean`, `int` → `Int`, `float` → `Float`, `datetime` →
-`DateTime`.
+Field names are normalized to camelCase (`author_id` → `authorId`). Field types
+map to TypeScript and Prisma:
+
+| `type`     | TypeScript | Prisma     |
+| ---------- | ---------- | ---------- |
+| `string`   | `string`   | `String`   |
+| `text`     | `string`   | `String`   |
+| `boolean`  | `boolean`  | `Boolean`  |
+| `int`      | `number`   | `Int`      |
+| `float`    | `number`   | `Float`    |
+| `datetime` / `date` | `Date` | `DateTime` |
+| `json`     | `unknown`  | `Json`     |
+| `references` | (foreign key `string`) | `String` + `@relation` |
 
 | Flag          | Effect                                                          |
 | ------------- | -------------------------------------------------------------- |
 | `--kind http` | Emit a `route()` endpoint (`routes/<plural>.ts`) instead of a page |
 | `--protected` | Gate the page behind the mount → `/login` redirect (auth apps)  |
-| `--no-test`   | Skip the domain test                                            |
+| `--no-test`   | Skip the test                                                   |
 | `--force`     | Overwrite existing files                                        |
+
+### Relationships
+
+A `references` field is a **belongs_to**, Phoenix-style
+`foreign_key:references:Model`:
+
+```sh
+rpxd scaffold Posts Post posts title:string author_id:references:User
+```
+
+The appended `Post` model gains the foreign key, the relation, and an index:
+
+```prisma
+model Post {
+  id       String @id @default(cuid())
+  owner    String
+  title    String
+  authorId String
+  author   User   @relation(fields: [authorId], references: [id])
+  created  DateTime @default(now())
+
+  @@index([owner])
+  @@index([authorId])
+}
+```
+
+Then run the printed steps — **`prisma format`** inserts the inverse
+`posts Post[]` field on `User` for you, and `bun run db:push` (or
+`prisma migrate dev`) syncs the database. The scaffold only writes the
+belongs_to side and scopes the resource by `owner`; whether it should instead be
+reached through its parent is a decision it leaves to you.
 
 ## `rpxd auth` — add auth later
 
