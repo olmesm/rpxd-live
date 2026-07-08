@@ -103,7 +103,7 @@ const schema = (auth: boolean): string => `generator client {
 datasource db {
   provider = "sqlite"
 }
-${auth ? AUTH_MODELS : "\n// Add models here — `rpxd scaffold` prints a model to paste for each resource.\n"}`;
+${auth ? AUTH_MODELS : "\n// Add models here — `rpxd scaffold` appends one for each resource.\n"}`;
 
 const prismaConfig = (): string => `import { PrismaLibSql } from "@prisma/adapter-libsql";
 import { defineConfig } from "prisma/config";

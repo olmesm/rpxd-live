@@ -34,23 +34,40 @@ function overridesFrom(args: { transport?: string; rsc?: boolean }): ConfigOverr
   return overrides;
 }
 
-/** Flags shared by dev/build/start. */
+/** Config-override flags shared by dev/build/start. */
 const runArgs = {
   transport: { type: "string", description: "Override transport: sse or ws" },
   rsc: { type: "boolean", description: "Force RSC fields on (--rsc) or off (--no-rsc)" },
 } as const;
 
-async function runDev(overrides: ConfigOverrides): Promise<void> {
+/** dev/start also bind a port. */
+const serveArgs = {
+  ...runArgs,
+  port: { type: "string", description: "Port to bind (default: $PORT, else 3000)" },
+} as const;
+
+/** Resolve the bind port: `--port` flag wins, then `$PORT`, then 3000. */
+function resolvePort(args: { port?: string }): number {
+  const raw = args.port ?? process.env.PORT;
+  if (raw === undefined) return 3000;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    consola.error(`--port must be an integer 0–65535 (got "${raw}")`);
+    process.exit(1);
+  }
+  return port;
+}
+
+async function runDev(port: number, overrides: ConfigOverrides): Promise<void> {
   const { createDevServer } = await import("./dev-server.ts");
-  const port = Number(process.env.PORT ?? 3000);
   const server = await createDevServer(process.cwd(), { port, overrides });
   consola.success(`rpxd dev → http://localhost:${server.port}`);
 }
 
 const dev = defineCommand({
   meta: { name: "dev", description: "Start the dev server (Vite + rpxd runtime)" },
-  args: runArgs,
-  run: ({ args }) => runDev(overridesFrom(args)),
+  args: serveArgs,
+  run: ({ args }) => runDev(resolvePort(args), overridesFrom(args)),
 });
 
 const build = defineCommand({
@@ -65,11 +82,13 @@ const build = defineCommand({
 
 const start = defineCommand({
   meta: { name: "start", description: "Serve the build from pure Bun (no Vite)" },
-  args: runArgs,
+  args: serveArgs,
   run: async ({ args }) => {
     const { startApp } = await import("./start.ts");
-    const port = Number(process.env.PORT ?? 3000);
-    const app = await startApp(process.cwd(), { port, overrides: overridesFrom(args) });
+    const app = await startApp(process.cwd(), {
+      port: resolvePort(args),
+      overrides: overridesFrom(args),
+    });
     consola.success(`rpxd start → http://localhost:${app.port}`);
   },
 });

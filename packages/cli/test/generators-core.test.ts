@@ -80,6 +80,17 @@ describe("parseFields (Phoenix-style field:type)", () => {
   it("rejects an unknown type", () => {
     expect(() => parseFields(["title:wat"])).toThrow(/unknown field type "wat"/);
   });
+
+  it("rejects field names that collide with generated columns", () => {
+    expect(() => parseFields(["id:string"])).toThrow(/collides with a generated column/);
+    expect(() => parseFields(["owner:string"])).toThrow(/generated column/);
+    expect(() => parseFields(["created:datetime"])).toThrow(/generated column/);
+  });
+
+  it("rejects field names that aren't valid identifiers", () => {
+    expect(() => parseFields(["2fa:string"])).toThrow(/not a valid identifier/);
+    expect(() => parseFields(["_:string"])).toThrow(/not a valid identifier/);
+  });
 });
 
 describe("name helpers", () => {

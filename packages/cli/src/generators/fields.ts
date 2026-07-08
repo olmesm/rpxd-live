@@ -8,7 +8,7 @@
  * a `String` foreign key plus (in the printed Prisma model) a `@relation` to
  * `User`. See {@link Field.reference}.
  */
-import { camelCase } from "./names.ts";
+import { assertFieldName, assertIdentifier, camelCase } from "./names.ts";
 
 /** The field types the scaffold generator understands. */
 export type FieldType =
@@ -63,12 +63,16 @@ function parseReference(rawName: string, target: string | undefined, spec: strin
   // `authorId` → fk `authorId`, relation `author`; `author` → fk `authorId`, relation `author`.
   const [fkName, relationName] =
     /Id$/.test(base) && base.length > 2 ? [base, base.slice(0, -2)] : [`${base}Id`, base];
+  const model = assertIdentifier(
+    camelCase(target).replace(/^./, (c) => c.toUpperCase()),
+    "model",
+  );
   return {
-    name: fkName,
+    name: assertFieldName(fkName),
     type: "references",
     tsType: "string",
     prismaType: "String",
-    reference: { model: camelCase(target).replace(/^./, (c) => c.toUpperCase()), relationName },
+    reference: { model, relationName: assertIdentifier(relationName, "relation") },
   };
 }
 
@@ -96,6 +100,6 @@ export function parseFields(specs: string[]): Field[] {
         `unknown field type "${rawType}" for "${rawName}" — use one of ${Object.keys(SCALARS).join(", ")}, references`,
       );
     }
-    return { name: camelCase(rawName), type: rawType as FieldType, ...mapping };
+    return { name: assertFieldName(camelCase(rawName)), type: rawType as FieldType, ...mapping };
   });
 }
