@@ -142,6 +142,45 @@ describe("planScaffold", () => {
     expect(plan.steps.join("\n")).toMatch(/Ignored --protected/);
   });
 
+  it("protects pages by default when the app has auth", () => {
+    const plan = planScaffold({
+      context: "Todos",
+      schema: "Todo",
+      plural: "todos",
+      fieldSpecs: ["text:string"],
+      // protectedRoute unset
+      features: { hasDb: true, hasAuth: true },
+    });
+    expect(file(plan, "routes/todos.tsx")).toContain('redirect("/login")');
+    // the generated test signs in so mount passes
+    expect(file(plan, "test/todos.test.ts")).toContain("user: { id:");
+    expect(plan.steps.join("\n")).toMatch(/Protected by default/);
+  });
+
+  it("is public by default without auth", () => {
+    const plan = planScaffold({
+      context: "Todos",
+      schema: "Todo",
+      plural: "todos",
+      fieldSpecs: ["text:string"],
+      features: noFeatures,
+    });
+    expect(file(plan, "routes/todos.tsx")).not.toContain("redirect");
+  });
+
+  it("--no-protected opts out on an auth app", () => {
+    const plan = planScaffold({
+      context: "Todos",
+      schema: "Todo",
+      plural: "todos",
+      fieldSpecs: ["text:string"],
+      protectedRoute: false,
+      features: { hasDb: true, hasAuth: true },
+    });
+    expect(file(plan, "routes/todos.tsx")).not.toContain("redirect");
+    expect(plan.steps.join("\n")).not.toMatch(/Protected by default/);
+  });
+
   it("--kind http emits a route() endpoint and no toggle", () => {
     const plan = planScaffold({
       context: "Todos",

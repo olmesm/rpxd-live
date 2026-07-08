@@ -140,7 +140,11 @@ const scaffold = defineCommand({
     schema: { type: "positional", required: true, description: "Schema (singular), e.g. Todo" },
     plural: { type: "positional", required: true, description: "Plural route/table, e.g. todos" },
     kind: { type: "string", default: "page", description: "page (live route) or http (route())" },
-    protected: { type: "boolean", default: false, description: "Gate the page behind auth" },
+    protected: {
+      type: "boolean",
+      description:
+        "Protect the page (default: on when the app has auth; --no-protected to opt out)",
+    },
     test: { type: "boolean", default: true, description: "Emit a domain test (--no-test to skip)" },
     force: { type: "boolean", default: false, description: "Overwrite existing files" },
   },
