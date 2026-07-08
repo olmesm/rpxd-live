@@ -42,6 +42,77 @@ jobs:
       - name: Bun-runtime tests (smoke + adapters)
         run: bun test spikes/vite-bun-ssr spikes/rsc-flight packages/server-bun/test-bun packages/storage-sqlite/test-bun examples/todos/test-bun packages/cli/test-bun
 
+  generators:
+    name: Generators (init + scaffold + run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Programmatic acceptance: init → scaffold → typecheck → build → serve.
+      - name: Generator acceptance test
+        run: bun test packages/cli/test-bun/generators.test.ts
+
+      # Binary smoke: drive the real `rpxd` CLI end to end. The generated app
+      # resolves @rpxd/* / react / vite via the todos example's node_modules
+      # (a superset of a generated app's deps) — the same shape `bun install`
+      # would produce for a published app.
+      - name: rpxd init + scaffold via the CLI binary
+        run: |
+          set -euxo pipefail
+          CLI="$GITHUB_WORKSPACE/packages/cli/src/cli.ts"
+          bun "$CLI" init .ci-gen --no-db --force
+          ln -s "$GITHUB_WORKSPACE/examples/todos/node_modules" .ci-gen/node_modules
+          cd .ci-gen
+          bun "$CLI" scaffold Notes Note notes title:string pinned:boolean
+          bunx tsc --noEmit -p tsconfig.json
+          bun node_modules/.bin/rpxd build
+
+  scaffold:
+    name: Scaffold (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    # Matrix over scaffold shapes: init a fresh app, scaffold a resource, then
+    # run the test the scaffold itself generated — a page's testLive route test
+    # (mount → rpcs → patches) or an http route's domain test. The generated app
+    # is created as a workspace member so `bun install` links @rpxd/* + vitest,
+    # exactly as a published app would resolve after install.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: page-toggle
+            cmd: scaffold Todos Todo todos text:string done:boolean
+          - name: page-plain
+            cmd: scaffold Notes Note notes title:string body:text
+          - name: http-route
+            cmd: scaffold Feeds Feed feeds url:string --kind http
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Scaffold then run the generated test
+        run: |
+          set -euxo pipefail
+          CLI="$GITHUB_WORKSPACE/packages/cli/src/cli.ts"
+          APP="examples/_gen_${{ matrix.name }}"
+          bun "$CLI" init "$APP" --no-db --force
+          ( cd "$APP" && bun "$CLI" ${{ matrix.cmd }} )
+          # Link the new workspace member (vitest + @rpxd/* into its node_modules).
+          bun install
+          ( cd "$APP" && bun run test )
+
   e2e:
     name: e2e (${{ matrix.transport }}, rsc=${{ matrix.rsc }})
     runs-on: ubuntu-latest

@@ -1,67 +1,161 @@
 #!/usr/bin/env bun
 /**
- * `rpxd dev|build|start` (§14).
+ * The `rpxd` CLI (§14). Two families of commands, one dispatcher (citty):
  *
- * - `dev`: one Bun process, Vite middleware mode + rpxd runtime, one port.
- * - `build`: production client + server (+ rsc) bundles.
- * - `start`: pure Bun runtime over the build.
- *
- * Flags (all commands): `--transport <sse|ws>` and `--rsc` / `--no-rsc`
- * override `rpxd.config.ts` — handy for exercising one app across the
- * render/transport combinations (the CI matrix) without editing the config.
+ * - **Run**: `dev` (Vite middleware + rpxd runtime, one port), `build` (client
+ *   + server bundles), `start` (pure-Bun runtime over the build). All accept
+ *   `--transport <sse|ws>` and `--rsc` / `--no-rsc` to override `rpxd.config.ts`.
+ * - **Generate**: `init` (new app), `auth` (add Better Auth), `scaffold` (a
+ *   resource). File scaffolders — they write files and *print* the rest
+ *   (config edits, deps), never patching hand-owned files.
  */
+import { existsSync, readdirSync } from "node:fs";
+import { basename, resolve } from "node:path";
+import { defineCommand, runMain } from "citty";
+import { consola } from "consola";
 import type { ConfigOverrides } from "./config.ts";
-import { createDevServer } from "./dev-server.ts";
+import { planAuth } from "./generators/auth.ts";
+import { detectFeatures } from "./generators/detect.ts";
+import { planInit } from "./generators/init.ts";
+import { runPlan } from "./generators/run.ts";
+import { planScaffold } from "./generators/scaffold.ts";
 
-const argv = process.argv.slice(2);
-const [command = "dev"] = argv;
-
-/** Parse `--transport <sse|ws>`, `--rsc`, `--no-rsc` into config overrides. */
-function parseOverrides(args: string[]): ConfigOverrides {
+/** Parse the shared `--transport` / `--rsc` run flags into config overrides. */
+function overridesFrom(args: { transport?: string; rsc?: boolean }): ConfigOverrides {
   const overrides: ConfigOverrides = {};
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--transport") {
-      const value = args[++i];
-      if (value !== "sse" && value !== "ws") {
-        console.error(`--transport must be "sse" or "ws" (got "${value ?? ""}")`);
-        process.exit(1);
-      }
-      overrides.transport = value;
-    } else if (arg === "--rsc") {
-      overrides.rsc = true;
-    } else if (arg === "--no-rsc") {
-      overrides.rsc = false;
+  if (args.transport !== undefined) {
+    if (args.transport !== "sse" && args.transport !== "ws") {
+      consola.error(`--transport must be "sse" or "ws" (got "${args.transport}")`);
+      process.exit(1);
     }
+    overrides.transport = args.transport;
   }
+  if (typeof args.rsc === "boolean") overrides.rsc = args.rsc;
   return overrides;
 }
 
-const overrides = parseOverrides(argv.slice(1));
+/** Flags shared by dev/build/start. */
+const runArgs = {
+  transport: { type: "string", description: "Override transport: sse or ws" },
+  rsc: { type: "boolean", description: "Force RSC fields on (--rsc) or off (--no-rsc)" },
+} as const;
 
-switch (command) {
-  case "dev": {
-    const port = Number(process.env.PORT ?? 3000);
-    const server = await createDevServer(process.cwd(), { port, overrides });
-    console.log(`rpxd dev → http://localhost:${server.port}`);
-    break;
-  }
-  case "build": {
+async function runDev(overrides: ConfigOverrides): Promise<void> {
+  const { createDevServer } = await import("./dev-server.ts");
+  const port = Number(process.env.PORT ?? 3000);
+  const server = await createDevServer(process.cwd(), { port, overrides });
+  consola.success(`rpxd dev → http://localhost:${server.port}`);
+}
+
+const dev = defineCommand({
+  meta: { name: "dev", description: "Start the dev server (Vite + rpxd runtime)" },
+  args: runArgs,
+  run: ({ args }) => runDev(overridesFrom(args)),
+});
+
+const build = defineCommand({
+  meta: { name: "build", description: "Build the client + server bundles" },
+  args: runArgs,
+  run: async ({ args }) => {
     const { buildApp } = await import("./build.ts");
-    await buildApp(process.cwd(), overrides);
-    console.log("rpxd build → dist/client + dist/server");
-    break;
-  }
-  case "start": {
+    await buildApp(process.cwd(), overridesFrom(args));
+    consola.success("rpxd build → dist/client + dist/server");
+  },
+});
+
+const start = defineCommand({
+  meta: { name: "start", description: "Serve the build from pure Bun (no Vite)" },
+  args: runArgs,
+  run: async ({ args }) => {
     const { startApp } = await import("./start.ts");
     const port = Number(process.env.PORT ?? 3000);
-    const app = await startApp(process.cwd(), { port, overrides });
-    console.log(`rpxd start → http://localhost:${app.port}`);
-    break;
-  }
-  default:
-    console.error(
-      `Unknown command "${command}". Usage: rpxd dev|build|start [--transport sse|ws] [--rsc|--no-rsc]`,
-    );
-    process.exit(1);
-}
+    const app = await startApp(process.cwd(), { port, overrides: overridesFrom(args) });
+    consola.success(`rpxd start → http://localhost:${app.port}`);
+  },
+});
+
+const init = defineCommand({
+  meta: { name: "init", description: "Scaffold a new rpxd app" },
+  args: {
+    dir: { type: "positional", required: false, description: "Target directory (default: .)" },
+    auth: { type: "boolean", default: true, description: "Wire Better Auth (--no-auth to skip)" },
+    db: { type: "boolean", default: true, description: "Wire Prisma/SQLite (--no-db to skip)" },
+    force: { type: "boolean", default: false, description: "Write into a non-empty directory" },
+  },
+  run: ({ args }) => {
+    const root = resolve(args.dir ?? ".");
+    const nonEmpty =
+      existsSync(root) &&
+      readdirSync(root).some((e) => e !== ".git" && e !== "node_modules" && !e.startsWith("."));
+    if (nonEmpty && !args.force) {
+      consola.error(`${root} is not empty — pass --force to scaffold into it anyway.`);
+      process.exit(1);
+    }
+    const plan = planInit({ name: basename(root), auth: args.auth, db: args.db });
+    consola.start(`Scaffolding ${basename(root)} (auth=${args.db && args.auth}, db=${args.db})`);
+    runPlan(root, plan, { force: args.force, codegen: true });
+    consola.success(`Created ${basename(root)}.`);
+  },
+});
+
+const auth = defineCommand({
+  meta: { name: "auth", description: "Add Better Auth + Prisma to an existing app" },
+  args: {
+    force: { type: "boolean", default: false, description: "Overwrite existing files" },
+  },
+  run: ({ args }) => {
+    const root = process.cwd();
+    const plan = planAuth({ features: detectFeatures(root) });
+    runPlan(root, plan, { force: args.force, codegen: true });
+    consola.success("Auth files written. Follow the steps above to finish wiring.");
+  },
+});
+
+const scaffold = defineCommand({
+  meta: {
+    name: "scaffold",
+    description: "Generate a resource: rpxd scaffold <Context> <Schema> <plural> [field:type…]",
+  },
+  args: {
+    context: { type: "positional", required: true, description: "Context module, e.g. Todos" },
+    schema: { type: "positional", required: true, description: "Schema (singular), e.g. Todo" },
+    plural: { type: "positional", required: true, description: "Plural route/table, e.g. todos" },
+    kind: { type: "string", default: "page", description: "page (live route) or http (route())" },
+    protected: { type: "boolean", default: false, description: "Gate the page behind auth" },
+    test: { type: "boolean", default: true, description: "Emit a domain test (--no-test to skip)" },
+    force: { type: "boolean", default: false, description: "Overwrite existing files" },
+  },
+  run: ({ args }) => {
+    if (args.kind !== "page" && args.kind !== "http") {
+      consola.error(`--kind must be "page" or "http" (got "${args.kind}")`);
+      process.exit(1);
+    }
+    const fieldSpecs = (args._ as string[]).slice(3);
+    const root = process.cwd();
+    try {
+      const plan = planScaffold({
+        context: args.context,
+        schema: args.schema,
+        plural: args.plural,
+        fieldSpecs,
+        kind: args.kind,
+        protectedRoute: args.protected,
+        test: args.test,
+        features: detectFeatures(root),
+      });
+      runPlan(root, plan, { force: args.force, codegen: true });
+      consola.success(`Scaffolded ${args.schema}.`);
+    } catch (error) {
+      consola.error((error as Error).message);
+      process.exit(1);
+    }
+  },
+});
+
+const main = defineCommand({
+  meta: { name: "rpxd", description: "Live objects for React — dev server + generators" },
+  // Bare `rpxd` prints usage; `rpxd dev` (etc.) run the commands below.
+  subCommands: { dev, build, start, init, auth, scaffold },
+});
+
+runMain(main);

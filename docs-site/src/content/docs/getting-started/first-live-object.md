@@ -124,4 +124,6 @@ and a typed render — no API layer, no client store, no manual cache.
 - **If the handler had thrown**, the optimistic function would simply be
   dropped — a free rollback — and `sync.errors` would be populated.
 
-Next, dig into the [full fluent chain](/rpxd-live/guides/the-fluent-chain/).
+Next, dig into the [full fluent chain](/rpxd-live/guides/the-fluent-chain/) —
+or, now that you've seen the shape by hand, let
+[`rpxd scaffold`](/rpxd-live/guides/cli-generators/) write it for you.
