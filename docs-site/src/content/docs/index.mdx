@@ -1,0 +1,50 @@
+---
+title: rpxd
+description: A live-object framework for React — server-side stateful objects with reducers, Immer patches over SSE/WS, and optimistic replay on the client.
+template: splash
+hero:
+  tagline: Server-side stateful objects with reducers. Immer patches over SSE/WS. Optimistic replay on the client. Zero annotations.
+  actions:
+    - text: Get started
+      link: /rpxd-live/getting-started/introduction/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/olmesm/rpxd-live
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What is rpxd?
+
+rpxd is a live-object framework for React. You write a **live object** per
+page — a server-side, per-session stateful object with a `mount`, reducers
+(`rpc`s), and a `render`. State changes are streamed to the browser as Immer
+patches over SSE or WebSocket, and the client replays your optimistic updates
+on top for instant feedback.
+
+The whole contract is inferred from a single fluent chain — no manual
+annotations, no generated client, no glue.
+
+<CardGrid stagger>
+  <Card title="One fluent chain" icon="seti:typescript">
+    `live().mount().rpc().render()`. State locks the shape, rpcs lock the
+    payloads, render gets fully-typed props including an exact-keyed `rpc`
+    facade. Contract enforced by the type system.
+  </Card>
+  <Card title="Patches, not payloads" icon="random">
+    Handlers mutate state through `ctx.patchState`; rpxd diffs it with Immer
+    and streams the minimal patch. The client applies it — and replays your
+    optimistic update on top.
+  </Card>
+  <Card title="SSE or WebSocket" icon="rocket">
+    The same live object runs over Server-Sent Events or WebSocket — the
+    transports are API-identical. Switch with one config flag.
+  </Card>
+  <Card title="Swappable everything" icon="setting">
+    Storage adapters (memory, session, SQLite, Redis), a server adapter seam,
+    and an RSC render path. The framework never touches your database.
+  </Card>
+</CardGrid>
