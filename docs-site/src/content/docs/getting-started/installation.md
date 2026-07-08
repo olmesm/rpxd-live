@@ -25,7 +25,9 @@ markdown page (`/doc`) — it doubles as the acceptance suite.
 
 ## The CLI
 
-`@rpxd/cli` gives you three commands:
+`@rpxd/cli` is both the app runtime and a code generator.
+
+### Run an app
 
 | Command | What it does |
 | --- | --- |
@@ -33,14 +35,39 @@ markdown page (`/doc`) — it doubles as the acceptance suite.
 | `rpxd build` | Production client + server bundles (`vite build`), plus the RSC bundle when enabled. |
 | `rpxd start` | Pure Bun runtime over the build — no Vite at runtime. |
 
-Every command accepts flags that override `rpxd.config.ts`, handy for
-exercising one app across transports and render modes:
+All three accept flags that override `rpxd.config.ts`, handy for exercising one
+app across transports and render modes without editing the config:
 
 ```sh
 rpxd dev --transport ws        # force WebSocket transport
 rpxd dev --transport sse       # force Server-Sent Events (default)
 rpxd dev --rsc                 # enable RSC fields
 rpxd dev --no-rsc              # disable RSC fields
+```
+
+`PORT` (env) sets the port for `dev` and `start` (default `3000`).
+
+### Scaffold
+
+The generators write real files — routes, `domain/` modules, `adapters/` — and
+re-run codegen. Nothing is hidden behind runtime magic; everything they emit is
+yours to edit.
+
+| Command | What it does | Flags |
+| --- | --- | --- |
+| `rpxd init [dir]` | Scaffold a new app in `dir` (default `.`). Wires Better Auth + Prisma/SQLite by default. | `--no-auth`, `--no-db`, `--force` (write into a non-empty dir) |
+| `rpxd auth` | Add Better Auth + Prisma to an existing app. | `--force` (overwrite existing files) |
+| `rpxd scaffold <Context> <Schema> <plural> [field:type…]` | Generate a resource — a live route (or HTTP `route()`), its `domain/` module, and a test. | `--kind page\|http` (default `page`), `--protected` (gate behind auth), `--no-test`, `--force` |
+
+```sh
+# a new app with auth + a database
+bunx rpxd init my-app
+
+# a Todos resource: a live page at /todos plus domain/todos + a test
+bunx rpxd scaffold Todos Todo todos text:string done:boolean
+
+# a protected resource served as an HTTP route instead of a page
+bunx rpxd scaffold Orders Order orders total:number --kind http --protected
 ```
 
 ## Project layout
