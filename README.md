@@ -18,9 +18,9 @@ export default live("/org/$orgId/board")
     return { projects: await db.project.findMany({ where: { orgId } }) };
   })
   .rpc("create", (r) =>
-    r.input(z.object({ name: z.string() })).handler(async (state, { name }, ctx) => {
+    r.input(z.object({ name: z.string() })).handler(async ({ name }, ctx) => {
       const p = await db.project.create({ data: { orgId: ctx.params.orgId, name } });
-      state.projects.push(p);
+      ctx.patchState((s) => { s.projects.push(p); });
       ctx.broadcast(`org:${ctx.params.orgId}`, "project.created", p);
     }),
   )
@@ -39,16 +39,19 @@ cd examples/todos && bun run dev   # http://localhost:3000 — todos, /chat, /im
 
 ## Packages
 
+Each package has its own README.
+
 | Package | What it is |
 | --- | --- |
-| `@rpxd/core` | server runtime: `live()`, per-instance FIFO queue, patches, protocol, storage seam, pubsub |
-| `@rpxd/client` | `LiveStore` (optimistic replay, `keyOf`, batching), `LiveConnection` (SSE), `Link`/`nav` |
-| `@rpxd/server-bun` | `ServerAdapter` seam + HTTP/SSE runtime handler (sessions, SSR attach, eviction) |
-| `@rpxd/vite-plugin` | route codegen (`.rpxd/routes.gen.ts`), path-literal maintenance |
-| `@rpxd/cli` | `rpxd dev/build/start`, `defineConfig`, zero-config app shell |
-| `@rpxd/storage-*` | memory / session / sqlite (`bun:sqlite`) / redis adapters |
-| `@rpxd/rsc` | RSC fields (§16, experimental `rsc: true`) |
-| `@rpxd/adapter-node` | v2 stub — seam proven by structure |
+| [`@rpxd/core`](./packages/core) | server runtime: `live()`, per-instance FIFO queue, patches, protocol, storage seam, pubsub |
+| [`@rpxd/client`](./packages/client) | `LiveStore` (optimistic replay, `keyOf`, batching), `LiveConnection` (SSE/WS), `LiveApp`, `Link`/`nav` |
+| [`@rpxd/server-bun`](./packages/server-bun) | `ServerAdapter` seam + HTTP/SSE/WS runtime handler (sessions, SSR attach, eviction) |
+| [`@rpxd/vite-plugin`](./packages/vite-plugin) | route codegen (`.rpxd/routes.gen.ts`), path-literal maintenance |
+| [`@rpxd/cli`](./packages/cli) | `rpxd dev/build/start`, `defineConfig`, zero-config app shell |
+| [`@rpxd/testing`](./packages/testing) | `testLive(route)` harness: typed `t.rpc.*` against the real runtime |
+| [`@rpxd/storage-*`](./packages/storage-memory) | memory / session / sqlite (`bun:sqlite`) / redis adapters |
+| [`@rpxd/rsc`](./packages/rsc) | RSC fields (§16, `rsc: true`): Flight-serialized subtrees with `'use client'` islands |
+| [`@rpxd/adapter-node`](./packages/adapter-node) | v2 stub — seam proven by structure |
 
 ## Development
 
