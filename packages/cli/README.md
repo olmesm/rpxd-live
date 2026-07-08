@@ -1,8 +1,8 @@
 # @rpxd/cli
 
-The rpxd app shell: `rpxd dev`, `rpxd build`, `rpxd start`, and
-`defineConfig`. This is the package an rpxd app actually runs — zero config,
-no entry files to write.
+The rpxd app shell and command line: `rpxd dev`/`build`/`start` to run an app,
+`rpxd init`/`auth`/`scaffold` to generate one, and `defineConfig`. This is the
+package an rpxd app actually runs — zero config, no entry files to write.
 
 ## Getting started
 
@@ -26,6 +26,24 @@ bunx rpxd build    # dist/client (hashed assets) + dist/server (SSR bundle)
 bunx rpxd start    # serve the build with pure Bun — no Vite at runtime
 ```
 
+`dev`/`build`/`start` accept `--transport <sse|ws>` and `--rsc` / `--no-rsc`
+to override `rpxd.config.ts` — handy for exercising one app across every
+render/transport combination without editing the config.
+
+## Scaffolding
+
+Generators write real files (routes, `domain/`, `adapters/`) and re-run
+codegen — nothing is hidden behind runtime magic:
+
+```sh
+bunx rpxd init my-app                       # new app (Better Auth + Prisma/SQLite
+                                            #   by default; --no-auth / --no-db)
+bunx rpxd auth                              # add Better Auth + Prisma to an app
+bunx rpxd scaffold Todos Todo todos text:string done:boolean
+                                            # a resource: live route + domain +
+                                            #   test (--kind http, --protected)
+```
+
 ## Configuration
 
 `rpxd.config.ts` is the only non-route file, and it's optional:
@@ -37,7 +55,7 @@ import { sqlite } from "@rpxd/storage-sqlite";
 export default defineConfig({
   storage: sqlite("data/app.db"), // default: memory()
   transport: ws(),                // default: sse()
-  session: { authenticate: async (req) => ({ user: await userFrom(req) }) },
+  session: { authenticate: async (req, { sid }) => ({ sid, user: await userFrom(req) }) },
   rateLimit: { capacity: 20, refillPerSec: 5 },
   rsc: true,                      // Flight RSC fields (§16)
 });

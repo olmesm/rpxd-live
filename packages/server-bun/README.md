@@ -13,6 +13,8 @@ import it directly to embed rpxd in your own Bun server.
   (batches), `POST /__rpxd/control` (mount / resync / params), plus SSR
   with attach tokens so the page adopts its server-warmed instance. Owns
   sessions (cookie), instance registry, warm-TTL eviction, and rpc dedupe.
+  Plain HTTP routes (`httpRoutes`, from `route()`) are matched before the
+  SSR/`404` fallthrough — that's how webhooks and `/api/auth/*` are served.
 - **`bunAdapter`** — the `ServerAdapter` implementation over `Bun.serve`.
   The handler itself has no Bun types past this boundary, which is what
   keeps a future Node adapter small.

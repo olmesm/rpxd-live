@@ -20,7 +20,9 @@ Import from it directly for `Link`, `useNav`, and `RenderProps`.
   and at-least-once batch resend (the server dedupes by `rpcId`).
 - **`LiveApp`** — the client shell: renders the current route and
   soft-swaps route + connection on navigation. The previous page stays
-  interactive until the next page's snapshot arrives.
+  interactive until the next page's snapshot arrives. A `{ redirect }`
+  signal from a route's `mount` (e.g. `throw redirect("/login")`) is
+  turned into a soft navigation to the target.
 - **`Link` / `useNav`** — typed navigation. Route paths autocomplete from
   the generated route table (`Register` interface merge); path params are
   identity (navigate = remount), search params are view state

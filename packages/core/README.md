@@ -12,6 +12,12 @@ Most apps never install this directly beyond importing `live()`; the
 - **`live(path)`** — the fluent route builder. State locks at `.mount()`,
   payloads lock at `.input()`, and `.render()` hands the component fully
   typed props with an exact-keyed `rpc` facade. Zero annotations.
+- **`route(path)`** — the fluent builder for plain HTTP endpoints (webhooks,
+  auth delegation): `.get`/`.post`/… implement a method, `.all` forwards a
+  whole subtree. Same path typing as `live()`, none of the state machinery.
+- **`redirect(to)`** — thrown from `mount` to bounce (e.g. an unauthenticated
+  visitor). A full load becomes a `302`; a soft navigation gets a `{ redirect }`
+  signal the client router follows. `isRedirect()` recognises it.
 - **`LiveInstance`** — one mounted live object: a per-instance FIFO queue
   serializes mutations, handlers run off-queue (`await` never blocks the
   instance), and every `ctx.patchState` flush becomes one atomic Immer patch
@@ -23,7 +29,9 @@ Most apps never install this directly beyond importing `live()`; the
 - **Storage seam** — `StorageAdapter` (`get`/`set` of snapshots + the pubsub
   bus). `memory()` ships here as the default; see the `@rpxd/storage-*`
   packages for the rest.
-- **`matchPath`/`matchRoute`** — the one URL matcher client and server share.
+- **`matchPath`/`matchRoute`** (pages) and **`matchHttpPath`/`matchHttpRoute`**
+  (HTTP routes, incl. the trailing `$` catch-all) — the URL matchers client
+  and server share.
 
 ## Key concepts
 

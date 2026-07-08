@@ -12,10 +12,13 @@ package directly for custom Vite setups or to run codegen standalone.
   (`org.$orgId.board.tsx` → `/org/$orgId/board`; `__root`/`__404`/`__error`
   are the shell). The generated module exports the route tree, lazy module
   loaders, and a `Register` interface merge that types `Link`,
-  `useNav`, and `nav.navigate` across the app with zero imports.
+  `useNav`, and `nav.navigate` across the app with zero imports. `.ts` files
+  export a `route()` (webhooks, auth) instead of a page; their server-only
+  handlers are generated into a separate module so they never reach the
+  client bundle.
 - **Path-literal maintenance** — the filename is truth: rename a route file
-  and the `live("...")` literal inside it is rewritten; hand-edit the
-  literal and it's corrected back.
+  and the `live("...")` / `route("...")` literal inside it is rewritten;
+  hand-edit the literal and it's corrected back.
 
 ## Usage
 
