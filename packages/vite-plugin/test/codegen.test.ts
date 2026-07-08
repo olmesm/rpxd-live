@@ -2,9 +2,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ensurePathLiteral, generateRoutesModule, scanRoutes } from "../src/codegen.ts";
+import {
+  ensurePathLiteral,
+  generateHandlersModule,
+  generateRoutesModule,
+  scanRoutes,
+} from "../src/codegen.ts";
 import { runCodegen } from "../src/index.ts";
-import { fileToRoute, pathToPattern } from "../src/routes.ts";
+import { fileToRoute, pathToPattern, type RouteEntry } from "../src/routes.ts";
 
 describe("fileToRoute (§7)", () => {
   it("maps flat filenames to URL paths", () => {
@@ -133,19 +138,24 @@ describe("codegen end-to-end", () => {
     expect(generated).toContain("export const notFoundModule = undefined;");
   });
 
-  it("emits HTTP routes into routeHandlers, not routeModules/routeTree", () => {
-    const generated = generateRoutesModule([
+  it("keeps HTTP routes out of routes.gen.ts (client-imported); puts them in handlers.gen.ts", () => {
+    const entries: RouteEntry[] = [
       { file: "index.tsx", path: "/", kind: "page" },
       { file: "api.auth.$.ts", path: "/api/auth/$", kind: "http" },
-    ]);
-    expect(generated).toContain("export const routeHandlers = {");
-    expect(generated).toContain('"/api/auth/$": () => import("../routes/api.auth.$.ts")');
-    // catch-all path must NOT leak into the navigable tree or Register
-    expect(generated).not.toContain('"/api/auth/$": {'); // routeTree entry shape
-    const modulesBlock = generated.slice(
-      generated.indexOf("export const routeModules"),
-      generated.indexOf("export const routeHandlers"),
-    );
-    expect(modulesBlock).not.toContain("/api/auth/$");
+    ];
+    const routes = generateRoutesModule(entries);
+    // HTTP routes must NOT appear in the client-imported module at all.
+    expect(routes).not.toContain("routeHandlers");
+    expect(routes).not.toContain("/api/auth/$");
+
+    const handlers = generateHandlersModule(entries);
+    expect(handlers).toContain("export const routeHandlers = {");
+    expect(handlers).toContain('"/api/auth/$": () => import("../routes/api.auth.$.ts")');
+    expect(handlers).not.toContain("routeTree"); // server-only, not the navigable map
+  });
+
+  it("generateHandlersModule renders {} when there are no HTTP routes", () => {
+    const handlers = generateHandlersModule([{ file: "index.tsx", path: "/", kind: "page" }]);
+    expect(handlers).toContain("export const routeHandlers = {} as const;");
   });
 });

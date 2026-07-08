@@ -1,5 +1,6 @@
 import { live } from "@rpxd/core";
-import { addTodo, listTodos, scopeFrom, toggleTodo } from "../domain/todos";
+import { scopeFrom } from "../domain/scope";
+import { addTodo, listTodos, toggleTodo } from "../domain/todos";
 
 // Data access goes through the domain layer, never `db` directly (see
 // docs/domain-layer.md). Handlers stay thin: derive the scope from
@@ -45,7 +46,12 @@ export default live("/")
                 type="button"
                 data-testid="sign-out"
                 onClick={async () => {
-                  await fetch("/api/auth/sign-out", { method: "POST" });
+                  // Better Auth wants a JSON content-type and body (even empty).
+                  await fetch("/api/auth/sign-out", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: "{}",
+                  });
                   window.location.assign("/");
                 }}
               >

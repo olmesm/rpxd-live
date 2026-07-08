@@ -40,14 +40,6 @@ export const routeModules = {
   "/login": () => import("../routes/login.tsx"),
 } as const;
 
-/**
- * Lazy importers for server-only HTTP routes (`route()`, docs/routes-and-auth.md).
- * Kept out of `routeModules`/`routeTree` — never navigable, never SSR'd.
- */
-export const routeHandlers = {
-  "/api/auth/$": () => import("../routes/api.auth.$.ts"),
-} as const;
-
 /** Shell modules (§14): HTML root, unmatched-URL page, error page. */
 export const rootModule = () => import("../routes/__root.tsx");
 export const notFoundModule = () => import("../routes/__404.tsx");

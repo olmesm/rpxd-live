@@ -23,6 +23,10 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Prisma generate + db (todos example)
+        run: bun run setup
+        working-directory: examples/todos
+
       - name: Lint
         run: bun run lint
 
@@ -50,6 +54,10 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Prisma generate + db (todos example)
+        run: bun run setup
+        working-directory: examples/todos
 
       - name: Install chromium
         run: bunx playwright install --with-deps chromium
