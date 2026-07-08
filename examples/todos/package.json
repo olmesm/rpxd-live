@@ -3,14 +3,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "rpxd dev"
+    "dev": "rpxd dev",
+    "setup": "prisma generate && prisma db push",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.4",
+    "@prisma/adapter-libsql": "^7.8.0",
+    "@prisma/client": "^7.8.0",
     "@rpxd/client": "workspace:*",
     "@rpxd/core": "workspace:*",
+    "@rpxd/rsc": "workspace:*",
+    "better-auth": "^1.6.23",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "@rpxd/rsc": "workspace:*"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@rpxd/cli": "workspace:*",
@@ -18,6 +25,7 @@
     "@types/bun": "^1.3.14",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "prisma": "^7.8.0",
     "typescript": "^5.9.0"
   }
 }

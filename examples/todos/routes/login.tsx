@@ -18,15 +18,17 @@ export default live("/login")
   .render(({ state, rpc }) => {
     const submit = (action: "sign-in" | "sign-up") => async (form: HTMLFormElement) => {
       const data = new FormData(form);
-      const res = await fetch(`/api/auth/${action}`, {
+      const email = String(data.get("email") ?? "");
+      // Better Auth email/password endpoints (sign-up needs a name).
+      const res = await fetch(`/api/auth/${action}/email`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email: data.get("email"), password: data.get("password") }),
+        body: JSON.stringify({ email, password: data.get("password"), name: email }),
       });
       if (res.ok) window.location.assign("/");
       else {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        void rpc.setError({ message: body.error ?? "sign in failed" });
+        const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+        void rpc.setError({ message: body.message ?? body.error ?? "sign in failed" });
       }
     };
     return (

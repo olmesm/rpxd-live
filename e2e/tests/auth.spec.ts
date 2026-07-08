@@ -13,11 +13,15 @@ test("sign up → scoped todos → sign out → sign back in", async ({ page }) 
   // Sign up on the login page; the form posts to /api/auth/sign-up.
   await page.goto("/login");
   await page.getByTestId("email").fill(email);
-  await page.getByTestId("password").fill("pw");
+  await page.getByTestId("password").fill("password123");
   await page.getByTestId("do-sign-up").click();
 
   // Lands on / signed in (authenticate resolved the new session into the Scope).
   await expect(page.getByTestId("who")).toContainText(email);
+
+  // Let the live connection settle after the full-page navigation before
+  // driving an rpc — adding the instant the page loads races the SSE connect.
+  await page.waitForTimeout(500);
 
   // Add a todo — scoped to this user. Wait for the server id (the ack, meaning
   // it's persisted); generous timeout since the shared dev server is under
@@ -37,7 +41,7 @@ test("sign up → scoped todos → sign out → sign back in", async ({ page }) 
   // Sign back in → the todo is still there, keyed to the user's identity.
   await page.getByTestId("sign-in-link").click();
   await page.getByTestId("email").fill(email);
-  await page.getByTestId("password").fill("pw");
+  await page.getByTestId("password").fill("password123");
   await page.getByTestId("do-sign-in").click();
   await expect(page.getByTestId("who")).toContainText(email);
   await expect(page.getByTestId("todos")).toContainText("auth-scoped task");

@@ -22,6 +22,38 @@ export function scanRoutes(routesDir: string): RouteEntry[] {
   return sortRoutes(entries);
 }
 
+/** Wrap map entries in braces, or `{}` when empty (a `{\n\n}` block is a format error). */
+function mapBlock(entriesStr: string): string {
+  return entriesStr ? `{\n${entriesStr}\n}` : "{}";
+}
+
+/**
+ * Render the server-only `handlers.gen.ts` module: lazy importers for HTTP
+ * `route()` files. Kept in a **separate** file the client entry never imports —
+ * co-locating these dynamic imports with `routeModules` would drag every HTTP
+ * route (and its server-only deps) into the client bundle (docs/routes-and-auth.md).
+ *
+ * @example
+ * ```ts
+ * const source = generateHandlersModule(scanRoutes(routesDir));
+ * ```
+ */
+export function generateHandlersModule(
+  entries: RouteEntry[],
+  routesImportPrefix = "../routes",
+): string {
+  const httpEntries = entries
+    .filter((e) => e.kind === "http" && e.path !== null)
+    .map((e) => `  "${e.path}": () => import("${routesImportPrefix}/${e.file}"),`)
+    .join("\n");
+  return `/**
+ * Auto-generated server-only HTTP route map — do not edit; maintained by \`rpxd dev\`.
+ * Never imported by the client entry (keeps \`route()\` handler deps server-side).
+ */
+export const routeHandlers = ${mapBlock(httpEntries)} as const;
+`;
+}
+
 /**
  * Render the `routes.gen.ts` module for a set of entries. Pure — callers
  * decide where to write it. `routesImportPrefix` is the relative path from
@@ -50,16 +82,8 @@ export function generateRoutesModule(
     .map((e) => `  "${e.path}": () => import("${routesImportPrefix}/${e.file}"),`)
     .join("\n");
 
-  const http = entries.filter((e) => e.kind === "http" && e.path !== null);
-  const httpEntries = http
-    .map((e) => `  "${e.path}": () => import("${routesImportPrefix}/${e.file}"),`)
-    .join("\n");
-  // Render an empty map inline as `{}` — a `{\n\n}` block is a format violation
-  // (an app with no pages, or no HTTP routes, would otherwise emit one).
-  const block = (entriesStr: string) => (entriesStr ? `{\n${entriesStr}\n}` : "{}");
-  const treeBlock = block(treeEntries);
-  const modulesBlock = block(moduleEntries);
-  const httpBlock = block(httpEntries);
+  const treeBlock = mapBlock(treeEntries);
+  const modulesBlock = mapBlock(moduleEntries);
 
   const shellEntry = (kind: RouteEntry["kind"], name: string) => {
     const e = shell(kind);
@@ -77,12 +101,6 @@ export const routeTree = ${treeBlock} as const;
 
 /** Lazy importers for each page route — used by the client router and SSR. */
 export const routeModules = ${modulesBlock} as const;
-
-/**
- * Lazy importers for server-only HTTP routes (\`route()\`, docs/routes-and-auth.md).
- * Kept out of \`routeModules\`/\`routeTree\` — never navigable, never SSR'd.
- */
-export const routeHandlers = ${httpBlock} as const;
 
 /** Shell modules (§14): HTML root, unmatched-URL page, error page. */
 ${shellEntry("root", "rootModule")}

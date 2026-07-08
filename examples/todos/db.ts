@@ -1,58 +1,60 @@
 /**
- * In-memory stand-in for a real database (Prisma, Drizzle, `bun:sqlite`, …).
- *
- * The framework never touches this file — it's plain userland. Only the domain
- * layer (`domain/`) imports it; `routes/` never does. Swap this for a real
- * client and nothing under `routes/` changes, because routes talk to `domain/`,
- * not to the db. See `docs/domain-layer.md`.
- *
- * Rows are keyed by `owner` — the demo scopes every query to the acting session
- * (spec §1's `findMany({ where: { orgId } })`), so one session never sees
- * another's todos. Queries return fresh row objects (not internal references)
- * so instance state never aliases the store — the contract a real db gives you.
+ * Todo data access over Prisma/SQLite. Prisma is loaded **lazily** — a dynamic
+ * import of the server-only `./prisma` module — so a route component that
+ * imports the domain layer (and transitively this file) never pulls
+ * `@prisma/client` into the client bundle, where it would crash at init. The
+ * import resolves only when a query runs, which is always server-side.
  */
 
-/** A persisted todo row. */
+/** A persisted todo row (the subset the UI needs). */
 export interface TodoRow {
   id: string;
   text: string;
   done: boolean;
 }
 
-// One table per owner. A real db would be one shared table with an `owner`
-// column; the in-memory version nests the maps.
-const tables = new Map<string, Map<string, TodoRow>>();
+const select = { id: true, text: true, done: true } as const;
+// `srv-` ids mark server-confirmed rows (vs optimistic tempIds, §4).
+const newId = () => `srv-${crypto.randomUUID()}`;
 
-let seq = 0;
-
-function tableFor(owner: string): Map<string, TodoRow> {
-  let table = tables.get(owner);
-  if (!table) {
-    // A brand-new owner starts with a seeded starter row.
-    table = new Map([["t0", { id: "t0", text: "Try rpxd", done: false }]]);
-    tables.set(owner, table);
-  }
-  return table;
-}
+// Load the Prisma client lazily AND server-only. `import.meta.env.SSR` is a
+// static `false` in the Vite client build, so this dynamic import (and all of
+// `@prisma/client`, which uses `node:crypto`) is tree-shaken out of the browser
+// bundle; on the server it's `true`. Route components import this file freely.
+const client = () => {
+  // The import must live INSIDE the statically-`false` branch so the client
+  // build prunes the whole edge to `./prisma` (and `@prisma/client`).
+  if (import.meta.env.SSR) return import("./prisma").then((m) => m.prisma);
+  throw new Error("db access is server-only");
+};
 
 export const db = {
   todos: {
-    /** All of `owner`'s rows, as detached copies. */
-    all(owner: string): TodoRow[] {
-      return [...tableFor(owner).values()].map((row) => ({ ...row }));
+    /** All of `owner`'s rows (oldest first); a new owner is seeded a starter row. */
+    async all(owner: string): Promise<TodoRow[]> {
+      const prisma = await client();
+      const rows = await prisma.todo.findMany({
+        where: { owner },
+        orderBy: { created: "asc" },
+        select,
+      });
+      if (rows.length > 0) return rows;
+      // Seed keeps the default cuid (not a `srv-` id) so tests/UI can tell a
+      // seeded row from a server-confirmed insert.
+      const seed = await prisma.todo.create({ data: { owner, text: "Try rpxd" }, select });
+      return [seed];
     },
-    /** Insert a row for `owner` with a server-assigned id; returns a copy. */
-    insert(owner: string, text: string): TodoRow {
-      const row: TodoRow = { id: `srv-${++seq}`, text, done: false };
-      tableFor(owner).set(row.id, row);
-      return { ...row };
+    /** Insert a row for `owner`; returns it. */
+    async insert(owner: string, text: string): Promise<TodoRow> {
+      const prisma = await client();
+      return prisma.todo.create({ data: { id: newId(), owner, text }, select });
     },
-    /** Flip `done` for one of `owner`'s rows; returns the updated copy, or `undefined`. */
-    toggle(owner: string, id: string): TodoRow | undefined {
-      const row = tableFor(owner).get(id);
+    /** Flip `done` for one of `owner`'s rows; returns it, or `undefined` if absent. */
+    async toggle(owner: string, id: string): Promise<TodoRow | undefined> {
+      const prisma = await client();
+      const row = await prisma.todo.findFirst({ where: { id, owner }, select: { done: true } });
       if (!row) return undefined;
-      row.done = !row.done;
-      return { ...row };
+      return prisma.todo.update({ where: { id }, data: { done: !row.done }, select });
     },
   },
 };
