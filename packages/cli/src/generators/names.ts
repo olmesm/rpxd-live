@@ -70,3 +70,20 @@ export function singularize(input: string): string {
   if (/s$/.test(input)) return input.slice(0, -1);
   return input;
 }
+
+/**
+ * Normalize a route/table plural segment: casing-cleaned and guaranteed plural,
+ * idempotent whether the argument arrives singular or already plural (so it
+ * never double-pluralizes). Chains {@link camelCase} → {@link singularize} →
+ * {@link pluralize}.
+ *
+ * @example
+ * ```ts
+ * routePlural("Todos");      // "todos"
+ * routePlural("todo");       // "todos"
+ * routePlural("blog posts"); // "blogPosts"
+ * ```
+ */
+export function routePlural(input: string): string {
+  return pluralize(singularize(camelCase(input)));
+}

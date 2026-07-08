@@ -2,12 +2,13 @@
  * `rpxd scaffold <Context> <Schema> <plural> [field:type…]` — a Phoenix-style
  * resource generator. Emits a route, a scoped domain module, and a test;
  * auth-aware (user-scoped + `--protected` when the app has auth) and db-aware
- * (Prisma-backed vs. in-memory). The Prisma model is *printed*, never written —
- * `prisma/schema.prisma` is yours to edit (docs/routes-and-auth.md).
+ * (Prisma-backed vs. in-memory). For a db app the Prisma model is *appended* to
+ * `prisma/schema.prisma` (append-only, never rewrites your models); everything
+ * else that touches a hand-owned file is printed (docs/routes-and-auth.md).
  */
 import type { ProjectFeatures } from "./detect.ts";
 import { parseFields } from "./fields.ts";
-import { pascalCase } from "./names.ts";
+import { pascalCase, routePlural } from "./names.ts";
 import { prismaModel, type ResourceSpec, resourceFiles } from "./templates/resource.ts";
 import type { GeneratorPlan } from "./types.ts";
 
@@ -60,7 +61,7 @@ export function planScaffold(options: ScaffoldOptions): GeneratorPlan {
   const spec: ResourceSpec = {
     context: pascalCase(options.context),
     schema: pascalCase(options.schema),
-    plural: options.plural.toLowerCase(),
+    plural: routePlural(options.plural),
     fields,
     hasDb: options.features.hasDb,
     hasAuth: options.features.hasAuth,

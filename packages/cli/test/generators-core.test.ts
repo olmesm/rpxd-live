@@ -10,6 +10,7 @@ import {
   kebabCase,
   pascalCase,
   pluralize,
+  routePlural,
   singularize,
 } from "../src/generators/names.ts";
 
@@ -91,6 +92,17 @@ describe("name helpers", () => {
     expect(pluralize("todo")).toBe("todos");
     expect(pluralize("note")).toBe("notes");
     expect(singularize("todos")).toBe("todo");
+  });
+
+  it("routePlural normalizes + guarantees plural, idempotently", () => {
+    // already-plural args stay put (no double-pluralize)
+    expect(routePlural("todos")).toBe("todos");
+    expect(routePlural("Posts")).toBe("posts");
+    // singular args become plural
+    expect(routePlural("todo")).toBe("todos");
+    // messy input → clean camelCase token
+    expect(routePlural("blog posts")).toBe("blogPosts");
+    expect(routePlural("blog_post")).toBe("blogPosts");
   });
 });
 

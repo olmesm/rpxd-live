@@ -52,6 +52,11 @@ Phoenix-style: a context, a schema, a plural, and `field:type` pairs.
 rpxd scaffold Todos Todo todos text:string done:boolean
 ```
 
+The **plural** becomes the route path (`/todos`) and table. It's normalized —
+camelCased and forced plural, idempotently — so `todo`, `todos`, or
+`Blog Posts` all resolve to a clean segment (`todos`, `todos`, `blogPosts`); you
+can't accidentally double-pluralize it.
+
 This writes a live route (`routes/todos.tsx`), a scoped domain module
 (`domain/todos.ts`), and a test (`test/todos.test.ts` — a `testLive` route test
 that drives the real live object). The generator is **auth- and db-aware**: it
