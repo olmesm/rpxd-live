@@ -114,15 +114,19 @@ jobs:
           ( cd "$APP" && bun run test )
 
   e2e:
-    name: e2e (${{ matrix.transport }}, rsc=${{ matrix.rsc }})
+    name: e2e (all transport × rsc combos)
     runs-on: ubuntu-latest
-    # Matrix the render/transport combos: SSE/WS are meant to be API-identical
-    # (§11) and rsc is opt-in (§16). rsc-only specs skip on the --no-rsc combos.
-    strategy:
-      fail-fast: false
-      matrix:
-        transport: [sse, ws]
-        rsc: ["true", "false"]
+    # A backstop against a stuck runner (one hung combo can't wedge the job for
+    # hours the way the old matrix occasionally did).
+    timeout-minutes: 15
+    # One job, four combos run sequentially over a single setup. The matrix used
+    # to pay bun install + prisma + the ~45s chromium install four times over for
+    # a ~15s suite; here that fixed cost is paid once. SSE/WS are meant to be
+    # API-identical (§11) and rsc is opt-in (§16); rsc-only specs skip themselves
+    # on --no-rsc. Each combo writes its report/traces to a combo-specific dir so
+    # the uploaded artifact keeps all four. The slow-booting sse/rsc=off combo
+    # runs last, and `!cancelled()` keeps every combo running even if one fails
+    # (the fail-fast: false behaviour the matrix had).
     steps:
       - uses: actions/checkout@v4
 
@@ -137,13 +141,56 @@ jobs:
         run: bun run setup
         working-directory: examples/todos
 
-      - name: Install chromium
+      - name: Install chromium (once, shared by all combos)
         run: bunx playwright install --with-deps chromium
         working-directory: e2e
 
-      - name: Run e2e suite
+      - name: "e2e — ws, rsc=on"
         run: bunx playwright test
         working-directory: e2e
         env:
-          RPXD_TRANSPORT: ${{ matrix.transport }}
-          RPXD_RSC: ${{ matrix.rsc }}
+          RPXD_TRANSPORT: ws
+          RPXD_RSC: "true"
+          PLAYWRIGHT_HTML_DIR: playwright-report/ws-rsc-on
+          PLAYWRIGHT_OUTPUT_DIR: test-results/ws-rsc-on
+
+      - name: "e2e — ws, rsc=off"
+        if: ${{ !cancelled() }}
+        run: bunx playwright test
+        working-directory: e2e
+        env:
+          RPXD_TRANSPORT: ws
+          RPXD_RSC: "false"
+          PLAYWRIGHT_HTML_DIR: playwright-report/ws-rsc-off
+          PLAYWRIGHT_OUTPUT_DIR: test-results/ws-rsc-off
+
+      - name: "e2e — sse, rsc=on"
+        if: ${{ !cancelled() }}
+        run: bunx playwright test
+        working-directory: e2e
+        env:
+          RPXD_TRANSPORT: sse
+          RPXD_RSC: "true"
+          PLAYWRIGHT_HTML_DIR: playwright-report/sse-rsc-on
+          PLAYWRIGHT_OUTPUT_DIR: test-results/sse-rsc-on
+
+      - name: "e2e — sse, rsc=off (slow boot; last)"
+        if: ${{ !cancelled() }}
+        run: bunx playwright test
+        working-directory: e2e
+        env:
+          RPXD_TRANSPORT: sse
+          RPXD_RSC: "false"
+          PLAYWRIGHT_HTML_DIR: playwright-report/sse-rsc-off
+          PLAYWRIGHT_OUTPUT_DIR: test-results/sse-rsc-off
+
+      - name: Upload Playwright results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          retention-days: 5
+          if-no-files-found: ignore
