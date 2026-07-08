@@ -9,6 +9,14 @@ on:
       - "spec.md"
       - "docs/**"
       - ".github/workflows/docs.yml"
+  # Build (but don't deploy) on PRs so a broken docs build blocks the merge.
+  pull_request:
+    paths:
+      - "docs-site/**"
+      - "packages/**/src/**"
+      - "spec.md"
+      - "docs/**"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 # Allow the workflow to publish to GitHub Pages.
@@ -50,6 +58,8 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: build
+    # Only publish from main; on PRs the build job runs as a check and stops here.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
