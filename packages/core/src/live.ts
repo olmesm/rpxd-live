@@ -105,6 +105,51 @@ export type Handler<S, Payload, Params, Session> = (
 ) => void | Promise<void>;
 
 /**
+ * The params loader (§7) — the single place URL-dependent data is loaded.
+ * A plain async fn keyed to the URL's search params: runs once after `mount`
+ * and again on every `nav.patch`. Writes go through `ctx.patchState` (page
+ * state); `ctx.session` is a live read-only view. Loading and errors are
+ * ordinary state the loader writes — there is no ack.
+ *
+ * **Latest-wins**: a newer invocation aborts the prior one's `ctx.signal` and
+ * discards its late flushes, so rapid filter/page changes resolve to the last
+ * URL, not to whichever query returned last. Pass `ctx.signal` to `fetch`/SDK
+ * calls so a superseded load stops early.
+ *
+ * @example
+ * ```ts
+ * .params(async ({ filter, cursor }, ctx) => {
+ *   ctx.patchState((s) => { s.filter = filter ?? "all"; s.loading = true; });
+ *   const page = await listTodos(scopeFrom(ctx.session), {
+ *     filter, cursor: cursor ?? null, limit: 20, signal: ctx.signal,
+ *   });
+ *   ctx.patchState((s) => {
+ *     s.todos = cursor ? [...s.todos, ...page.items] : page.items;
+ *     s.cursor = page.nextCursor;
+ *     s.hasMore = page.nextCursor != null;
+ *     s.loading = false;
+ *   });
+ * })
+ * ```
+ */
+export type ParamsLoader<S, Params, Session> = (
+  search: SearchParams,
+  ctx: HandlerCtx<S, Params, Session>,
+) => void | Promise<void>;
+
+/** Options for the params loader (§7). */
+export interface ParamsOptions {
+  /**
+   * SSR sequencing (§12). Default `false` (stream): the initial document is
+   * the `mount` skeleton and the loader's data streams in over the push
+   * stream after hydration — fast TTFB, but a crawler/no-JS client sees the
+   * skeleton. Set `true` to await the loader before serializing so the first
+   * paint carries data (crawlable, no spinner) at the cost of TTFB.
+   */
+  blockSsr?: boolean;
+}
+
+/**
  * Rpc long form (§5): validation, optimism, and recovery in one declaration —
  * the runtime object every fluent chain builds.
  *
@@ -165,8 +210,13 @@ export type EventHandler<S, Params, Session> = (
 export interface LiveDefinition<S, Path extends string, Session> {
   /** Runs once per page load (SSR included, §12). Returns initial state. May reject → error route. */
   mount: (params: PathParams<Path>, ctx: MountCtx<Session>) => S | Promise<S>;
-  /** Search-param reducer (§7): mutates the session slice, no remount. */
-  params?: (session: Draft<Session>, search: SearchParams) => void;
+  /**
+   * URL-keyed loader (§7): runs after `mount` and on every `nav.patch`, writes
+   * page state, latest-wins. No remount. See {@link ParamsLoader}.
+   */
+  params?: ParamsLoader<S, PathParams<Path>, Session>;
+  /** SSR sequencing for {@link LiveDefinition.params} (§12); default stream. */
+  paramsOptions?: ParamsOptions;
   rpc?: Record<string, RpcDef<S, PathParams<Path>, Session>>;
   on?: Record<string, EventHandler<S, PathParams<Path>, Session>>;
   /** Snapshot version tag (§9): mismatch → discard snapshot, re-mount. */
@@ -238,9 +288,14 @@ export interface LiveBuilder<S, Path extends string, Session, R> {
     event: string,
     handler: EventHandler<S, PathParams<Path>, Session>,
   ): LiveBuilder<S, Path, Session, R>;
-  /** Search-param reducer (§7): mutates the session slice, no remount. */
+  /**
+   * URL-keyed loader (§7): runs after `mount` and on every `nav.patch`, writes
+   * page state via `ctx.patchState`, latest-wins, no remount. See
+   * {@link ParamsLoader}. Optionally block SSR on the initial load (§12).
+   */
   params(
-    reducer: (session: Draft<Session>, search: SearchParams) => void,
+    loader: ParamsLoader<S, PathParams<Path>, Session>,
+    opts?: ParamsOptions,
   ): LiveBuilder<S, Path, Session, R>;
   /** Snapshot version tag (§9): mismatch → discard snapshot, re-mount. */
   version(tag: string): LiveBuilder<S, Path, Session, R>;
@@ -280,7 +335,8 @@ function liveBuilder(path: string, def: Record<string, any>): any {
       liveBuilder(path, { ...def, rpc: { ...def.rpc, [name]: build(rpcChain({})).def } }),
     on: (event: string, handler: unknown) =>
       liveBuilder(path, { ...def, on: { ...def.on, [event]: handler } }),
-    params: (reducer: unknown) => liveBuilder(path, { ...def, params: reducer }),
+    params: (loader: unknown, opts?: unknown) =>
+      liveBuilder(path, { ...def, params: loader, paramsOptions: opts }),
     version: (tag: string) => liveBuilder(path, { ...def, version: tag }),
     render: (component: unknown) => ({ $live: true, path, def, component }),
   };

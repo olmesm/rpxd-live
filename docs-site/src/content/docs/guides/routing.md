@@ -49,8 +49,11 @@ This distinction drives the whole navigation model:
 
 - **Path params are identity.** Navigating to a different `orgId` is a different
   instance — so navigation **remounts**.
-- **Search params are view state.** They flow through the `.params()` reducer
-  via `nav.patch(search)` — **no remount**, just a state update.
+- **Search params are view state.** They drive the `.params()` **loader** via
+  `nav.patch(search)` — **no remount**. The loader is an async fn that writes
+  page state; it runs after `mount` and on every change, latest-wins, and is the
+  single place URL-dependent data (filters, pages) loads. The URL is the query
+  key, so those views are shareable, bookmarkable, and rebuilt on cold wake.
 
 In v1, search params are untyped (`Record<string, string | undefined>`); typed
 per-route search schemas are a v2 item.

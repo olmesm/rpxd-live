@@ -186,7 +186,18 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       storageKey: `${sid}:${pathname}`,
       defaultRateLimit: opts.defaultRateLimit,
     });
-    if (Object.keys(search).length > 0) await instance.setSearch(search);
+    // Fire the params loader after mount (§7) — the single place URL-dependent
+    // data loads, on first paint and on every later nav.patch. SSR sequencing
+    // (§12): a route opting into `blockSsr` awaits the full load so the first
+    // document carries data (crawlable). The default streams: the loader runs
+    // synchronously up to its first `await`, so once `setSearch` returns its
+    // projection (filter/loading chrome) is already staged — we flush exactly
+    // that and serialize it, then let the awaited data stream in over SSE.
+    if (route.def.params) {
+      const run = instance.setSearch(search).catch(() => {});
+      if (route.def.paramsOptions?.blockSsr) await run;
+      else await instance.flushStaged();
+    }
 
     const entry: InstanceEntry = {
       instance,

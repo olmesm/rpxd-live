@@ -109,13 +109,15 @@ describe("testLive: broadcast injection + search params", () => {
   const roomRoute = live("/room")
     .mount(async (_p, ctx) => {
       ctx.subscribe("room:1");
-      return { log: [] as string[] };
+      return { log: [] as string[], filter: "all" };
     })
     .on("user.joined", (state, p: { name: string }) => {
       state.log.push(`joined:${p.name}`);
     })
-    .params((session, { filter }) => {
-      session.filter = filter ?? "all";
+    .params(async ({ filter }, ctx) => {
+      ctx.patchState((s) => {
+        s.filter = filter ?? "all";
+      });
     })
     .render(() => null);
 
@@ -127,11 +129,11 @@ describe("testLive: broadcast injection + search params", () => {
     await t.dispose();
   });
 
-  it("setSearch runs the params reducer against the session slice", async () => {
+  it("setSearch runs the params loader, writing page state (§7)", async () => {
     const t = await testLive(roomRoute);
     await t.setSearch({ filter: "done" });
-    expect(t.session.filter).toBe("done");
-    expect(t.envelopes[0]?.patches?.[0]?.path).toEqual(["$session", "filter"]);
+    expect(t.state.filter).toBe("done");
+    expect(t.envelopes.at(-1)?.patches?.[0]?.path).toEqual(["filter"]);
     await t.dispose();
   });
 

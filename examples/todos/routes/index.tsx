@@ -1,12 +1,37 @@
 import { live } from "@rpxd/core";
 import { scopeFrom } from "../domain/scope";
-import { addTodo, listTodos, toggleTodo } from "../domain/todos";
+import { addTodo, listTodos, type TodoFilter, type TodoRow, toggleTodo } from "../domain/todos";
+
+const FILTERS: TodoFilter[] = ["all", "active", "done"];
+const asFilter = (v: string | undefined): TodoFilter =>
+  v === "active" || v === "done" ? v : "all";
 
 // Data access goes through the domain layer, never `db` directly (see
 // docs/domain-layer.md). Handlers stay thin: derive the scope from
 // ctx.session, call the domain fn, then patchState.
+//
+// `mount` sets up the URL-invariant shell; `params` is the loader (§7) — the
+// single place the (filtered) list is fetched, on first paint and on every
+// `nav.patch`. `blockSsr` keeps the first document crawlable/data-complete.
 export default live("/")
-  .mount(async (_params, ctx) => ({ todos: await listTodos(scopeFrom(ctx.session)) }))
+  .mount(async () => ({ todos: [] as TodoRow[], filter: "all" as TodoFilter, loading: true }))
+  .params(
+    async ({ filter }, ctx) => {
+      const next = asFilter(filter);
+      // Synchronous projection: the tab flips instantly and the previous
+      // window stays visible (keepPreviousData) while the query runs.
+      ctx.patchState((s) => {
+        s.filter = next;
+        s.loading = true;
+      });
+      const todos = await listTodos(scopeFrom(ctx.session), { filter: next });
+      ctx.patchState((s) => {
+        s.todos = todos;
+        s.loading = false;
+      });
+    },
+    { blockSsr: true },
+  )
   .rpc("add", (r) =>
     r
       .optimistic((state, { text }: { text: string }, ctx) => {
@@ -33,7 +58,7 @@ export default live("/")
         });
       }),
   )
-  .render(({ state, session, rpc, sync, keyOf }) => {
+  .render(({ state, session, rpc, sync, nav, keyOf }) => {
     const { user } = scopeFrom(session);
     return (
       <main>
@@ -64,7 +89,21 @@ export default live("/")
             </a>
           )}
         </nav>
-        <ul data-testid="todos">
+        {/* View changes are `nav.patch` only — URL updates, the loader reruns. */}
+        <nav data-testid="filters">
+          {FILTERS.map((f) => (
+            <button
+              key={f}
+              type="button"
+              data-testid={`filter-${f}`}
+              aria-current={state.filter === f}
+              onClick={() => nav.patch({ filter: f })}
+            >
+              {f}
+            </button>
+          ))}
+        </nav>
+        <ul data-testid="todos" aria-busy={state.loading}>
           {state.todos.map((t) => (
             <li key={keyOf(t.id)} data-id={t.id}>
               <label>

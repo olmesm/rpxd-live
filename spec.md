@@ -17,7 +17,11 @@ export default live("/org/$orgId/board")
     ctx.subscribe(`org:${orgId}`);
     return { projects: await db.project.findMany({ where: { orgId } }) };
   })
-  .params((session, { filter }) => { session.filter = filter ?? "all"; })
+  .params(async ({ filter }, ctx) => {                 // URL-keyed loader (§7)
+    ctx.patchState((s) => { s.filter = filter ?? "all"; s.loading = true; });
+    const projects = await db.project.findMany({ where: { orgId, ...where(filter) } });
+    ctx.patchState((s) => { s.projects = projects; s.loading = false; });
+  })
   .rpc("create", (r) =>
     r.input(z.object({ name: z.string() })).handler(async ({ name }, ctx) => {
       const p = await db.project.create({ data: { orgId: ctx.params.orgId, name } });
@@ -121,7 +125,9 @@ File-based with codegen; wouter under the hood; URL is identity.
 - **In-file path literal** (`live("/org/$orgId/board")`) scaffolded and maintained by the watcher — filename is truth, literal is its typed mirror (rename → rewritten; hand-edit → corrected)
 - Path params inferred from the literal → typed in `mount`/`rpc` ctx
 - `.rpxd/routes.gen.ts` generated + committed; `Register` interface merge → typed `<Link to params>` and `nav.navigate`
-- **Path params = identity** → navigate = remount; **search params = view state** → `params` reducer via `nav.patch`, no remount
+- **Path params = identity** → navigate = remount; **search params = view state** → `params` **loader** via `nav.patch`, no remount
+- **`params` is the URL-keyed loader** — an async fn (`(search, ctx) => …`), not a sync reducer: the single place URL-dependent data loads. Runs once after `mount` (initial paint) and again on every `nav.patch`. Writes **page state** through `ctx.patchState`; `ctx.session` is read-only. Loading/errors are ordinary state the loader writes — no ack. **Latest-wins**: a newer invocation aborts the prior's `ctx.signal` and drops its late flushes, so the last URL wins. Pass `ctx.signal` to `fetch` so a superseded load stops early. The URL is the query key → filtering/pagination are shareable, bookmarkable, back-button-correct, and reproducible on cold wake (mount re-runs, the loader rebuilds the window from the URL)
+- **`mount` no longer must fetch**: it sets up URL-invariant state + subscriptions; what depends on the URL lives in `params`. State split by cadence — invariant → `mount` (once), variant → `params` (per URL change)
 - Search params untyped in v1 (`Record<string, string | undefined>`)
 - Wouter unexported; public surface = `Link`, `nav`
 
@@ -164,10 +170,11 @@ Connections are disposable; state is not. SSE default, WS opt-in.
 ## 12. SSR
 Mount runs during SSR; connection adopts the warm instance.
 
-- HTTP → mount → HTML + embedded `{ snapshot, seq, attachToken }`
+- HTTP → mount → `params` loader → HTML + embedded `{ snapshot, seq, attachToken }`
 - Connection presents token within pending-attach TTL (~10s) → adopts instance, resumes from seq
 - Token expired → silent re-mount + full snapshot; seq check covers gap broadcasts
 - Mount runs **once** per page load; no connect-spinner; crawlable
+- **Params-loader SSR sequencing** — the loader runs synchronously up to its first `await`, so its *projection* (filter/loading chrome) is staged the instant `mount`+loader hand back control. Default **stream**: flush that staged projection, serialize it, let the awaited data stream in over the push stream after hydration (fast TTFB; a crawler/no-JS client sees the chrome, not the rows). Opt into **`blockSsr`** to await the full load before serializing — first paint carries data (crawlable, no spinner) at the cost of TTFB. Deterministic either way: capture is keyed to *what is staged*, never a timer
 
 ## 13. Deferred (v2+)
 - Nested/sibling live objects + layouts (requires nested live semantics)

@@ -74,9 +74,14 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
         expectTypeOf(state).toEqualTypeOf<Draft<{ projects: Project[]; importing: boolean }>>();
         expectTypeOf(ctx.broadcast).parameter(0).toEqualTypeOf<string>();
       })
-      .params((session, search) => {
+      .params(async (search, ctx) => {
+        // URL-keyed loader (§7): search is untyped view state; ctx is the
+        // handler ctx — page-state writes, signal, live read-only state.
         expectTypeOf(search).toEqualTypeOf<Record<string, string | undefined>>();
-        session.filter = search.filter ?? "all";
+        expectTypeOf(ctx.signal).toEqualTypeOf<AbortSignal>();
+        ctx.patchState((s) => {
+          s.importing = search.filter !== undefined;
+        });
       })
       .render((props) => {
         // render props fully inferred — no annotation on the component

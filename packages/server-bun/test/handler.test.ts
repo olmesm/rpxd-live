@@ -6,12 +6,15 @@ import { matchPath, matchRoute } from "../src/match.ts";
 interface BoardState {
   items: string[];
   orgId: string;
+  filter?: string;
 }
 
 const boardDef: LiveDefinition<BoardState, "/org/$orgId/board", Record<string, unknown>> = {
   mount: async ({ orgId }) => ({ items: ["first"], orgId }),
-  params: (session, { filter }) => {
-    session.filter = filter ?? "all";
+  params: async ({ filter }, ctx) => {
+    ctx.patchState((s) => {
+      s.filter = filter ?? "all";
+    });
   },
   rpc: {
     async add({ item }: { item: string }, ctx) {
@@ -103,8 +106,10 @@ describe("SSR mount (§12)", () => {
     const html = await res.text();
     const json = /<script id="__rpxd" type="application\/json">(.*?)<\/script>/s.exec(html)?.[1];
     const boot = JSON.parse(json as string);
-    expect(boot.snapshot.state).toEqual({ items: ["first"], orgId: "7" });
-    expect(boot.seq).toBe(1);
+    // Stream-default SSR (§12): first paint carries the loader's synchronous
+    // projection chrome (`filter`) — mount state + one flush, no data wait.
+    expect(boot.snapshot.state).toEqual({ items: ["first"], orgId: "7", filter: "all" });
+    expect(boot.seq).toBe(2);
     expect(boot.attachToken).toBeTruthy();
     expect(boot.params).toEqual({ orgId: "7" });
     await handler.dispose();
@@ -114,6 +119,61 @@ describe("SSR mount (§12)", () => {
     const handler = makeHandler();
     const res = await handler.fetch(new Request(`${base}/org/7/board`));
     expect(res.headers.get("set-cookie")).toContain("rpxd_sid=");
+    await handler.dispose();
+  });
+
+  it("streams by default: the awaited data is NOT in the first paint (§12)", async () => {
+    interface FeedState {
+      rows: string[];
+      loading: boolean;
+    }
+    const feedDef: LiveDefinition<FeedState, "/feed", Record<string, unknown>> = {
+      mount: async () => ({ rows: [] as string[], loading: false }),
+      params: async (_search, ctx) => {
+        ctx.patchState((s) => {
+          s.loading = true; // synchronous projection — lands in first paint
+        });
+        await new Promise((r) => setTimeout(r, 20));
+        ctx.patchState((s) => {
+          s.rows = ["a", "b"]; // awaited data — streams after hydration
+          s.loading = false;
+        });
+      },
+    };
+    const handler = createRpxdHandler({ routes: [{ path: "/feed", def: feedDef }] });
+    const res = await handler.fetch(new Request(`${base}/feed`, { headers: COOKIE }));
+    const html = await res.text();
+    const json = /<script id="__rpxd" type="application\/json">(.*?)<\/script>/s.exec(html)?.[1];
+    const boot = JSON.parse(json as string);
+    expect(boot.snapshot.state).toEqual({ rows: [], loading: true });
+    await handler.dispose();
+  });
+
+  it("blockSsr awaits the loader so first paint carries data (§12)", async () => {
+    interface FeedState {
+      rows: string[];
+      loading: boolean;
+    }
+    const feedDef: LiveDefinition<FeedState, "/feed", Record<string, unknown>> = {
+      mount: async () => ({ rows: [] as string[], loading: false }),
+      params: async (_search, ctx) => {
+        ctx.patchState((s) => {
+          s.loading = true;
+        });
+        await new Promise((r) => setTimeout(r, 20));
+        ctx.patchState((s) => {
+          s.rows = ["a", "b"];
+          s.loading = false;
+        });
+      },
+      paramsOptions: { blockSsr: true },
+    };
+    const handler = createRpxdHandler({ routes: [{ path: "/feed", def: feedDef }] });
+    const res = await handler.fetch(new Request(`${base}/feed`, { headers: COOKIE }));
+    const html = await res.text();
+    const json = /<script id="__rpxd" type="application\/json">(.*?)<\/script>/s.exec(html)?.[1];
+    const boot = JSON.parse(json as string);
+    expect(boot.snapshot.state).toEqual({ rows: ["a", "b"], loading: false });
     await handler.dispose();
   });
 
@@ -201,7 +261,8 @@ describe("stream + rpc + control (§11)", () => {
       }),
     );
     const env = await sse.next();
-    expect(env?.patches?.[0]?.path).toEqual(["$session", "filter"]);
+    // The loader writes page state (§7) — patches land on the page, not $session.
+    expect(env?.patches?.[0]?.path).toEqual(["filter"]);
     await handler.dispose();
   });
 
