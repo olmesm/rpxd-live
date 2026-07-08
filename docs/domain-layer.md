@@ -26,7 +26,9 @@ domain/          # app logic — bounded modules (the public API)
 db.ts            # the database client (a singleton import)
 ```
 
-`examples/todos` is laid out this way — read it alongside this doc.
+`examples/todos` is laid out this way — read it alongside this doc. API routes
+(webhooks, auth) and how an auth library wires into `authenticate` are covered
+in [`routes-and-auth.md`](./routes-and-auth.md).
 
 ## The one rule
 
