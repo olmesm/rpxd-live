@@ -22,6 +22,38 @@ export function scanRoutes(routesDir: string): RouteEntry[] {
   return sortRoutes(entries);
 }
 
+/** Wrap map entries in braces, or `{}` when empty (a `{\n\n}` block is a format error). */
+function mapBlock(entriesStr: string): string {
+  return entriesStr ? `{\n${entriesStr}\n}` : "{}";
+}
+
+/**
+ * Render the server-only `handlers.gen.ts` module: lazy importers for HTTP
+ * `route()` files. Kept in a **separate** file the client entry never imports —
+ * co-locating these dynamic imports with `routeModules` would drag every HTTP
+ * route (and its server-only deps) into the client bundle (docs/routes-and-auth.md).
+ *
+ * @example
+ * ```ts
+ * const source = generateHandlersModule(scanRoutes(routesDir));
+ * ```
+ */
+export function generateHandlersModule(
+  entries: RouteEntry[],
+  routesImportPrefix = "../routes",
+): string {
+  const httpEntries = entries
+    .filter((e) => e.kind === "http" && e.path !== null)
+    .map((e) => `  "${e.path}": () => import("${routesImportPrefix}/${e.file}"),`)
+    .join("\n");
+  return `/**
+ * Auto-generated server-only HTTP route map — do not edit; maintained by \`rpxd dev\`.
+ * Never imported by the client entry (keeps \`route()\` handler deps server-side).
+ */
+export const routeHandlers = ${mapBlock(httpEntries)} as const;
+`;
+}
+
 /**
  * Render the `routes.gen.ts` module for a set of entries. Pure — callers
  * decide where to write it. `routesImportPrefix` is the relative path from
@@ -50,6 +82,9 @@ export function generateRoutesModule(
     .map((e) => `  "${e.path}": () => import("${routesImportPrefix}/${e.file}"),`)
     .join("\n");
 
+  const treeBlock = mapBlock(treeEntries);
+  const modulesBlock = mapBlock(moduleEntries);
+
   const shellEntry = (kind: RouteEntry["kind"], name: string) => {
     const e = shell(kind);
     return e
@@ -62,14 +97,10 @@ export function generateRoutesModule(
  * Provides typed paths/params for {@link Link} and \`nav.navigate\`.
  * @example <Link to="/org/$orgId/board" params={{ orgId }} />
  */
-export const routeTree = {
-${treeEntries}
-} as const;
+export const routeTree = ${treeBlock} as const;
 
 /** Lazy importers for each page route — used by the client router and SSR. */
-export const routeModules = {
-${moduleEntries}
-} as const;
+export const routeModules = ${modulesBlock} as const;
 
 /** Shell modules (§14): HTML root, unmatched-URL page, error page. */
 ${shellEntry("root", "rootModule")}
@@ -91,22 +122,30 @@ declare module "@rpxd/core" {
 `;
 }
 
-const LIVE_CALL = /(\blive\s*\(\s*)(["'])((?:[^"'\\]|\\.)*)\2(\s*\))/;
+const PATH_CALL = /(\b(?:live|route)\s*\(\s*)(["'])((?:[^"'\\]|\\.)*)\2(\s*\))/;
 
 /**
  * Maintain the in-file path literal (§7): the filename is truth, the
- * `live("...")` literal is its typed mirror. Returns the corrected source
- * when the literal is missing/incorrect, or `null` when nothing changed.
+ * `live("...")` / `route("...")` literal is its typed mirror. Returns the
+ * corrected source when the literal is missing/incorrect, or `null` when
+ * nothing changed.
  *
  * @example
  * ```ts
  * ensurePathLiteral('export default live("/old")({ ... })', "/org/$orgId/board");
  * // → 'export default live("/org/$orgId/board")({ ... })'
+ * ensurePathLiteral('export default route("/old").all(h)', "/api/auth/$");
+ * // → 'export default route("/api/auth/$").all(h)'
  * ```
  */
 export function ensurePathLiteral(source: string, expectedPath: string): string | null {
-  const match = LIVE_CALL.exec(source);
-  if (!match) return null; // not a live route file — nothing to maintain
+  const match = PATH_CALL.exec(source);
+  if (!match) return null; // not a live/route file — nothing to maintain
   if (match[3] === expectedPath) return null;
-  return source.replace(LIVE_CALL, `$1$2${expectedPath}$2$4`);
+  // Function replacer: `expectedPath` may contain `$` (catch-all/`$param`),
+  // which a string replacement would mis-read as a backreference.
+  return source.replace(
+    PATH_CALL,
+    (_m, pre, quote, _old, post) => `${pre}${quote}${expectedPath}${quote}${post}`,
+  );
 }

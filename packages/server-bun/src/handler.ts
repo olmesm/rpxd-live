@@ -6,20 +6,29 @@
  */
 import {
   type Envelope,
+  isRedirect,
   type LiveDefinition,
   LiveInstance,
   memory,
   type RateLimit,
+  type RouteDefinition,
+  type RouteMethod,
   type RpcBatch,
   type StorageAdapter,
 } from "@rpxd/core";
-import { matchRoute } from "./match.ts";
+import { matchHttpRoute, matchRoute } from "./match.ts";
 
 /** One registered route: URL path literal + live definition. */
 export interface RouteRegistration {
   path: string;
   // biome-ignore lint/suspicious/noExplicitAny: the handler hosts routes of any state shape
   def: LiveDefinition<any, any, any>;
+}
+
+/** One registered HTTP route (`route()`, docs/routes-and-auth.md): path + method handlers. */
+export interface HttpRouteRegistration {
+  path: string;
+  def: RouteDefinition;
 }
 
 /** Context handed to the `render` hook for SSR (§12). */
@@ -37,12 +46,14 @@ export interface RenderContext {
 /** Options for {@link createRpxdHandler}. */
 export interface RpxdHandlerOptions {
   routes: RouteRegistration[];
+  /** Server-only HTTP routes (`route()`, docs/routes-and-auth.md), matched before SSR. */
+  httpRoutes?: HttpRouteRegistration[];
   storage?: StorageAdapter;
   /**
    * Authenticate once at connect (§10). Return the session object; throw to
    * reject with 403. Every reducer sees the result as `ctx.session`.
    */
-  authenticate?: (req: Request) => unknown | Promise<unknown>;
+  authenticate?: (req: Request, ctx: { sid: string }) => unknown | Promise<unknown>;
   /** SSR renderer (§12). Defaults to a minimal HTML shell embedding the bootstrap payload. */
   render?: (ctx: RenderContext) => Response | Promise<Response>;
   /** Unmatched-URL page (§14 `__404`). Defaults to a plain-text 404. */
@@ -139,11 +150,24 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     const entries = entriesFor(sid);
     const existing = entries.get(pathname);
     if (existing) {
-      if (existing.evictTimer) {
-        clearTimeout(existing.evictTimer);
-        existing.evictTimer = undefined;
+      const sameSession =
+        JSON.stringify(existing.instance.session ?? {}) === JSON.stringify(sessionData ?? {});
+      if (sameSession) {
+        if (existing.evictTimer) {
+          clearTimeout(existing.evictTimer);
+          existing.evictTimer = undefined;
+        }
+        return existing;
       }
-      return existing;
+      // The authenticated session changed (login/logout, §10): the principal —
+      // and any session-scoped state `mount` computed — is stale. Evict, drop
+      // the snapshot, and re-mount fresh below rather than adopt the warm
+      // instance (§12), which would render the old principal.
+      if (existing.evictTimer) clearTimeout(existing.evictTimer);
+      entries.delete(pathname);
+      byInstanceId.delete(existing.instance.id);
+      await existing.instance.dispose();
+      await storage.delete(`${sid}:${pathname}`);
     }
 
     const match = matchRoute(
@@ -280,7 +304,15 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       | { type: "params"; instance: string; search: Record<string, string> };
 
     if (msg.type === "mount") {
-      const entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
+      let entry: InstanceEntry;
+      try {
+        entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
+      } catch (e) {
+        // `mount` threw redirect() (§10): tell the client to navigate rather
+        // than mount. A GET load handles this as a 302 (see fetch catch).
+        if (isRedirect(e)) return Response.json({ redirect: e.location });
+        throw e;
+      }
       return Response.json({
         instance: entry.instance.id,
         seq: entry.instance.seq,
@@ -332,7 +364,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       let sessionData: unknown = {};
       if (opts.authenticate) {
         try {
-          sessionData = await opts.authenticate(req);
+          sessionData = await opts.authenticate(req, { sid });
         } catch (e) {
           return new Response(e instanceof Error ? e.message : "forbidden", { status: 403 });
         }
@@ -347,6 +379,25 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         }
         if (url.pathname === "/__rpxd/control" && req.method === "POST") {
           return withSession(await handleControl(req, sid, sessionData), sid, isNew);
+        }
+        // HTTP routes (`route()`) — matched before SSR, any method (§ docs/
+        // routes-and-auth.md). The handler owns its own response/cookies; we
+        // still carry the sid cookie on new sessions.
+        if (opts.httpRoutes && opts.httpRoutes.length > 0) {
+          const hit = matchHttpRoute(
+            opts.httpRoutes.map((r) => r.path),
+            url.pathname,
+          );
+          if (hit) {
+            const reg = opts.httpRoutes.find((r) => r.path === hit.path) as HttpRouteRegistration;
+            const method = req.method.toUpperCase() as RouteMethod;
+            const fn = reg.def.handlers[method] ?? reg.def.handlers.ALL;
+            if (!fn) {
+              return withSession(new Response("method not allowed", { status: 405 }), sid, isNew);
+            }
+            const res = await fn(req, { params: hit.params, session: sessionData, sid });
+            return withSession(res, sid, isNew);
+          }
         }
         if (req.method === "GET") {
           // SSR (§12): mount runs during SSR; the connection adopts the warm
@@ -371,6 +422,14 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         }
         return new Response("not found", { status: 404 });
       } catch (e) {
+        // `mount` threw redirect() (§10): a full page load follows a real 302.
+        if (isRedirect(e)) {
+          return withSession(
+            new Response(null, { status: e.status, headers: { location: e.location } }),
+            sid,
+            isNew,
+          );
+        }
         if (e instanceof NotFoundError) {
           if (opts.renderNotFound) {
             return withSession(await opts.renderNotFound({ path: url.pathname }), sid, isNew);

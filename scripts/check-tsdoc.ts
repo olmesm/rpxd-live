@@ -23,6 +23,107 @@ const DECL =
 
 const failures: string[] = [];
 
+/**
+ * Blank the *contents* of string and template literals (and comments), keeping
+ * newlines so line numbers are preserved. Generated code lives inside template
+ * literals here (the CLI templates), so an `export` there is data, not an API
+ * declaration — this stops the line scanner below from flagging it.
+ */
+function blankLiterals(src: string): string {
+  const out: string[] = [];
+  // Context stack. `${` inside a template pushes an expression context that
+  // tracks brace depth so the matching `}` returns to the template.
+  type Ctx =
+    | { kind: "normal" }
+    | { kind: "line" }
+    | { kind: "block" }
+    | { kind: "sq" }
+    | { kind: "dq" }
+    | { kind: "tmpl" }
+    | { kind: "expr"; depth: number };
+  const stack: Ctx[] = [{ kind: "normal" }];
+  const top = () => stack[stack.length - 1] as Ctx;
+
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i] as string;
+    const next = src[i + 1];
+    const ctx = top();
+    const keep = () => out.push(c);
+    const hide = () => out.push(c === "\n" ? "\n" : " ");
+
+    switch (ctx.kind) {
+      case "normal":
+      case "expr": {
+        if (ctx.kind === "expr") {
+          if (c === "{") ctx.depth++;
+          else if (c === "}") {
+            if (ctx.depth === 0) {
+              stack.pop(); // back to the enclosing template
+              keep();
+              break;
+            }
+            ctx.depth--;
+          }
+        }
+        if (c === "/" && next === "/") stack.push({ kind: "line" });
+        else if (c === "/" && next === "*") stack.push({ kind: "block" });
+        else if (c === "'") stack.push({ kind: "sq" });
+        else if (c === '"') stack.push({ kind: "dq" });
+        else if (c === "`") stack.push({ kind: "tmpl" });
+        keep();
+        break;
+      }
+      case "line":
+        // Keep comment text intact (docs live here); just don't let a stray
+        // backtick in a comment start a template.
+        if (c === "\n") stack.pop();
+        keep();
+        break;
+      case "block":
+        if (c === "*" && next === "/") {
+          keep();
+          out.push(src[i + 1] as string);
+          i++;
+          stack.pop();
+        } else keep();
+        break;
+      case "sq":
+      case "dq": {
+        const quote = ctx.kind === "sq" ? "'" : '"';
+        if (c === "\\") {
+          hide();
+          if (src[i + 1] !== undefined) {
+            out.push(src[i + 1] === "\n" ? "\n" : " ");
+            i++;
+          }
+        } else if (c === quote) {
+          stack.pop();
+          keep();
+        } else hide();
+        break;
+      }
+      case "tmpl":
+        if (c === "\\") {
+          hide();
+          if (src[i + 1] !== undefined) {
+            out.push(src[i + 1] === "\n" ? "\n" : " ");
+            i++;
+          }
+        } else if (c === "`") {
+          stack.pop();
+          keep();
+        } else if (c === "$" && next === "{") {
+          keep(); // keep `$`
+          out.push("{"); // keep `{`
+          i++;
+          stack.push({ kind: "expr", depth: 0 });
+        } else hide();
+        break;
+    }
+  }
+  return out.join("");
+}
+
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
@@ -33,9 +134,14 @@ function walk(dir: string): string[] {
 
 for (const root of roots) {
   for (const file of walk(root)) {
-    const lines = readFileSync(file, "utf-8").split("\n");
+    const raw = readFileSync(file, "utf-8");
+    const lines = raw.split("\n");
+    // Declaration detection runs on a copy with string/template contents
+    // blanked, so `export` inside a generated-code template isn't mistaken for
+    // a real API declaration. Doc/@example look-back uses the original lines.
+    const scanLines = blankLiterals(raw).split("\n");
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] as string;
+      const line = scanLines[i] as string;
       if (!DECL.test(line)) continue;
       if (/^export\s+(type\s+)?\{/.test(line)) continue; // re-exports documented at source
       // look back over blank lines & decorators for the end of a doc block

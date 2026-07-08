@@ -4,7 +4,11 @@ Live objects for React: server-side stateful objects with reducers; the
 client is plain React receiving state. Immer patches stream over SSE;
 optimistic updates replay client-side; multiplayer rides pubsub.
 
-**Spec:** [`spec.md`](./spec.md) · **Wire protocol:** [`docs/protocol.md`](./docs/protocol.md)
+**Docs:** [olmesm.github.io/rpxd-live](https://olmesm.github.io/rpxd-live/) · **Spec:** [`spec.md`](./spec.md) · **Wire protocol:** [`docs/protocol.md`](./docs/protocol.md) · **App structure:** [`docs/domain-layer.md`](./docs/domain-layer.md) · **Routes & auth:** [`docs/routes-and-auth.md`](./docs/routes-and-auth.md)
+
+The user-facing documentation site (guides, concepts, auto-generated API
+reference) is built with [Astro Starlight](https://starlight.astro.build/) from
+`docs-site/` and deploys to GitHub Pages on push to `main`.
 
 ```tsx
 // routes/org.$orgId.board.tsx — one live object per page, fully inferred

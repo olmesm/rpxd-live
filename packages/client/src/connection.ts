@@ -3,7 +3,7 @@
  * SSE downstream (`EventSource` auto-reconnect), HTTP POST upstream.
  * Connections are disposable; state is not.
  */
-import type { Envelope, RpcBatch } from "@rpxd/core";
+import { type Envelope, type RpcBatch, redirect } from "@rpxd/core";
 import { LiveStore, type RpcMeta } from "./store.ts";
 
 /** The slice of `EventSource` the connection uses — injectable for tests. */
@@ -244,8 +244,11 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       credentials: "same-origin",
     });
     if (!res.ok) throw new Error(`mount failed: ${res.status}`);
-    const { instance } = (await res.json()) as { instance: string };
-    const conn = new LiveConnection<S, Session>({ ...opts, instance });
+    const parsed = (await res.json()) as { instance: string } | { redirect: string };
+    // `mount` rejected with redirect() (§10) — surface it so the router can
+    // soft-navigate to the target instead of connecting a broken instance.
+    if ("redirect" in parsed) throw redirect(parsed.redirect);
+    const conn = new LiveConnection<S, Session>({ ...opts, instance: parsed.instance });
     conn.connect();
     return conn;
   }

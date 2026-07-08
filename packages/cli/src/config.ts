@@ -40,8 +40,15 @@ export interface RpxdConfig {
   storage?: StorageAdapter;
   /** Transport (§11). Default: `sse()`. */
   transport?: TransportConfig;
-  /** Authenticate once at connect (§10) → `ctx.session` everywhere. */
-  session?: { authenticate?: (req: Request) => unknown | Promise<unknown> };
+  /**
+   * Authenticate once at connect (§10) → `ctx.session` everywhere. The second
+   * arg carries the framework's resolved session id (`sid`) — the same
+   * identity used for instance routing and storage — so the returned value can
+   * be scoped to it (e.g. `(_req, { sid }) => ({ sid })`).
+   */
+  session?: {
+    authenticate?: (req: Request, ctx: { sid: string }) => unknown | Promise<unknown>;
+  };
   /** RSC fields flag (§16). Default false — v1 is complete without it. */
   rsc?: boolean;
   /** Default per-rpc token bucket (§10). */
@@ -61,5 +68,29 @@ export interface RpxdConfig {
  * ```
  */
 export function defineConfig(config: RpxdConfig): RpxdConfig {
+  return config;
+}
+
+/**
+ * Config values the CLI can override via flags — `--transport <sse|ws>` and
+ * `--rsc` / `--no-rsc`. Handy for testing one app across the render/transport
+ * combinations (CI matrix) without editing `rpxd.config.ts`.
+ */
+export interface ConfigOverrides {
+  transport?: "sse" | "ws";
+  rsc?: boolean;
+}
+
+/**
+ * Apply CLI flag overrides onto a loaded config (mutates and returns it).
+ *
+ * @example
+ * ```ts
+ * applyConfigOverrides(config, { transport: "ws", rsc: false });
+ * ```
+ */
+export function applyConfigOverrides(config: RpxdConfig, overrides?: ConfigOverrides): RpxdConfig {
+  if (overrides?.transport) config.transport = { kind: overrides.transport };
+  if (overrides?.rsc !== undefined) config.rsc = overrides.rsc;
   return config;
 }

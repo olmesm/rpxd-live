@@ -48,8 +48,9 @@ test("optimistic toggle survives a reload via the warm instance (§11)", async (
   await expect(checkbox).toBeChecked();
 
   // wait for the ack to reach confirmed state, then reload — SSR must
-  // render from the same warm per-session instance
-  await page.waitForTimeout(400);
+  // render from the same warm per-session instance (generous settle: the
+  // real DB write is slower than the old in-memory store under parallel load)
+  await page.waitForTimeout(1200);
   await page.reload();
   await expect(page.getByTestId("todos").locator("li").first().locator("input")).toBeChecked();
 });

@@ -6,21 +6,24 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { LiveRoute } from "@rpxd/core";
+import type { LiveRoute, RouteDefinition } from "@rpxd/core";
 import {
   bunAdapter,
   createRpxdHandler,
+  type HttpRouteRegistration,
   type RouteRegistration,
   wsTransport,
 } from "@rpxd/server-bun";
 import type { FunctionComponent } from "react";
-import type { RpxdConfig } from "./config.ts";
+import { applyConfigOverrides, type ConfigOverrides, type RpxdConfig } from "./config.ts";
 import type { ShellAssets, ShellComponents, SsrRuntime } from "./render.ts";
 
 /** Options for {@link startApp}. */
 export interface StartOptions {
   /** Port to bind; 0 picks an ephemeral port. Default 3000. */
   port?: number;
+  /** CLI flag overrides (`--transport`, `--rsc`/`--no-rsc`) applied over the config. */
+  overrides?: ConfigOverrides;
 }
 
 /** A running production server. */
@@ -64,9 +67,10 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
   }
 
   const configPath = join(root, "rpxd.config.ts");
-  const config: RpxdConfig = existsSync(configPath)
-    ? ((await import(pathToFileURL(configPath).href)).default ?? {})
-    : {};
+  const config: RpxdConfig = applyConfigOverrides(
+    existsSync(configPath) ? ((await import(pathToFileURL(configPath).href)).default ?? {}) : {},
+    opts.overrides,
+  );
 
   // Route registry + SSR runtime from the server bundle — the bundle owns
   // rendering (§12); this process is pure transport.
@@ -116,6 +120,16 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     components.set(path, route);
   }
 
+  // Server-only HTTP routes (`route()`) — from the ssr bundle; no component,
+  // never SSR'd (docs/routes-and-auth.md).
+  const { routeHandlers } = serverEntryModule as unknown as {
+    routeHandlers?: Record<string, () => Promise<{ default: { def: RouteDefinition } }>>;
+  };
+  const httpRoutes: HttpRouteRegistration[] = [];
+  for (const [path, load] of Object.entries(routeHandlers ?? {})) {
+    httpRoutes.push({ path, def: (await load()).default.def });
+  }
+
   // Hashed entry + css from the client manifest.
   const manifest = JSON.parse(
     readFileSync(join(clientDir, ".vite/manifest.json"), "utf-8"),
@@ -129,6 +143,7 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
 
   const handler = createRpxdHandler({
     routes,
+    httpRoutes,
     storage: config.storage,
     authenticate: config.session?.authenticate,
     defaultRateLimit: config.rateLimit,

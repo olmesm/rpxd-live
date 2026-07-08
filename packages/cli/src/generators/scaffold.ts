@@ -1,0 +1,81 @@
+/**
+ * `rpxd scaffold <Context> <Schema> <plural> [field:type…]` — a Phoenix-style
+ * resource generator. Emits a route, a scoped domain module, and a test;
+ * auth-aware (user-scoped + `--protected` when the app has auth) and db-aware
+ * (Prisma-backed vs. in-memory). The Prisma model is *printed*, never written —
+ * `prisma/schema.prisma` is yours to edit (docs/routes-and-auth.md).
+ */
+import type { ProjectFeatures } from "./detect.ts";
+import { parseFields } from "./fields.ts";
+import { pascalCase } from "./names.ts";
+import { prismaModel, type ResourceSpec, resourceFiles } from "./templates/resource.ts";
+import type { GeneratorPlan } from "./types.ts";
+
+/** Inputs for {@link planScaffold}. */
+export interface ScaffoldOptions {
+  /** Context (Phoenix module), e.g. `Todos`. */
+  context: string;
+  /** Schema singular, e.g. `Todo`. */
+  schema: string;
+  /** Plural — the route path + table, e.g. `todos`. */
+  plural: string;
+  /** `name:type` schema tokens. */
+  fieldSpecs: string[];
+  /** `page` (live route, default) or `http` (`route()` endpoint). */
+  kind?: "page" | "http";
+  /** Protect the page behind the mount gate (auth apps only). */
+  protectedRoute?: boolean;
+  /** Emit the domain test. Default true. */
+  test?: boolean;
+  /** Detected app features (drives db/auth-aware output). */
+  features: ProjectFeatures;
+}
+
+/**
+ * Build the resource file plan.
+ *
+ * @example
+ * ```ts
+ * planScaffold({ context: "Todos", schema: "Todo", plural: "todos",
+ *   fieldSpecs: ["text:string", "done:boolean"],
+ *   features: { hasDb: true, hasAuth: true } });
+ * ```
+ */
+export function planScaffold(options: ScaffoldOptions): GeneratorPlan {
+  const kind = options.kind ?? "page";
+  const fields = parseFields(options.fieldSpecs);
+  const steps: string[] = [];
+
+  // Protection only makes sense for an authed page — a login route to bounce to.
+  let protectedRoute = options.protectedRoute ?? false;
+  if (protectedRoute && !options.features.hasAuth) {
+    protectedRoute = false;
+    steps.push("Ignored --protected: this app has no auth. Run `rpxd auth` first.");
+  }
+  if (protectedRoute && kind === "http") {
+    protectedRoute = false;
+    steps.push("Ignored --protected: only live pages have a mount gate.");
+  }
+
+  const spec: ResourceSpec = {
+    context: pascalCase(options.context),
+    schema: pascalCase(options.schema),
+    plural: options.plural.toLowerCase(),
+    fields,
+    hasDb: options.features.hasDb,
+    hasAuth: options.features.hasAuth,
+    protectedRoute,
+    kind,
+  };
+
+  let files = resourceFiles(spec);
+  if (options.test === false) files = files.filter((f) => !f.path.endsWith(".test.ts"));
+
+  const commands: string[] = [];
+  if (spec.hasDb) {
+    steps.push(`Add this model to prisma/schema.prisma:\n\n${prismaModel(spec)}`);
+    commands.push("bun run db:push");
+  }
+
+  return { files, steps, commands };
+}

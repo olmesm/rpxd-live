@@ -7,11 +7,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { Plugin } from "vite";
-import { ensurePathLiteral, generateRoutesModule, scanRoutes } from "./codegen.ts";
+import {
+  ensurePathLiteral,
+  generateHandlersModule,
+  generateRoutesModule,
+  scanRoutes,
+} from "./codegen.ts";
 import { fileToRoute } from "./routes.ts";
 
 export {
   ensurePathLiteral,
+  generateHandlersModule,
   generateRoutesModule,
   scanRoutes,
 } from "./codegen.ts";
@@ -43,19 +49,27 @@ export function runCodegen(root: string, options: RpxdPluginOptions = {}): strin
   const entries = existsSync(routesDir) ? scanRoutes(routesDir) : [];
 
   // Maintain path literals: rename → rewritten; hand-edit → corrected (§7).
+  // Both live() pages and route() HTTP files carry a maintained literal.
   for (const entry of entries) {
-    if (entry.kind !== "page" || entry.path === null) continue;
+    if ((entry.kind !== "page" && entry.kind !== "http") || entry.path === null) continue;
     const file = join(routesDir, entry.file);
     const source = readFileSync(file, "utf-8");
     const fixed = ensurePathLiteral(source, entry.path);
     if (fixed !== null) writeFileSync(file, fixed);
   }
 
-  const generated = generateRoutesModule(entries);
   mkdirSync(outDir, { recursive: true });
-  const outFile = join(outDir, "routes.gen.ts");
-  const previous = existsSync(outFile) ? readFileSync(outFile, "utf-8") : "";
-  if (previous !== generated) writeFileSync(outFile, generated);
+  const write = (name: string, content: string) => {
+    const file = join(outDir, name);
+    const previous = existsSync(file) ? readFileSync(file, "utf-8") : "";
+    if (previous !== content) writeFileSync(file, content);
+  };
+
+  const generated = generateRoutesModule(entries);
+  write("routes.gen.ts", generated);
+  // Server-only HTTP route map — separate file so the client entry never
+  // imports it (§ docs/routes-and-auth.md).
+  write("handlers.gen.ts", generateHandlersModule(entries));
   return generated;
 }
 

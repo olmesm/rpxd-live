@@ -2,9 +2,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ensurePathLiteral, generateRoutesModule, scanRoutes } from "../src/codegen.ts";
+import {
+  ensurePathLiteral,
+  generateHandlersModule,
+  generateRoutesModule,
+  scanRoutes,
+} from "../src/codegen.ts";
 import { runCodegen } from "../src/index.ts";
-import { fileToRoute, pathToPattern } from "../src/routes.ts";
+import { fileToRoute, pathToPattern, type RouteEntry } from "../src/routes.ts";
 
 describe("fileToRoute (§7)", () => {
   it("maps flat filenames to URL paths", () => {
@@ -27,6 +32,21 @@ describe("fileToRoute (§7)", () => {
     expect(fileToRoute("styles.css")).toBeNull();
     expect(fileToRoute("__weird.tsx")).toBeNull();
     expect(fileToRoute("nested/index.tsx")).toBeNull();
+  });
+
+  it("classifies .ts files as HTTP routes (route()), incl. catch-all", () => {
+    expect(fileToRoute("api.auth.$.ts")).toEqual({
+      file: "api.auth.$.ts",
+      path: "/api/auth/$",
+      kind: "http",
+    });
+    expect(fileToRoute("api.webhooks.stripe.ts")).toEqual({
+      file: "api.webhooks.stripe.ts",
+      path: "/api/webhooks/stripe",
+      kind: "http",
+    });
+    // .tsx stays a live page even with the same base
+    expect(fileToRoute("dashboard.tsx")?.kind).toBe("page");
   });
 
   it("converts $params to wouter patterns", () => {
@@ -54,6 +74,13 @@ describe("ensurePathLiteral (§7: filename is truth)", () => {
 
   it("handles single quotes", () => {
     expect(ensurePathLiteral("live('/old')({})", "/new")).toBe("live('/new')({})");
+  });
+
+  it("maintains route() literals too", () => {
+    expect(ensurePathLiteral('export default route("/old").all(h);', "/api/auth/$")).toBe(
+      'export default route("/api/auth/$").all(h);',
+    );
+    expect(ensurePathLiteral('route("/api/auth/$").all(h)', "/api/auth/$")).toBeNull();
   });
 });
 
@@ -109,5 +136,26 @@ describe("codegen end-to-end", () => {
     const generated = generateRoutesModule([{ file: "index.tsx", path: "/", kind: "page" }]);
     expect(generated).toContain("export const rootModule = undefined;");
     expect(generated).toContain("export const notFoundModule = undefined;");
+  });
+
+  it("keeps HTTP routes out of routes.gen.ts (client-imported); puts them in handlers.gen.ts", () => {
+    const entries: RouteEntry[] = [
+      { file: "index.tsx", path: "/", kind: "page" },
+      { file: "api.auth.$.ts", path: "/api/auth/$", kind: "http" },
+    ];
+    const routes = generateRoutesModule(entries);
+    // HTTP routes must NOT appear in the client-imported module at all.
+    expect(routes).not.toContain("routeHandlers");
+    expect(routes).not.toContain("/api/auth/$");
+
+    const handlers = generateHandlersModule(entries);
+    expect(handlers).toContain("export const routeHandlers = {");
+    expect(handlers).toContain('"/api/auth/$": () => import("../routes/api.auth.$.ts")');
+    expect(handlers).not.toContain("routeTree"); // server-only, not the navigable map
+  });
+
+  it("generateHandlersModule renders {} when there are no HTTP routes", () => {
+    const handlers = generateHandlersModule([{ file: "index.tsx", path: "/", kind: "page" }]);
+    expect(handlers).toContain("export const routeHandlers = {} as const;");
   });
 });

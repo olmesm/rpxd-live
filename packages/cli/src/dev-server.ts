@@ -13,12 +13,18 @@ import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
-import { createRpxdHandler, type RouteRegistration, wsTransport } from "@rpxd/server-bun";
+import type { RouteDefinition } from "@rpxd/core";
+import {
+  createRpxdHandler,
+  type HttpRouteRegistration,
+  type RouteRegistration,
+  wsTransport,
+} from "@rpxd/server-bun";
 import { fileToRoute, rpxd as rpxdVitePlugin, runCodegen, scanRoutes } from "@rpxd/vite-plugin";
 import rscFlightPlugin from "@vitejs/plugin-rsc";
 import { createServerModuleRunner, createServer as createViteServer } from "vite";
 import { WebSocketServer } from "ws";
-import type { RpxdConfig } from "./config.ts";
+import { applyConfigOverrides, type ConfigOverrides, type RpxdConfig } from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
 import {
   loadSsrRuntime,
@@ -31,6 +37,8 @@ import {
 export interface DevServerOptions {
   /** Port to bind; 0 picks an ephemeral port. Default 3000. */
   port?: number;
+  /** CLI flag overrides (`--transport`, `--rsc`/`--no-rsc`) applied over the config. */
+  overrides?: ConfigOverrides;
 }
 
 /** A running dev shell. */
@@ -109,9 +117,10 @@ export async function createDevServer(
 
   // Config (§14): the only non-route file. Bun imports TS directly.
   const configPath = join(root, "rpxd.config.ts");
-  const config: RpxdConfig = existsSync(configPath)
-    ? ((await import(pathToFileURL(configPath).href)).default ?? {})
-    : {};
+  const config: RpxdConfig = applyConfigOverrides(
+    existsSync(configPath) ? ((await import(pathToFileURL(configPath).href)).default ?? {}) : {},
+    opts.overrides,
+  );
 
   // Route codegen before anything imports .rpxd/routes.gen.ts (§7).
   runCodegen(root);
@@ -169,12 +178,19 @@ export async function createDevServer(
   const entries = scanRoutes(join(root, "routes"));
   const routeFiles = new Map<string, string>();
   const routes: RouteRegistration[] = [];
+  const httpRoutes: HttpRouteRegistration[] = [];
   const shell: ShellComponents = {};
   for (const entry of entries) {
     if (entry.kind === "page" && entry.path !== null) {
       routeFiles.set(entry.path, entry.file);
       const mod = await loadDefModule(entry.file);
       routes.push({ path: entry.path, def: mod.default.def } as RouteRegistration);
+      continue;
+    }
+    if (entry.kind === "http" && entry.path !== null) {
+      // HTTP routes (`route()`) run in the plain server graph, not react-server.
+      const mod = await vite.ssrLoadModule(`/routes/${entry.file}`);
+      httpRoutes.push({ path: entry.path, def: (mod.default as { def: RouteDefinition }).def });
       continue;
     }
     // Shell files (§14): __root / __404 / __error
@@ -189,6 +205,7 @@ export async function createDevServer(
   const ssrRuntime = await loadSsrRuntime(vite);
   const handler = createRpxdHandler({
     routes,
+    httpRoutes,
     storage: config.storage,
     authenticate: config.session?.authenticate,
     render: makeDevRender(vite, routeFiles, { rsc: config.rsc, shell }),

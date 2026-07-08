@@ -6,7 +6,8 @@
     "packages/*",
     "examples/*",
     "spikes/*",
-    "e2e"
+    "e2e",
+    "docs-site"
   ],
   "scripts": {
     "lint": "biome check .",

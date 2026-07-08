@@ -8,18 +8,21 @@
 export interface RouteEntry {
   /** Path relative to the routes dir, e.g. `org.$orgId.board.tsx`. */
   file: string;
-  /** URL path, e.g. `/org/$orgId/board`. `null` for shell files (kind !== "page"). */
+  /** URL path, e.g. `/org/$orgId/board`. `null` for shell files (kind is a shell). */
   path: string | null;
-  kind: "page" | "root" | "notFound" | "error";
+  kind: "page" | "http" | "root" | "notFound" | "error";
 }
 
 const ROUTE_EXT = /\.(tsx|jsx|ts|js)$/;
 
 /**
- * Map a flat route filename to its URL path (§7).
+ * Map a flat route filename to its URL path (§7). Extension decides the kind:
+ * `.tsx`/`.jsx` export `live()` (a page), `.ts`/`.js` export `route()` (an
+ * HTTP endpoint) — see `docs/routes-and-auth.md`.
  *
- * - `index.tsx` → `/`
- * - `org.$orgId.board.tsx` → `/org/$orgId/board`
+ * - `index.tsx` → `/` (page)
+ * - `org.$orgId.board.tsx` → `/org/$orgId/board` (page)
+ * - `api.auth.$.ts` → `/api/auth/$` (http, `$` = catch-all)
  * - `__root.tsx` / `__404.tsx` / `__error.tsx` → shell files, no URL
  * - non-route files (no recognised extension) → `null`
  *
@@ -27,17 +30,22 @@ const ROUTE_EXT = /\.(tsx|jsx|ts|js)$/;
  * ```ts
  * fileToRoute("org.$orgId.board.tsx");
  * // { file: "org.$orgId.board.tsx", path: "/org/$orgId/board", kind: "page" }
+ * fileToRoute("api.auth.$.ts");
+ * // { file: "api.auth.$.ts", path: "/api/auth/$", kind: "http" }
  * ```
  */
 export function fileToRoute(file: string): RouteEntry | null {
-  if (!ROUTE_EXT.test(file) || file.includes("/")) return null;
-  const base = file.replace(ROUTE_EXT, "");
+  const extMatch = ROUTE_EXT.exec(file);
+  if (!extMatch || file.includes("/")) return null;
+  const base = file.slice(0, extMatch.index);
   if (base === "__root") return { file, path: null, kind: "root" };
   if (base === "__404") return { file, path: null, kind: "notFound" };
   if (base === "__error") return { file, path: null, kind: "error" };
   if (base.startsWith("__")) return null; // unknown shell file — ignore
-  if (base === "index") return { file, path: "/", kind: "page" };
-  return { file, path: `/${base.split(".").join("/")}`, kind: "page" };
+  const ext = extMatch[1] as string;
+  const kind = ext === "tsx" || ext === "jsx" ? "page" : "http";
+  const path = base === "index" ? "/" : `/${base.split(".").join("/")}`;
+  return { file, path, kind };
 }
 
 /**
