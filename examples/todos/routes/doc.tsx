@@ -13,7 +13,7 @@ export default live("/doc")
   .mount(async () => {
     const [{ rsc }, { DocBody }] = await Promise.all([
       import("@rpxd/rsc"),
-      import("../lib/markdown.tsx"),
+      import("../lib/components/markdown.tsx"),
     ]);
     return { source: INITIAL, body: (await rsc(<DocBody source={INITIAL} />)) as unknown };
   })
@@ -21,7 +21,7 @@ export default live("/doc")
     r.handler(async ({ text }: { text: string }, ctx) => {
       const [{ rsc }, { DocBody }] = await Promise.all([
         import("@rpxd/rsc"),
-        import("../lib/markdown.tsx"),
+        import("../lib/components/markdown.tsx"),
       ]);
       const source = `${ctx.state.source}\n${text}`;
       // Serialize before the mutator — patchState is sync by design (§3).

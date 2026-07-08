@@ -15,15 +15,17 @@ organise userland modules. Adopt it, adapt it, or ignore it.
 | ------------------------------- | --------------------------------------- |
 | `my_app_web/` (router, LiveViews) | `routes/` — live objects + `render`   |
 | `my_app/` contexts (`Accounts`) | `domain/` — bounded modules             |
-| `MyApp.Repo`                    | `db.ts` — your client (Prisma/Drizzle/…) |
+| `MyApp.Repo`                    | `adapters/db.ts` — your client (Prisma/Drizzle/…) |
 | `Phoenix.PubSub`                | `ctx.subscribe` / `broadcast` / `.on`   |
 
 ```
 routes/          # the edge — live objects (thin orchestration)
 domain/          # app logic — bounded modules (the public API)
+  scope.ts       #   who is acting (Scope) — client-safe, no db
   todos.ts       #   listTodos / addTodo / toggleTodo
-  todos/         #   (only once it grows) schema.ts, queries.ts — internal
-db.ts            # the database client (a singleton import)
+adapters/        # server-only clients behind the domain
+  db.ts          #   the database client (a singleton)
+  auth.ts        #   the auth library (see routes-and-auth.md)
 ```
 
 `examples/todos` is laid out this way — read it alongside this doc. API routes
@@ -43,12 +45,13 @@ buys the same things:
   then `patchState`/`broadcast`. All real work — queries, invariants, joins —
   lives in `domain/`. (This is spec §6's "chatty client = missing reducer"
   pushed one layer deeper.)
-- **Swappable persistence.** Replace the in-memory `db.ts` with a real client
-  and nothing under `routes/` changes.
-- **Tests without the harness.** Domain modules are plain functions — they
-  unit-test with no `live()` and no ctx (see
-  `examples/todos/test-bun/domain-todos.test.ts`). Mock at the domain boundary —
-  coarse and stable — instead of reaching for a db handle on `ctx`.
+- **Swappable persistence.** Swap the client in `adapters/db.ts` (the example
+  uses Prisma/SQLite) and nothing under `routes/` changes.
+- **Tests without the harness.** The pure parts (e.g. `scopeFrom`) unit-test
+  with no `live()`, ctx, or db (see `examples/todos/test-bun/scope.test.ts`);
+  the DB-backed queries are integration-tested end-to-end by the Playwright
+  suite. Mock at the domain boundary — coarse and stable — instead of reaching
+  for a db handle on `ctx`.
 - **Transactions land where they belong.** A DB transaction opens and closes
   *inside* a domain function, exactly like `Repo.transaction` inside a Phoenix
   context. Keeping the db off `ctx` (spec §10) follows from this: a transaction
@@ -57,7 +60,8 @@ buys the same things:
 
 ```tsx
 // routes/index.tsx — the edge
-import { addTodo, listTodos, scopeFrom } from "../domain/todos";
+import { addTodo, listTodos } from "../domain/todos";
+import { scopeFrom } from "../domain/scope";
 
 export default live("/")
   .mount(async (_params, ctx) => ({ todos: await listTodos(scopeFrom(ctx.session)) }))
@@ -70,11 +74,15 @@ export default live("/")
 ```
 
 ```ts
-// domain/todos.ts — the core (only this layer imports db)
-import { db } from "../db";
+// domain/todos.ts — the core (only this layer touches the db). In the RSC
+// example the client is loaded lazily + server-only so it never enters the
+// client bundle (see routes-and-auth.md); shown direct here for brevity.
+import { db } from "../adapters/db"; // the Prisma client
 
-export async function listTodos(scope: Scope) { return db.todos.all(scope.sid); }
-export async function addTodo(scope: Scope, text: string) { return db.todos.insert(scope.sid, text); }
+export async function listTodos(scope: Scope) {
+  const owner = scope.user?.id ?? scope.sid;
+  return db.todo.findMany({ where: { owner }, orderBy: { created: "asc" } });
+}
 ```
 
 ## Scope — who is acting
@@ -98,12 +106,12 @@ session: { authenticate: (_req, { sid }) => ({ sid }) },
 ```
 
 Routes derive the scope from `ctx.session` (`scopeFrom`) and pass it down;
-domain functions scope their queries by it (`db.todos.all(scope.sid)` — spec
-§1's `findMany({ where: { orgId } })`). A bare `sid` today extends to
-`{ user, org }` tomorrow without rewriting every signature. Keeping this a
-plain value passed *into* domain functions — rather than the db on `ctx` — is
-why two sessions never see each other's todos even though `db.ts` is one
-module-level store.
+domain functions scope their queries by it (`db.todo.findMany({ where: {
+owner } })` — spec §1's `findMany({ where: { orgId } })`). A bare `sid` today
+extends to `{ user, org }` tomorrow without rewriting every signature. Keeping
+this a plain value passed *into* domain functions — rather than the db on
+`ctx` — is why two sessions never see each other's todos from one shared
+database.
 
 ## Naming
 

@@ -13,7 +13,7 @@ import { rpxd as rpxdVitePlugin, runCodegen } from "@rpxd/vite-plugin";
 import rscFlightPlugin from "@vitejs/plugin-rsc";
 import type { Plugin } from "vite";
 import { build, createBuilder } from "vite";
-import type { RpxdConfig } from "./config.ts";
+import { applyConfigOverrides, type ConfigOverrides, type RpxdConfig } from "./config.ts";
 import { CLIENT_ENTRY_URL, rpxdEntryPlugin, SSR_RUNTIME_URL } from "./entry.ts";
 
 /** Virtual SSR entry: routes + the SSR runtime, for `rpxd start`. */
@@ -62,12 +62,13 @@ function rpxdServerEntryPlugin(): Plugin {
  * await buildApp(process.cwd());
  * ```
  */
-export async function buildApp(root: string): Promise<void> {
+export async function buildApp(root: string, overrides?: ConfigOverrides): Promise<void> {
   runCodegen(root);
   const configPath = join(root, "rpxd.config.ts");
-  const config: RpxdConfig = existsSync(configPath)
-    ? ((await import(pathToFileURL(configPath).href)).default ?? {})
-    : {};
+  const config: RpxdConfig = applyConfigOverrides(
+    existsSync(configPath) ? ((await import(pathToFileURL(configPath).href)).default ?? {}) : {},
+    overrides,
+  );
 
   if (config.rsc) {
     // Three environments, one builder — the Flight plugin sequences them and

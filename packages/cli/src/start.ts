@@ -15,13 +15,15 @@ import {
   wsTransport,
 } from "@rpxd/server-bun";
 import type { FunctionComponent } from "react";
-import type { RpxdConfig } from "./config.ts";
+import { applyConfigOverrides, type ConfigOverrides, type RpxdConfig } from "./config.ts";
 import type { ShellAssets, ShellComponents, SsrRuntime } from "./render.ts";
 
 /** Options for {@link startApp}. */
 export interface StartOptions {
   /** Port to bind; 0 picks an ephemeral port. Default 3000. */
   port?: number;
+  /** CLI flag overrides (`--transport`, `--rsc`/`--no-rsc`) applied over the config. */
+  overrides?: ConfigOverrides;
 }
 
 /** A running production server. */
@@ -65,9 +67,10 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
   }
 
   const configPath = join(root, "rpxd.config.ts");
-  const config: RpxdConfig = existsSync(configPath)
-    ? ((await import(pathToFileURL(configPath).href)).default ?? {})
-    : {};
+  const config: RpxdConfig = applyConfigOverrides(
+    existsSync(configPath) ? ((await import(pathToFileURL(configPath).href)).default ?? {}) : {},
+    opts.overrides,
+  );
 
   // Route registry + SSR runtime from the server bundle — the bundle owns
   // rendering (§12); this process is pure transport.

@@ -1,6 +1,9 @@
 /** RSC fields (§16): server-rendered subtrees in state; renderer never ships. */
 import { expect, test } from "@playwright/test";
 
+// rsc fields only exist when rsc is enabled; the matrix runs a --no-rsc combo.
+test.skip(process.env.RPXD_RSC === "false", "rsc disabled (--no-rsc combo)");
+
 test("rsc field SSRs, updates live, and the heavy renderer never loads client-side", async ({
   page,
 }) => {

@@ -70,3 +70,27 @@ export interface RpxdConfig {
 export function defineConfig(config: RpxdConfig): RpxdConfig {
   return config;
 }
+
+/**
+ * Config values the CLI can override via flags — `--transport <sse|ws>` and
+ * `--rsc` / `--no-rsc`. Handy for testing one app across the render/transport
+ * combinations (CI matrix) without editing `rpxd.config.ts`.
+ */
+export interface ConfigOverrides {
+  transport?: "sse" | "ws";
+  rsc?: boolean;
+}
+
+/**
+ * Apply CLI flag overrides onto a loaded config (mutates and returns it).
+ *
+ * @example
+ * ```ts
+ * applyConfigOverrides(config, { transport: "ws", rsc: false });
+ * ```
+ */
+export function applyConfigOverrides(config: RpxdConfig, overrides?: ConfigOverrides): RpxdConfig {
+  if (overrides?.transport) config.transport = { kind: overrides.transport };
+  if (overrides?.rsc !== undefined) config.rsc = overrides.rsc;
+  return config;
+}
