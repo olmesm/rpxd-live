@@ -28,6 +28,7 @@ export {
   type SearchParams,
 } from "./live.ts";
 export { matchHttpPath, matchHttpRoute, matchPath, matchRoute, type RouteMatch } from "./match.ts";
+export { isRedirect, RedirectError, redirect } from "./redirect.ts";
 export {
   isRoute,
   type RouteCtx,

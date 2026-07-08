@@ -6,6 +6,7 @@
  */
 import {
   type Envelope,
+  isRedirect,
   type LiveDefinition,
   LiveInstance,
   memory,
@@ -303,7 +304,15 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       | { type: "params"; instance: string; search: Record<string, string> };
 
     if (msg.type === "mount") {
-      const entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
+      let entry: InstanceEntry;
+      try {
+        entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
+      } catch (e) {
+        // `mount` threw redirect() (§10): tell the client to navigate rather
+        // than mount. A GET load handles this as a 302 (see fetch catch).
+        if (isRedirect(e)) return Response.json({ redirect: e.location });
+        throw e;
+      }
       return Response.json({
         instance: entry.instance.id,
         seq: entry.instance.seq,
@@ -413,6 +422,14 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         }
         return new Response("not found", { status: 404 });
       } catch (e) {
+        // `mount` threw redirect() (§10): a full page load follows a real 302.
+        if (isRedirect(e)) {
+          return withSession(
+            new Response(null, { status: e.status, headers: { location: e.location } }),
+            sid,
+            isNew,
+          );
+        }
         if (e instanceof NotFoundError) {
           if (opts.renderNotFound) {
             return withSession(await opts.renderNotFound({ path: url.pathname }), sid, isNew);

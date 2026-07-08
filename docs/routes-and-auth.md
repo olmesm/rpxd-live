@@ -125,24 +125,32 @@ in exactly two places: the `authenticate` hook and the delegation route.
 ## Enforcing auth — the `mount` gate
 
 A protected page enforces authn where it already runs server code: `mount`.
-Read `scope.user`; reject if absent. Spec §10's "`mount` can reject → error
-route" makes this the `require_authenticated_user` equivalent, and because the
-rejection happens before any handler, `domain/` never sees an unauthenticated
-call.
+Read `scope.user`; if it's absent, **`throw redirect("/login")`** — the
+`require_authenticated_user` equivalent. Because the bounce happens before any
+handler, `domain/` never sees an unauthenticated call. `examples/todos` ships
+`routes/account.tsx` doing exactly this.
 
 ```tsx
-// routes/dashboard.tsx
-.mount(async (_p, ctx) => {
-  const scope = scopeFrom(ctx.session);
-  if (!scope.user) throw new Error("unauthorized"); // → __error (§10)
-  return { widgets: await listWidgets(scope) };
-})
+// routes/account.tsx
+import { live, redirect } from "@rpxd/core";
+import { scopeFrom } from "../domain/scope";
+
+export default live("/account")
+  .mount(async (_params, ctx) => {
+    const scope = scopeFrom(ctx.session);
+    if (!scope.user) throw redirect("/login");
+    return { email: scope.user.email };
+  })
+  .render(({ state }) => <p>signed in as {state.email}</p>);
 ```
 
-**Open question — redirect from `mount`.** §10 gives "reject → error route" but
-no documented `redirect()`, so a proper login bounce (rejected `mount` →
-`/login`) is genuinely undesigned. This is the real gap in the auth story, more
-than where files live.
+**`redirect()` works on both entry points.** A full page load gets a real
+`302` (crawlable, no flash, no protected component shipped); a soft `Link`/`nav`
+navigation gets a `{ redirect }` signal on the control-mount response, which
+the client router turns into a soft navigation to the target. So `throw
+redirect("/login")` behaves the same whether the visitor typed the URL or
+clicked a link. (A plain `throw` still routes to `__error` per §10 — `redirect`
+is the specific, recognised signal.)
 
 ## Auth transitions re-mount
 

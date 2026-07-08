@@ -4,7 +4,7 @@
  * params are identity, so every path change is a fresh server mount; the
  * previous page stays interactive until the next one's state arrives.
  */
-import { type LiveRoute, matchRoute } from "@rpxd/core";
+import { isRedirect, type LiveRoute, matchRoute } from "@rpxd/core";
 import {
   createElement,
   type FunctionComponent,
@@ -14,6 +14,7 @@ import {
   useState,
 } from "react";
 import { useLocation } from "wouter";
+import { navigate } from "wouter/use-browser-location";
 import { LiveConnection } from "./connection.ts";
 import { useLiveStore } from "./react.ts";
 import { RpxdProvider, useNav } from "./router.tsx";
@@ -110,6 +111,12 @@ export function LiveApp(props: LiveAppProps): ReactElement {
           return { pathname, route: mod.default, conn };
         });
       } catch (e) {
+        // `mount` threw redirect() (§10) — soft-navigate to the target instead
+        // of hard-loading the original path.
+        if (isRedirect(e)) {
+          if (ticket.current === my) navigate(e.location);
+          return;
+        }
         console.error("[rpxd] soft navigation failed, falling back to full load:", e);
         window.location.assign(location);
       }

@@ -11,7 +11,7 @@ export default function Root({ children }: { children: ReactNode }) {
     <div data-shell="todos-root">
       <nav>
         <Link to="/">todos</Link> · <Link to="/chat">chat</Link> · <Link to="/import">import</Link>{" "}
-        · <Link to="/doc">doc</Link>
+        · <Link to="/doc">doc</Link> · <Link to="/account">account</Link>
       </nav>
       {children}
     </div>
