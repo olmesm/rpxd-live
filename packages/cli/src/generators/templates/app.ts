@@ -33,6 +33,7 @@ const packageJson = ({ name, db, auth }: AppOptions): string => {
 
   const devDeps: Record<string, string> = {
     "@rpxd/cli": "^0.1.0",
+    "@rpxd/testing": "^0.1.0",
     "@rpxd/vite-plugin": "^0.1.0",
     "@types/bun": "^1.3.14",
     "@types/node": "^26.0.0",
@@ -118,6 +119,15 @@ generated/
 `;
 
 const viteEnv = (): string => `/// <reference types="vite/client" />\n`;
+
+const vitestConfig = (): string => `import { defineConfig } from "vitest/config";
+
+// Runs the tests \`rpxd scaffold\` generates — testLive route tests exercise the
+// real live object (mount, rpcs, patches); domain tests cover the service layer.
+export default defineConfig({
+  test: { include: ["**/*.test.{ts,tsx}"], exclude: ["**/node_modules/**", "dist/**"] },
+});
+`;
 
 const rpxdConfig = (auth: boolean): string =>
   auth
@@ -261,6 +271,7 @@ export function appShellFiles(opts: AppOptions): FileWrite[] {
     { path: "tsconfig.json", contents: tsconfig(opts.db) },
     { path: ".gitignore", contents: gitignore() },
     { path: "vite-env.d.ts", contents: viteEnv() },
+    { path: "vitest.config.ts", contents: vitestConfig() },
     { path: "rpxd.config.ts", contents: rpxdConfig(opts.auth) },
     { path: "routes/__root.tsx", contents: root(opts.auth) },
     { path: "routes/__404.tsx", contents: notFound() },

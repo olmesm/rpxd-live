@@ -59,7 +59,7 @@ describe("planInit", () => {
 describe("planScaffold", () => {
   const noFeatures = { hasDb: false, hasAuth: false };
 
-  it("emits a live page + in-memory domain + behavioral test (no db)", () => {
+  it("emits a live page + in-memory domain + testLive route test (no db)", () => {
     const plan = planScaffold({
       context: "Todos",
       schema: "Todo",
@@ -67,12 +67,15 @@ describe("planScaffold", () => {
       fieldSpecs: ["text:string", "done:boolean"],
       features: noFeatures,
     });
-    expect(paths(plan)).toEqual(["routes/todos.tsx", "domain/todos.ts", "domain/todos.test.ts"]);
+    expect(paths(plan)).toEqual(["routes/todos.tsx", "domain/todos.ts", "test/todos.test.ts"]);
     const route = file(plan, "routes/todos.tsx");
     expect(route).toContain('live("/todos")');
     expect(route).toContain("rpc.toggle"); // boolean field → toggle
     expect(file(plan, "domain/todos.ts")).toContain("new Map");
-    expect(file(plan, "domain/todos.test.ts")).toContain("in-memory");
+    const test = file(plan, "test/todos.test.ts");
+    expect(test).toContain("testLive");
+    expect(test).toContain("t.rpc.create");
+    expect(test).toContain("t.rpc.toggle"); // boolean field → toggle exercised
     expect(plan.steps.join("")).not.toMatch(/schema.prisma/); // no db → no model printed
   });
 
@@ -127,6 +130,8 @@ describe("planScaffold", () => {
     });
     expect(paths(plan)).toContain("routes/todos.ts");
     expect(file(plan, "routes/todos.ts")).toContain('route("/api/todos")');
+    // http has no rpcs → a domain test, not a testLive route test
+    expect(paths(plan)).toContain("domain/todos.test.ts");
   });
 
   it("--no-test drops the test file", () => {
@@ -138,7 +143,7 @@ describe("planScaffold", () => {
       test: false,
       features: noFeatures,
     });
-    expect(paths(plan)).not.toContain("domain/todos.test.ts");
+    expect(paths(plan).some((p) => p.endsWith(".test.ts"))).toBe(false);
   });
 });
 
