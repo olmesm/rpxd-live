@@ -10,7 +10,21 @@ The `rpxd` CLI ships three generators alongside `dev`/`build`/`start`. They are
 you own (`rpxd.config.ts`, `package.json`, `prisma/schema.prisma`). They never
 patch those in place, and they never overwrite an existing file unless you pass
 `--force` — the framework maintains the mirror, not the logic (see
-[Routes & auth](/guides/routes-and-auth/)).
+[Routes & auth](/rpxd-live/guides/routes-and-auth/)).
+
+## Write one by hand first
+
+You don't need a generator to build an rpxd app.
+[Your first live object](/rpxd-live/getting-started/first-live-object/) is a
+route you write by hand — that's the whole primitive, and it's worth doing once
+so the generated code reads as familiar rather than magic.
+
+`rpxd scaffold` writes exactly that shape for you: the same `live()` route, a
+scoped domain module, a test. It's a **starting point you own** — edit the
+output like any other file; nothing regenerates it. Reach for a hand-written
+route when the page is bespoke, and for `scaffold` when it's the common
+resource-shaped page (a list with create/toggle/remove). Both produce the same
+kind of code; the generator just skips the typing.
 
 ## `rpxd init` — a new app
 
