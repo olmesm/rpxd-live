@@ -141,6 +141,26 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     return map;
   }
 
+  // Fire the params loader (§7) — the single place URL-dependent data loads.
+  // Runs on every page load, fresh or warm: the URL is the query key, so a
+  // full-page load (or Link mount) must reconcile the instance to its search,
+  // not just the first mount. SSR sequencing (§12): a route opting into
+  // `blockSsr` awaits the full load so the first document carries data
+  // (crawlable). The default streams — the loader runs synchronously up to its
+  // first `await`, so once `setSearch` returns its projection (filter/loading
+  // chrome) is already staged; we flush exactly that and serialize it, then let
+  // the awaited data stream in over the push stream.
+  async function reconcileSearch(
+    def: RouteRegistration["def"],
+    instance: InstanceEntry["instance"],
+    search: Record<string, string | undefined>,
+  ): Promise<void> {
+    if (!def.params) return;
+    const run = instance.setSearch(search).catch(() => {});
+    if (def.paramsOptions?.blockSsr) await run;
+    else await instance.flushStaged();
+  }
+
   async function mountInstance(
     sid: string,
     sessionData: unknown,
@@ -157,6 +177,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           clearTimeout(existing.evictTimer);
           existing.evictTimer = undefined;
         }
+        // Reconcile the warm instance to this load's URL (§7).
+        const route = opts.routes.find((r) => r.path === existing.path);
+        if (route) await reconcileSearch(route.def, existing.instance, search);
         return existing;
       }
       // The authenticated session changed (login/logout, §10): the principal —
@@ -186,7 +209,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       storageKey: `${sid}:${pathname}`,
       defaultRateLimit: opts.defaultRateLimit,
     });
-    if (Object.keys(search).length > 0) await instance.setSearch(search);
+    await reconcileSearch(route.def, instance, search);
 
     const entry: InstanceEntry = {
       instance,

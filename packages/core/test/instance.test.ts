@@ -11,6 +11,9 @@ interface TodoState {
   answer: string;
   importing?: boolean;
   lastError?: string;
+  filter?: string;
+  loading?: boolean;
+  loadError?: string;
 }
 
 type Session = { filter?: string };
@@ -458,22 +461,110 @@ describe("pubsub (§8)", () => {
   });
 });
 
-describe("session slice (§7) and snapshots (§9)", () => {
+describe("params loader (§7)", () => {
+  // A URL-keyed loader that windows `todos` by filter — the canonical shape.
+  const load = (filter: string, signal?: AbortSignal) =>
+    new Promise<{ id: string; text: string }[]>((resolve, reject) => {
+      const timer = setTimeout(() => resolve([{ id: `${filter}-1`, text: filter }]), 5);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(new DOMException("aborted", "AbortError"));
+      });
+    });
+
   const def: LiveDefinition<TodoState, "/t/$id", Session> = {
     mount: async () => initial(),
-    params: (session, { filter }) => {
-      session.filter = filter ?? "all";
+    params: async ({ filter }, ctx) => {
+      const f = filter ?? "all";
+      ctx.patchState((s) => {
+        s.filter = f;
+        s.loading = true;
+      });
+      const items = await load(f, ctx.signal);
+      ctx.patchState((s) => {
+        s.todos = items;
+        s.loading = false;
+      });
     },
   };
 
-  it("routes params-reducer patches through the $session namespace", async () => {
+  it("writes page state (not the $session slice) and fires the loader", async () => {
     const { inst, envelopes } = await make(def);
     await inst.setSearch({ filter: "done" });
-    expect(inst.session.filter).toBe("done");
-    expect(envelopes[0]?.patches?.[0]?.path).toEqual(["$session", "filter"]);
+    expect(inst.state.filter).toBe("done");
+    expect(inst.state.todos).toEqual([{ id: "done-1", text: "done" }]);
+    expect(inst.state.loading).toBe(false);
+    // Patches target page state, never the $session namespace.
+    const paths = envelopes.flatMap((e) => e.patches?.map((p) => p.path[0]) ?? []);
+    expect(paths).not.toContain("$session");
+    expect(paths).toContain("filter");
   });
 
-  it("write-through snapshots restore session continuity; mount re-runs on cold wake", async () => {
+  it("keeps the previous window visible while loading (keepPreviousData)", async () => {
+    const { inst } = await make(def);
+    await inst.setSearch({ filter: "open" });
+    const load2 = inst.setSearch({ filter: "done" });
+    // Synchronous projection landed; old items still present mid-load.
+    await tick();
+    expect(inst.state.filter).toBe("done");
+    expect(inst.state.loading).toBe(true);
+    expect(inst.state.todos).toEqual([{ id: "open-1", text: "open" }]);
+    await load2;
+    expect(inst.state.todos).toEqual([{ id: "done-1", text: "done" }]);
+  });
+
+  it("is latest-wins: a superseded run's late flush is dropped", async () => {
+    const { inst } = await make(def);
+    const a = inst.setSearch({ filter: "a" });
+    const b = inst.setSearch({ filter: "b" });
+    await Promise.all([a, b]);
+    await inst.idle();
+    // Only the last URL's window lands, regardless of resolution order.
+    expect(inst.state.filter).toBe("b");
+    expect(inst.state.todos).toEqual([{ id: "b-1", text: "b" }]);
+  });
+
+  it("aborts the prior loader's signal when superseded", async () => {
+    let aborted = false;
+    const spyDef: LiveDefinition<TodoState, "/t/$id", Session> = {
+      mount: async () => initial(),
+      params: async ({ filter }, ctx) => {
+        ctx.signal.addEventListener("abort", () => {
+          aborted = true;
+        });
+        await load(filter ?? "all", ctx.signal).catch(() => {});
+      },
+    };
+    const { inst } = await make(spyDef);
+    void inst.setSearch({ filter: "a" });
+    await inst.setSearch({ filter: "b" });
+    expect(aborted).toBe(true);
+  });
+
+  it("does not throw when the loader rejects; error is userland state", async () => {
+    const boomDef: LiveDefinition<TodoState, "/t/$id", Session> = {
+      mount: async () => initial(),
+      params: async (_search, ctx) => {
+        ctx.patchState((s) => {
+          s.loading = true;
+        });
+        try {
+          throw new Error("db down");
+        } catch {
+          ctx.patchState((s) => {
+            s.loading = false;
+            s.loadError = "db down";
+          });
+        }
+      },
+    };
+    const { inst } = await make(boomDef);
+    await expect(inst.setSearch({ filter: "x" })).resolves.toBeUndefined();
+    expect(inst.state.loadError).toBe("db down");
+    expect(inst.state.loading).toBe(false);
+  });
+
+  it("cold wake re-runs mount; the window rebuilds from the URL via setSearch (§9)", async () => {
     const storage = memory();
     let mounts = 0;
     const counting: LiveDefinition<TodoState, "/t/$id", Session> = {
@@ -488,10 +579,13 @@ describe("session slice (§7) and snapshots (§9)", () => {
     const seqBefore = first.inst.seq;
     await first.inst.dispose();
 
+    // Cold wake: mount re-runs (page state fresh), then the client re-presents
+    // the URL — setSearch rebuilds the same window. No session-slice reliance.
     const second = await make(counting, { storage, key: "k1" });
     expect(mounts).toBe(2);
-    expect(second.inst.session.filter).toBe("done");
     expect(second.inst.seq).toBeGreaterThan(seqBefore);
+    await second.inst.setSearch({ filter: "done" });
+    expect(second.inst.state.todos).toEqual([{ id: "done-1", text: "done" }]);
   });
 });
 

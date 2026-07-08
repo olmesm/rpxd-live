@@ -54,3 +54,26 @@ test("optimistic toggle survives a reload via the warm instance (§11)", async (
   await page.reload();
   await expect(page.getByTestId("todos").locator("li").first().locator("input")).toBeChecked();
 });
+
+test("filtering via the params loader is URL-driven (§7): nav.patch reruns the query", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const list = page.getByTestId("todos");
+  await expect(list.locator("li")).toHaveCount(1); // seeded "Try rpxd" (not done)
+
+  // Filter to "done": nav.patch updates the URL, the loader re-queries, the
+  // not-done seed row drops out — no full remount.
+  await page.getByTestId("filter-done").click();
+  await expect(page).toHaveURL(/[?&]filter=done/);
+  await expect(list.locator("li")).toHaveCount(0);
+
+  // Back to "all": the loader reruns from the URL, the row returns.
+  await page.getByTestId("filter-all").click();
+  await expect(list.locator("li")).toHaveCount(1);
+
+  // A shared/bookmarked filtered URL rebuilds the same window on a cold load.
+  await page.goto("/?filter=done");
+  await expect(page.getByTestId("filter-done")).toHaveAttribute("aria-current", "true");
+  await expect(page.getByTestId("todos").locator("li")).toHaveCount(0);
+});

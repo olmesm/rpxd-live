@@ -18,9 +18,15 @@ export interface TodoRow {
   done: boolean;
 }
 
+/** Which todos a view shows — URL view state (§7), driven by `nav.patch`. */
+export type TodoFilter = "all" | "active" | "done";
+
 const select = { id: true, text: true, done: true } as const;
 // `srv-` ids mark server-confirmed rows (vs optimistic tempIds, §4).
 const newId = () => `srv-${crypto.randomUUID()}`;
+
+const doneWhere = (filter: TodoFilter): { done?: boolean } =>
+  filter === "active" ? { done: false } : filter === "done" ? { done: true } : {};
 
 const client = () => {
   if (import.meta.env.SSR) return import("../adapters/db").then((m) => m.db);
@@ -35,12 +41,24 @@ function ownerOf(scope: Scope): string {
   return scope.user?.id ?? scope.sid;
 }
 
-/** Load every todo in scope (oldest first); a new owner is seeded a starter row. */
-export async function listTodos(scope: Scope): Promise<TodoRow[]> {
+/**
+ * Load todos in scope (oldest first), optionally filtered by `done`. A brand
+ * new owner is seeded a starter row — but only on the unfiltered "all" view,
+ * so an empty "done"/"active" window never spuriously seeds.
+ */
+export async function listTodos(
+  scope: Scope,
+  opts: { filter?: TodoFilter } = {},
+): Promise<TodoRow[]> {
   const db = await client();
   const owner = ownerOf(scope);
-  const rows = await db.todo.findMany({ where: { owner }, orderBy: { created: "asc" }, select });
-  if (rows.length > 0) return rows;
+  const filter = opts.filter ?? "all";
+  const rows = await db.todo.findMany({
+    where: { owner, ...doneWhere(filter) },
+    orderBy: { created: "asc" },
+    select,
+  });
+  if (rows.length > 0 || filter !== "all") return rows;
   // Seed keeps the default cuid (not a `srv-` id) so a seeded row is
   // distinguishable from a server-confirmed insert.
   return [await db.todo.create({ data: { owner, text: "Try rpxd" }, select })];

@@ -34,6 +34,9 @@ setAutoFreeze(false);
 /** Path prefix that routes a patch to the session slice instead of page state (§2). */
 export const SESSION_PREFIX = "$session";
 
+/** Reserved abort-group name for the params loader (§7) — drives latest-wins. */
+const PARAMS_KEY = "$params";
+
 /** Options for {@link LiveInstance.create}. */
 export interface CreateInstanceOptions<S, Path extends string, Session> {
   /** Unique instance id — also the pubsub subscriber id (self-exclusion, §8). */
@@ -127,6 +130,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    */
   #pendingMuts: Mutator<S>[] = [];
   #flushScheduled = false;
+  /** Monotonic params-run tag; a run's flushes are dropped once superseded (§7). */
+  #paramsRunId = 0;
   /** rpcId → ack envelope, for at-least-once dedupe (§11). */
   readonly #acks = new Map<string, Envelope>();
   #disposed = false;
@@ -208,6 +213,17 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
+   * Apply whatever mutators are currently staged, now, without waiting for the
+   * scheduled coalescing tick (§3). Deterministic because a params loader runs
+   * synchronously up to its first `await` (§7) — so once `setSearch` has handed
+   * control back, its projection is already staged. Streaming SSR (§12) drains
+   * it to serialize the projection chrome, then lets the awaited data stream.
+   */
+  async flushStaged(): Promise<void> {
+    await this.#flushChunk();
+  }
+
+  /**
    * Execute an rpc batch (§6): calls run in order as plain async handlers;
    * same-tick patchState calls coalesce into flushes, and the final flush at
    * completion carries the ack (so its patches and idMap ride one envelope).
@@ -254,27 +270,48 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     }
   }
 
-  /** Apply the search-param reducer to the session slice (§7) — no remount. */
+  /**
+   * Run the params loader for a set of search params (§7) — no remount. Fires
+   * once after `mount` (initial load) and again on every `nav.patch`. Writes
+   * page state through `ctx.patchState`; loading/errors are userland state, so
+   * there is no ack. **Latest-wins**: a newer call aborts the prior run's
+   * `ctx.signal` and drops its late flushes, so the last URL always wins.
+   *
+   * The caller decides whether to await: the server streams (fire-and-forget)
+   * by default and `await`s only when a route opts into blocking SSR (§12);
+   * tests await for determinism.
+   */
   async setSearch(search: Record<string, string | undefined>): Promise<void> {
-    const reducer = this.#def.params;
-    if (!reducer) return;
-    await this.#queue.run(async () => {
-      const draft = createDraft(this.#session as object) as Draft<Session>;
-      try {
-        reducer(draft, search);
-      } catch (e) {
-        this.#discard(draft);
-        throw e;
+    const loader = this.#def.params;
+    if (!loader || this.#disposed) return;
+
+    // Latest-wins: cancel any in-flight run, then claim this run's tag.
+    this.#abortRpc(PARAMS_KEY);
+    const runId = ++this.#paramsRunId;
+    const controller = this.#trackAbort(PARAMS_KEY);
+
+    const idMap: Record<string, string> = {};
+    const bucket: FlushBucket<S> = { muts: [], atomic: false };
+    const ctx = this.#makeHandlerCtx(idMap, bucket, controller.signal);
+    // Drop flushes from a superseded run even when userland ignores the
+    // signal — the run tag is the authority, the signal is the courtesy.
+    const queue = ctx.patchState;
+    (ctx as { patchState: (mut: Mutator<S>) => void }).patchState = (mut) => {
+      if (runId === this.#paramsRunId) queue(mut);
+    };
+
+    try {
+      await loader(search, ctx);
+      if (runId === this.#paramsRunId) await this.#flushChunk();
+    } catch (e) {
+      if (runId === this.#paramsRunId && !controller.signal.aborted) {
+        // Loaders own their error surface (patchState an error field); a throw
+        // has no ack channel, so it is reported server-side only (§10).
+        console.error("[rpxd] params loader failed:", e);
       }
-      let patches: Patch[] = [];
-      this.#session = finishDraft(draft, (p) => {
-        patches = p as Patch[];
-      }) as Session;
-      if (patches.length > 0) {
-        this.#emit({ patches: patches.map((p) => ({ ...p, path: [SESSION_PREFIX, ...p.path] })) });
-      }
-      await this.#writeThrough();
-    });
+    } finally {
+      this.#untrackAbort(PARAMS_KEY, controller);
+    }
   }
 
   /**

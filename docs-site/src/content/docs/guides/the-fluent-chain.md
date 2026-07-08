@@ -14,10 +14,18 @@ are compile errors.
 export default live("/org/$orgId/board")
   .mount(async ({ orgId }, ctx) => {
     ctx.subscribe(`org:${orgId}`);
-    return { projects: await listProjects(orgId) };
+    return { projects: [] as Project[], filter: "all", loading: true };
   })
-  .params((session, { filter }) => {
-    session.filter = filter ?? "all";
+  .params(async ({ filter }, ctx) => {
+    ctx.patchState((s) => {
+      s.filter = filter ?? "all";
+      s.loading = true;
+    });
+    const projects = await listProjects(ctx.params.orgId, { filter, signal: ctx.signal });
+    ctx.patchState((s) => {
+      s.projects = projects;
+      s.loading = false;
+    });
   })
   .rpc("create", (r) =>
     r.input(z.object({ name: z.string() })).handler(async ({ name }, ctx) => {
@@ -46,11 +54,24 @@ Path params (`orgId`) are typed from the path literal. Call `ctx.subscribe` here
 to join pubsub topics. Mount may `throw redirect("/login")` to bounce (see
 [Routes & auth](/rpxd-live/guides/routes-and-auth/)).
 
-### `.params((session, search) => void)`
+### `.params(async (search, ctx) => void, opts?)`
 
-A reducer for **search-param** changes. Path params are identity (navigation =
-remount); search params are view state, applied through this reducer via
-`nav.patch` — no remount. Optional.
+The **URL-keyed loader** — the single place URL-dependent data loads. Runs once
+after `mount` (first paint) and again on every `nav.patch`. Path params are
+identity (navigation = remount); search params are view state, so this streams
+new data in with **no remount**. Writes **page state** via `ctx.patchState`;
+`ctx.session` is read-only. Loading and errors are ordinary state the loader
+writes — there's no ack.
+
+It's **latest-wins**: a newer invocation aborts the prior run's `ctx.signal` and
+drops its late flushes, so rapid filter/page changes resolve to the last URL.
+Pass `ctx.signal` to `fetch` so a superseded load stops early. Because the URL
+is the query key, filtering and pagination are shareable, bookmarkable, and
+rebuilt from the URL on cold wake.
+
+`opts.blockSsr` (default `false`) awaits the load during SSR so the first
+document carries data (crawlable); the default streams the data in after
+hydration. Optional.
 
 ### `.rpc(name, r => r.input().optimistic().handler().onError())`
 
