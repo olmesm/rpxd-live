@@ -8,7 +8,7 @@
  */
 import type { ProjectFeatures } from "./detect.ts";
 import { parseFields } from "./fields.ts";
-import { pascalCase, routePlural } from "./names.ts";
+import { assertIdentifier, pascalCase, routePlural } from "./names.ts";
 import { prismaModel, type ResourceSpec, resourceFiles } from "./templates/resource.ts";
 import type { GeneratorPlan } from "./types.ts";
 
@@ -59,9 +59,9 @@ export function planScaffold(options: ScaffoldOptions): GeneratorPlan {
   }
 
   const spec: ResourceSpec = {
-    context: pascalCase(options.context),
-    schema: pascalCase(options.schema),
-    plural: routePlural(options.plural),
+    context: assertIdentifier(pascalCase(options.context), "context"),
+    schema: assertIdentifier(pascalCase(options.schema), "schema"),
+    plural: assertIdentifier(routePlural(options.plural), "plural"),
     fields,
     hasDb: options.features.hasDb,
     hasAuth: options.features.hasAuth,

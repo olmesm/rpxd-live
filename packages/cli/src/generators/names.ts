@@ -71,6 +71,51 @@ export function singularize(input: string): string {
   return input;
 }
 
+/** Columns every generated model already has — a user field can't reuse them. */
+const GENERATED_COLUMNS = new Set(["id", "owner", "created"]);
+
+/**
+ * Assert `name` is a usable TS/Prisma identifier (letters/digits, starting with
+ * a letter). Casing already strips punctuation; this catches what survives —
+ * empty, leading-digit, symbol-only.
+ *
+ * @throws if `name` isn't a valid identifier.
+ *
+ * @example
+ * ```ts
+ * assertIdentifier("Todo", "schema"); // "Todo"
+ * ```
+ */
+export function assertIdentifier(name: string, label: string): string {
+  if (!/^[A-Za-z][A-Za-z0-9]*$/.test(name)) {
+    throw new Error(
+      `${label} "${name}" is not a valid identifier — use letters and digits, starting with a letter`,
+    );
+  }
+  return name;
+}
+
+/**
+ * Assert a field name is a valid identifier that doesn't collide with a
+ * generated column (`id`, `owner`, `created`).
+ *
+ * @throws if the name is invalid or reserved.
+ *
+ * @example
+ * ```ts
+ * assertFieldName("title"); // "title"
+ * ```
+ */
+export function assertFieldName(name: string): string {
+  assertIdentifier(name, "field");
+  if (GENERATED_COLUMNS.has(name)) {
+    throw new Error(
+      `field "${name}" collides with a generated column (id, owner, created) — rename it`,
+    );
+  }
+  return name;
+}
+
 /**
  * Normalize a route/table plural segment: casing-cleaned and guaranteed plural,
  * idempotent whether the argument arrives singular or already plural (so it

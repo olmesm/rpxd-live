@@ -28,7 +28,9 @@ bunx rpxd start    # serve the build with pure Bun — no Vite at runtime
 
 `dev`/`build`/`start` accept `--transport <sse|ws>` and `--rsc` / `--no-rsc`
 to override `rpxd.config.ts` — handy for exercising one app across every
-render/transport combination without editing the config.
+render/transport combination without editing the config. `dev` and `start`
+also take `--port <n>` to bind the port (the flag wins over `$PORT`, which
+stays a fallback for platforms that inject it; default `3000`).
 
 ## Scaffolding
 

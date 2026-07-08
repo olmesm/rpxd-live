@@ -157,6 +157,18 @@ describe("planScaffold", () => {
     expect(paths(plan)).toContain("domain/todos.test.ts");
   });
 
+  it("rejects an invalid context/schema name", () => {
+    expect(() =>
+      planScaffold({
+        context: "Todos",
+        schema: "2Bad",
+        plural: "todos",
+        fieldSpecs: [],
+        features: noFeatures,
+      }),
+    ).toThrow(/not a valid identifier/);
+  });
+
   it("--no-test drops the test file", () => {
     const plan = planScaffold({
       context: "Todos",
