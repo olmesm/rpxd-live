@@ -35,4 +35,15 @@ describe("todos domain (no rpxd)", () => {
     expect(other.some((t) => t.text === "only mine")).toBe(false);
     expect(other.some((t) => t.text === "Try rpxd")).toBe(true);
   });
+
+  it("scopes a signed-in user by identity, not session id", async () => {
+    const alice = { sid: "session-A", user: { id: "u_alice", email: "a@x.com" } };
+    await addTodo(alice, "alice task");
+    // same user, a different session/tab → still sees their todos
+    const aliceElsewhere = await listTodos({ sid: "session-B", user: alice.user });
+    expect(aliceElsewhere.some((t) => t.text === "alice task")).toBe(true);
+    // an anonymous visitor on session-A does NOT see alice's todos
+    const anon = await listTodos({ sid: "session-A" });
+    expect(anon.some((t) => t.text === "alice task")).toBe(false);
+  });
 });

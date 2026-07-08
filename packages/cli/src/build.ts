@@ -36,7 +36,7 @@ function rpxdServerEntryPlugin(): Plugin {
       if (id === SERVER_VIRTUAL_ID) {
         // The server bundle owns rendering (§12): routes + the SSR runtime.
         return [
-          `export { routeTree, routeModules, rootModule, notFoundModule, errorModule } from "/.rpxd/routes.gen.ts";`,
+          `export { routeTree, routeModules, routeHandlers, rootModule, notFoundModule, errorModule } from "/.rpxd/routes.gen.ts";`,
           `export * from "${SSR_RUNTIME_URL}";`,
         ].join("\n");
       }

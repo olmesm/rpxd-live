@@ -32,31 +32,57 @@ export default live("/")
         });
       }),
   )
-  .render(({ state, rpc, sync, keyOf }) => (
-    <main>
-      <h1>rpxd todos</h1>
-      <ul data-testid="todos">
-        {state.todos.map((t) => (
-          <li key={keyOf(t.id)} data-id={t.id}>
-            <label>
-              <input type="checkbox" checked={t.done} onChange={() => rpc.toggle({ id: t.id })} />
-              <span style={t.done ? { textDecoration: "line-through" } : undefined}>{t.text}</span>
-            </label>
-          </li>
-        ))}
-      </ul>
-      <form
-        data-testid="add-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const input = e.currentTarget.elements.namedItem("text") as HTMLInputElement;
-          if (input.value.trim()) void rpc.add({ text: input.value.trim() });
-          input.value = "";
-        }}
-      >
-        <input name="text" placeholder="What needs doing?" />
-        <button type="submit">Add</button>
-      </form>
-      {sync.pending && <span data-testid="pending">saving…</span>}
-    </main>
-  ));
+  .render(({ state, session, rpc, sync, keyOf }) => {
+    const { user } = scopeFrom(session);
+    return (
+      <main>
+        <h1>rpxd todos</h1>
+        <nav data-testid="auth">
+          {user ? (
+            <>
+              <span data-testid="who">signed in as {user.email}</span>{" "}
+              <button
+                type="button"
+                data-testid="sign-out"
+                onClick={async () => {
+                  await fetch("/api/auth/sign-out", { method: "POST" });
+                  window.location.assign("/");
+                }}
+              >
+                sign out
+              </button>
+            </>
+          ) : (
+            <a href="/login" data-testid="sign-in-link">
+              sign in
+            </a>
+          )}
+        </nav>
+        <ul data-testid="todos">
+          {state.todos.map((t) => (
+            <li key={keyOf(t.id)} data-id={t.id}>
+              <label>
+                <input type="checkbox" checked={t.done} onChange={() => rpc.toggle({ id: t.id })} />
+                <span style={t.done ? { textDecoration: "line-through" } : undefined}>
+                  {t.text}
+                </span>
+              </label>
+            </li>
+          ))}
+        </ul>
+        <form
+          data-testid="add-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const input = e.currentTarget.elements.namedItem("text") as HTMLInputElement;
+            if (input.value.trim()) void rpc.add({ text: input.value.trim() });
+            input.value = "";
+          }}
+        >
+          <input name="text" placeholder="What needs doing?" />
+          <button type="submit">Add</button>
+        </form>
+        {sync.pending && <span data-testid="pending">saving…</span>}
+      </main>
+    );
+  });

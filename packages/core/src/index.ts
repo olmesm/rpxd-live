@@ -27,7 +27,16 @@ export {
   type RpcLongForm,
   type SearchParams,
 } from "./live.ts";
-export { matchPath, matchRoute, type RouteMatch } from "./match.ts";
+export { matchHttpPath, matchHttpRoute, matchPath, matchRoute, type RouteMatch } from "./match.ts";
+export {
+  isRoute,
+  type RouteCtx,
+  type RouteDefinition,
+  type RouteHandlerFn,
+  type RouteMethod,
+  type RouteObject,
+  route,
+} from "./route.ts";
 
 /**
  * Route registration merge point (§7): `.rpxd/routes.gen.ts` augments this

@@ -29,6 +29,21 @@ describe("fileToRoute (§7)", () => {
     expect(fileToRoute("nested/index.tsx")).toBeNull();
   });
 
+  it("classifies .ts files as HTTP routes (route()), incl. catch-all", () => {
+    expect(fileToRoute("api.auth.$.ts")).toEqual({
+      file: "api.auth.$.ts",
+      path: "/api/auth/$",
+      kind: "http",
+    });
+    expect(fileToRoute("api.webhooks.stripe.ts")).toEqual({
+      file: "api.webhooks.stripe.ts",
+      path: "/api/webhooks/stripe",
+      kind: "http",
+    });
+    // .tsx stays a live page even with the same base
+    expect(fileToRoute("dashboard.tsx")?.kind).toBe("page");
+  });
+
   it("converts $params to wouter patterns", () => {
     expect(pathToPattern("/org/$orgId/board")).toBe("/org/:orgId/board");
     expect(pathToPattern("/")).toBe("/");
@@ -54,6 +69,13 @@ describe("ensurePathLiteral (§7: filename is truth)", () => {
 
   it("handles single quotes", () => {
     expect(ensurePathLiteral("live('/old')({})", "/new")).toBe("live('/new')({})");
+  });
+
+  it("maintains route() literals too", () => {
+    expect(ensurePathLiteral('export default route("/old").all(h);', "/api/auth/$")).toBe(
+      'export default route("/api/auth/$").all(h);',
+    );
+    expect(ensurePathLiteral('route("/api/auth/$").all(h)', "/api/auth/$")).toBeNull();
   });
 });
 
@@ -109,5 +131,21 @@ describe("codegen end-to-end", () => {
     const generated = generateRoutesModule([{ file: "index.tsx", path: "/", kind: "page" }]);
     expect(generated).toContain("export const rootModule = undefined;");
     expect(generated).toContain("export const notFoundModule = undefined;");
+  });
+
+  it("emits HTTP routes into routeHandlers, not routeModules/routeTree", () => {
+    const generated = generateRoutesModule([
+      { file: "index.tsx", path: "/", kind: "page" },
+      { file: "api.auth.$.ts", path: "/api/auth/$", kind: "http" },
+    ]);
+    expect(generated).toContain("export const routeHandlers = {");
+    expect(generated).toContain('"/api/auth/$": () => import("../routes/api.auth.$.ts")');
+    // catch-all path must NOT leak into the navigable tree or Register
+    expect(generated).not.toContain('"/api/auth/$": {'); // routeTree entry shape
+    const modulesBlock = generated.slice(
+      generated.indexOf("export const routeModules"),
+      generated.indexOf("export const routeHandlers"),
+    );
+    expect(modulesBlock).not.toContain("/api/auth/$");
   });
 });

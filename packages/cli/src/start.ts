@@ -6,10 +6,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { LiveRoute } from "@rpxd/core";
+import type { LiveRoute, RouteDefinition } from "@rpxd/core";
 import {
   bunAdapter,
   createRpxdHandler,
+  type HttpRouteRegistration,
   type RouteRegistration,
   wsTransport,
 } from "@rpxd/server-bun";
@@ -116,6 +117,16 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     components.set(path, route);
   }
 
+  // Server-only HTTP routes (`route()`) — from the ssr bundle; no component,
+  // never SSR'd (docs/routes-and-auth.md).
+  const { routeHandlers } = serverEntryModule as unknown as {
+    routeHandlers?: Record<string, () => Promise<{ default: { def: RouteDefinition } }>>;
+  };
+  const httpRoutes: HttpRouteRegistration[] = [];
+  for (const [path, load] of Object.entries(routeHandlers ?? {})) {
+    httpRoutes.push({ path, def: (await load()).default.def });
+  }
+
   // Hashed entry + css from the client manifest.
   const manifest = JSON.parse(
     readFileSync(join(clientDir, ".vite/manifest.json"), "utf-8"),
@@ -129,6 +140,7 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
 
   const handler = createRpxdHandler({
     routes,
+    httpRoutes,
     storage: config.storage,
     authenticate: config.session?.authenticate,
     defaultRateLimit: config.rateLimit,

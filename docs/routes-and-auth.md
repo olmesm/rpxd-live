@@ -1,28 +1,29 @@
-# HTTP routes & authentication (proposal)
+# HTTP routes & authentication
 
-> **Status: design proposal.** The `authenticate(req, { sid })` hook and the
-> `Scope` pattern ([`domain-layer.md`](./domain-layer.md)) ship today in
-> `examples/todos`. The `route()` fluent API, the catch-all path segment, and
-> the API-route file kind below are **not built yet** — this is the design
-> we're committing to before writing them, so the pieces stay consistent with
-> `live()` and the domain layer.
+> **Status: implemented**, demonstrated end-to-end in `examples/todos` (sign
+> up / in / out, user-scoped todos). The `route()` fluent API, the catch-all
+> path segment, the API-route file kind, and the `authenticate(req, { sid })`
+> hook all ship; `examples/todos/auth.ts` is a dependency-free stand-in for a
+> real auth library (Better Auth, Lucia, …) at the seam described here — swap
+> the file, keep everything else.
 
 ## `routes/` holds two file kinds
 
-Today every file under `routes/` is a live object. The proposal adds a second
-kind, distinguished by what the file exports:
+Files under `routes/` come in two kinds, distinguished by what the file
+exports:
 
 | File            | Exports          | Serves                              |
 | --------------- | ---------------- | ----------------------------------- |
 | `*.tsx`         | `live(...)`      | a live object — SSR + stream (§1)   |
 | `*.ts`          | `route(...)`     | a plain HTTP request/response route |
 
-HTTP routes are matched **before** the SSR/`404` fallthrough (today a bare
-`404` at `handler.ts:372`). Both kinds get the same §7 treatment: the filename
-is truth, the in-file path literal is the watcher-maintained mirror, and each
-gets an entry in `.rpxd/routes.gen.ts`. Nothing about the domain layer changes
-— routes of either kind still call `domain/`, never `db` (see
-[`domain-layer.md`](./domain-layer.md)).
+HTTP routes are matched **before** the SSR/`404` fallthrough. Both kinds get
+the same §7 treatment: the filename is truth, the in-file path literal is the
+watcher-maintained mirror, and each gets an entry in `.rpxd/routes.gen.ts`
+(pages under `routeModules`/`routeTree`, HTTP routes under a separate
+`routeHandlers` map — HTTP routes are never navigable or SSR'd). Nothing about
+the domain layer changes — routes of either kind still call `domain/`, never
+`db` (see [`domain-layer.md`](./domain-layer.md)).
 
 ## The `route()` fluent
 
@@ -36,8 +37,8 @@ path typing. Don't gold-plate it.
 ```ts
 // routes/api.webhooks.stripe.ts  → /api/webhooks/stripe
 export default route("/api/webhooks/stripe")
-  .post(async (req, ctx) => {           // ctx.scope, ctx.params — like a handler
-    await handleStripe(req, ctx.scope);
+  .post(async (req, ctx) => {           // ctx.session, ctx.params, ctx.sid
+    await handleStripe(req, ctx.session);
     return new Response(null, { status: 204 });
   });
 ```
@@ -56,10 +57,10 @@ export default route("/api/auth/$")
 Same builder either way. Auth is not a special case — it's a `route()` whose
 body happens to be a one-line delegation.
 
-**Catch-all segment.** `api.auth.$.ts` → `/api/auth/*` needs a splat segment
-(`$`). This is the one routing feature `route()` requires that live routing
-doesn't have yet; auth libraries always mount as a subtree (Next's `[...all]`,
-TanStack's `$`), so the delegation route can't exist without it.
+**Catch-all segment.** `api.auth.$.ts` → `/api/auth/*` uses a trailing `$`
+splat segment (`matchHttpPath` captures the rest under `ctx.params.$`). Auth
+libraries always mount as a subtree (Next's `[...all]`, TanStack's `$`), so the
+delegation route relies on it.
 
 ## Authentication
 
@@ -68,13 +69,15 @@ request into "who's acting") and **issue** (log in / out, set cookies). rpxd
 already unifies Phoenix's plug-vs-`on_mount` split: every entry point (SSR GET,
 stream, each rpc POST) flows through the one `authenticate` hook.
 
-### Resolve — `authenticate` + `Scope` *(ships today)*
+### Resolve — `authenticate` + `Scope`
 
 `authenticate(req, { sid })` is rpxd's `fetch_current_scope`: it reads the
 request and returns the value that becomes `ctx.session`, which routes turn into
 a `Scope` (`scopeFrom`) and thread into `domain/`. See
 [`domain-layer.md`](./domain-layer.md#scope--who-is-acting) for the `Scope`
-type. With an auth library this is where its session lookup lands:
+type. With an auth library this is where its session lookup lands (the shipped
+example uses a sync `auth.getSession(req)`; a library like Better Auth exposes
+an async `auth.api.getSession({ headers })` — same seam):
 
 ```ts
 // rpxd.config.ts
@@ -140,6 +143,18 @@ call.
 no documented `redirect()`, so a proper login bounce (rejected `mount` →
 `/login`) is genuinely undesigned. This is the real gap in the auth story, more
 than where files live.
+
+## Auth transitions re-mount
+
+`mount` reads `ctx.session` once and computes session-scoped state (a user's
+todos). The warm per-session instance (§12) is normally reused across reloads
+for continuity — but a login or logout changes *who* is acting, so that cached
+state is stale. The handler compares the fresh `authenticate` result against
+the instance's session and, when they differ, **evicts and re-mounts** (drops
+the snapshot too) rather than adopting the warm instance. So after the auth
+route sets/clears its cookie, a normal navigation to any page re-runs `mount`
+with the new principal — no manual invalidation. Same session → warm instance
+reused as before; the re-mount fires only on an actual auth change.
 
 ## `sid` vs the auth session
 

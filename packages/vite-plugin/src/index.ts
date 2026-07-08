@@ -43,8 +43,9 @@ export function runCodegen(root: string, options: RpxdPluginOptions = {}): strin
   const entries = existsSync(routesDir) ? scanRoutes(routesDir) : [];
 
   // Maintain path literals: rename → rewritten; hand-edit → corrected (§7).
+  // Both live() pages and route() HTTP files carry a maintained literal.
   for (const entry of entries) {
-    if (entry.kind !== "page" || entry.path === null) continue;
+    if ((entry.kind !== "page" && entry.kind !== "http") || entry.path === null) continue;
     const file = join(routesDir, entry.file);
     const source = readFileSync(file, "utf-8");
     const fixed = ensurePathLiteral(source, entry.path);

@@ -24,6 +24,10 @@ export const routeTree = {
     file: "../routes/import.tsx",
     pattern: "/import",
   },
+  "/login": {
+    file: "../routes/login.tsx",
+    pattern: "/login",
+  },
 } as const;
 
 /** Lazy importers for each page route — used by the client router and SSR. */
@@ -33,6 +37,15 @@ export const routeModules = {
   "/chat": () => import("../routes/chat.tsx"),
   "/doc": () => import("../routes/doc.tsx"),
   "/import": () => import("../routes/import.tsx"),
+  "/login": () => import("../routes/login.tsx"),
+} as const;
+
+/**
+ * Lazy importers for server-only HTTP routes (`route()`, docs/routes-and-auth.md).
+ * Kept out of `routeModules`/`routeTree` — never navigable, never SSR'd.
+ */
+export const routeHandlers = {
+  "/api/auth/$": () => import("../routes/api.auth.$.ts"),
 } as const;
 
 /** Shell modules (§14): HTML root, unmatched-URL page, error page. */
