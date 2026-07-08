@@ -50,6 +50,17 @@ export function generateRoutesModule(
     .map((e) => `  "${e.path}": () => import("${routesImportPrefix}/${e.file}"),`)
     .join("\n");
 
+  const http = entries.filter((e) => e.kind === "http" && e.path !== null);
+  const httpEntries = http
+    .map((e) => `  "${e.path}": () => import("${routesImportPrefix}/${e.file}"),`)
+    .join("\n");
+  // Render an empty map inline as `{}` — a `{\n\n}` block is a format violation
+  // (an app with no pages, or no HTTP routes, would otherwise emit one).
+  const block = (entriesStr: string) => (entriesStr ? `{\n${entriesStr}\n}` : "{}");
+  const treeBlock = block(treeEntries);
+  const modulesBlock = block(moduleEntries);
+  const httpBlock = block(httpEntries);
+
   const shellEntry = (kind: RouteEntry["kind"], name: string) => {
     const e = shell(kind);
     return e
@@ -62,14 +73,16 @@ export function generateRoutesModule(
  * Provides typed paths/params for {@link Link} and \`nav.navigate\`.
  * @example <Link to="/org/$orgId/board" params={{ orgId }} />
  */
-export const routeTree = {
-${treeEntries}
-} as const;
+export const routeTree = ${treeBlock} as const;
 
 /** Lazy importers for each page route — used by the client router and SSR. */
-export const routeModules = {
-${moduleEntries}
-} as const;
+export const routeModules = ${modulesBlock} as const;
+
+/**
+ * Lazy importers for server-only HTTP routes (\`route()\`, docs/routes-and-auth.md).
+ * Kept out of \`routeModules\`/\`routeTree\` — never navigable, never SSR'd.
+ */
+export const routeHandlers = ${httpBlock} as const;
 
 /** Shell modules (§14): HTML root, unmatched-URL page, error page. */
 ${shellEntry("root", "rootModule")}
@@ -91,22 +104,30 @@ declare module "@rpxd/core" {
 `;
 }
 
-const LIVE_CALL = /(\blive\s*\(\s*)(["'])((?:[^"'\\]|\\.)*)\2(\s*\))/;
+const PATH_CALL = /(\b(?:live|route)\s*\(\s*)(["'])((?:[^"'\\]|\\.)*)\2(\s*\))/;
 
 /**
  * Maintain the in-file path literal (§7): the filename is truth, the
- * `live("...")` literal is its typed mirror. Returns the corrected source
- * when the literal is missing/incorrect, or `null` when nothing changed.
+ * `live("...")` / `route("...")` literal is its typed mirror. Returns the
+ * corrected source when the literal is missing/incorrect, or `null` when
+ * nothing changed.
  *
  * @example
  * ```ts
  * ensurePathLiteral('export default live("/old")({ ... })', "/org/$orgId/board");
  * // → 'export default live("/org/$orgId/board")({ ... })'
+ * ensurePathLiteral('export default route("/old").all(h)', "/api/auth/$");
+ * // → 'export default route("/api/auth/$").all(h)'
  * ```
  */
 export function ensurePathLiteral(source: string, expectedPath: string): string | null {
-  const match = LIVE_CALL.exec(source);
-  if (!match) return null; // not a live route file — nothing to maintain
+  const match = PATH_CALL.exec(source);
+  if (!match) return null; // not a live/route file — nothing to maintain
   if (match[3] === expectedPath) return null;
-  return source.replace(LIVE_CALL, `$1$2${expectedPath}$2$4`);
+  // Function replacer: `expectedPath` may contain `$` (catch-all/`$param`),
+  // which a string replacement would mis-read as a backreference.
+  return source.replace(
+    PATH_CALL,
+    (_m, pre, quote, _old, post) => `${pre}${quote}${expectedPath}${quote}${post}`,
+  );
 }

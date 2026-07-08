@@ -40,8 +40,15 @@ export interface RpxdConfig {
   storage?: StorageAdapter;
   /** Transport (§11). Default: `sse()`. */
   transport?: TransportConfig;
-  /** Authenticate once at connect (§10) → `ctx.session` everywhere. */
-  session?: { authenticate?: (req: Request) => unknown | Promise<unknown> };
+  /**
+   * Authenticate once at connect (§10) → `ctx.session` everywhere. The second
+   * arg carries the framework's resolved session id (`sid`) — the same
+   * identity used for instance routing and storage — so the returned value can
+   * be scoped to it (e.g. `(_req, { sid }) => ({ sid })`).
+   */
+  session?: {
+    authenticate?: (req: Request, ctx: { sid: string }) => unknown | Promise<unknown>;
+  };
   /** RSC fields flag (§16). Default false — v1 is complete without it. */
   rsc?: boolean;
   /** Default per-rpc token bucket (§10). */

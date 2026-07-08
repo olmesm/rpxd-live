@@ -15,9 +15,16 @@ export {
 export {
   createRpxdHandler,
   encodeSse,
+  type HttpRouteRegistration,
   type RenderContext,
   type RouteRegistration,
   type RpxdHandlerOptions,
 } from "./handler.ts";
-export { matchPath, matchRoute, type RouteMatch } from "./match.ts";
+export {
+  matchHttpPath,
+  matchHttpRoute,
+  matchPath,
+  matchRoute,
+  type RouteMatch,
+} from "./match.ts";
 export { wsTransport } from "./ws.ts";

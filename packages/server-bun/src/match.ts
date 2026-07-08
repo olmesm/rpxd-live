@@ -3,4 +3,4 @@
  * navigation) shares the exact matcher the server mounts with; re-exported
  * here for existing imports.
  */
-export { matchPath, matchRoute, type RouteMatch } from "@rpxd/core";
+export { matchHttpPath, matchHttpRoute, matchPath, matchRoute, type RouteMatch } from "@rpxd/core";

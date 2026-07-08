@@ -1,0 +1,9 @@
+/**
+ * Auth issuance route (docs/routes-and-auth.md): a `route()` whose body
+ * delegates the whole `/api/auth/*` subtree to the auth library. `.all`
+ * forwards every method — the library owns sign-up/in/out and session.
+ */
+import { route } from "@rpxd/core";
+import { auth } from "../auth";
+
+export default route("/api/auth/$").all((req) => auth.handler(req));
