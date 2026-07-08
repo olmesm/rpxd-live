@@ -11,17 +11,31 @@ import { defineConfig } from "@playwright/test";
  *   RPXD_RSC       = true | false (default true)
  * `rsc: false` disables rsc fields, so rsc-only specs (doc.spec) skip
  * themselves — see tests/doc.spec.ts.
+ *
+ * CI runs the four combos sequentially in one job (see ci.yml), each pointing
+ * the HTML report and per-test output at a combo-specific dir via
+ * PLAYWRIGHT_HTML_DIR / PLAYWRIGHT_OUTPUT_DIR so the uploaded artifact keeps
+ * all four rather than the last one overwriting the rest.
  */
 const transport = process.env.RPXD_TRANSPORT ?? "sse";
 const rscFlag = process.env.RPXD_RSC === "false" ? "--no-rsc" : "--rsc";
+const htmlDir = process.env.PLAYWRIGHT_HTML_DIR ?? "playwright-report";
+const outputDir = process.env.PLAYWRIGHT_OUTPUT_DIR ?? "test-results";
 
 export default defineConfig({
   testDir: "./tests",
   timeout: 30_000,
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? "line" : "list",
+  outputDir,
+  reporter: process.env.CI
+    ? [["line"], ["html", { open: "never", outputFolder: htmlDir }]]
+    : "list",
   use: {
     baseURL: "http://localhost:4517",
+    // On the retry of a failing test, capture a trace + screenshot — that's what
+    // makes the uploaded artifact useful for diagnosing a red run.
+    trace: "on-first-retry",
+    screenshot: "only-on-failure",
     ...(process.env.RPXD_CHROMIUM
       ? { launchOptions: { executablePath: process.env.RPXD_CHROMIUM } }
       : {}),
