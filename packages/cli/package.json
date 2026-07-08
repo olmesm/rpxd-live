@@ -16,6 +16,7 @@
     "@vitejs/plugin-rsc": "^0.5.27",
     "citty": "^0.1.6",
     "consola": "^3.4.0",
+    "es-toolkit": "^1.39.0",
     "vite": "^7.0.0",
     "ws": "^8.21.0"
   },

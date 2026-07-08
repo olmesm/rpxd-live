@@ -28,11 +28,17 @@ export interface RunPlanOptions {
  * ```
  */
 export function runPlan(root: string, plan: GeneratorPlan, options: RunPlanOptions = {}): number {
-  const { written, skipped } = applyPlan(root, plan, { force: options.force });
+  const { written, skipped, appended, appendSkipped } = applyPlan(root, plan, {
+    force: options.force,
+  });
 
   for (const path of written) consola.success(`created ${path}`);
   for (const path of skipped) {
     consola.warn(`skipped ${path} (already exists — pass --force to overwrite)`);
+  }
+  for (const path of appended) consola.success(`updated ${path} (appended block)`);
+  for (const path of appendSkipped) {
+    consola.warn(`skipped appending to ${path} (block already present or file missing)`);
   }
 
   if (options.codegen) runCodegen(root);

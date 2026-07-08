@@ -13,6 +13,10 @@ export interface ApplyResult {
   written: string[];
   /** Paths skipped (already present; pass `force` to overwrite). */
   skipped: string[];
+  /** `path` of each append that was applied. */
+  appended: string[];
+  /** Appends skipped because the block (or its target file) was already/​not there. */
+  appendSkipped: string[];
 }
 
 /** Options for {@link applyPlan}. */
@@ -54,5 +58,26 @@ export function applyPlan(
     writeFileSync(abs, file.contents);
     written.push(file.path);
   }
-  return { written, skipped };
+
+  const appended: string[] = [];
+  const appendSkipped: string[] = [];
+  for (const block of plan.appends ?? []) {
+    const abs = join(root, block.path);
+    // Only append to a file that exists — otherwise the printed steps guide the
+    // user. Idempotent: skip if the block's marker is already present.
+    if (!existsSync(abs)) {
+      appendSkipped.push(block.path);
+      continue;
+    }
+    const current = readFileSync(abs, "utf-8");
+    if (current.includes(block.marker)) {
+      appendSkipped.push(block.path);
+      continue;
+    }
+    const sep = current.endsWith("\n") ? "\n" : "\n\n";
+    writeFileSync(abs, `${current}${sep}${block.content}\n`);
+    appended.push(block.path);
+  }
+
+  return { written, skipped, appended, appendSkipped };
 }

@@ -76,10 +76,10 @@ describe("planScaffold", () => {
     expect(test).toContain("testLive");
     expect(test).toContain("t.rpc.create");
     expect(test).toContain("t.rpc.toggle"); // boolean field → toggle exercised
-    expect(plan.steps.join("")).not.toMatch(/schema.prisma/); // no db → no model printed
+    expect(plan.appends ?? []).toHaveLength(0); // no db → nothing to append
   });
 
-  it("uses a Prisma-backed domain and prints the model when the app has a db", () => {
+  it("uses a Prisma-backed domain and appends the model when the app has a db", () => {
     const plan = planScaffold({
       context: "Notes",
       schema: "Note",
@@ -88,8 +88,31 @@ describe("planScaffold", () => {
       features: { hasDb: true, hasAuth: false },
     });
     expect(file(plan, "domain/notes.ts")).toContain("import.meta.env.SSR");
-    expect(plan.steps.join("\n")).toContain("model Note");
+    // model is appended to schema.prisma (not printed for pasting)
+    const append = (plan.appends ?? [])[0];
+    expect(append?.path).toBe("prisma/schema.prisma");
+    expect(append?.marker).toBe("model Note ");
+    expect(append?.content).toContain("model Note {");
+    expect(plan.commands).toContain("bunx prisma format");
     expect(plan.commands).toContain("bun run db:push");
+  });
+
+  it("references field → FK + @relation + @@index in the appended model", () => {
+    const plan = planScaffold({
+      context: "Posts",
+      schema: "Post",
+      plural: "posts",
+      fieldSpecs: ["title:string", "author_id:references:User"],
+      features: { hasDb: true, hasAuth: true },
+    });
+    const model = (plan.appends ?? [])[0]?.content ?? "";
+    expect(model).toMatch(/authorId\s+String/);
+    expect(model).toContain("@relation(fields: [authorId], references: [id])");
+    expect(model).toContain("@@index([authorId])");
+    // row/input types carry the FK as a plain string
+    expect(file(plan, "domain/posts.ts")).toContain("authorId: string");
+    // prisma format completes the inverse relation
+    expect(plan.steps.join("\n")).toMatch(/prisma format/);
   });
 
   it("--protected adds a mount gate on an auth app", () => {
