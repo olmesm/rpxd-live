@@ -10,11 +10,14 @@ import { wsTransport } from "../src/ws.ts";
 
 interface S {
   items: string[];
+  filter?: string;
 }
 const def: LiveDefinition<S, "/", { filter?: string }> = {
   mount: async () => ({ items: ["first"] }),
-  params: (session, { filter }) => {
-    session.filter = filter ?? "all";
+  params: async ({ filter }, ctx) => {
+    ctx.patchState((s) => {
+      s.filter = filter ?? "all";
+    });
   },
   rpc: {
     async add({ item }: { item: string }, ctx) {
@@ -108,10 +111,12 @@ describe("ws transport (§11)", () => {
     expect(ack.rpcId).toBe("ws-1");
     expect(ack.patches?.[0]?.value).toBe("over-ws");
 
-    // control messages ride the socket too
+    // control messages ride the socket too — the params loader writes page
+    // state (§7), so the patch lands on the page, not the $session slice
     socket.send(JSON.stringify({ type: "params", instance, search: { filter: "done" } }));
-    const sessionEnv = await next();
-    expect(sessionEnv.patches?.[0]?.path).toEqual(["$session", "filter"]);
+    const paramsEnv = await next();
+    expect(paramsEnv.patches?.[0]?.path).toEqual(["filter"]);
+    expect(paramsEnv.patches?.[0]?.value).toBe("done");
 
     socket.send(JSON.stringify({ type: "resync", instance }));
     const resynced = await next();
