@@ -1,11 +1,12 @@
 # HTTP routes & authentication
 
 > **Status: implemented**, demonstrated end-to-end in `examples/todos` (sign
-> up / in / out, user-scoped todos). The `route()` fluent API, the catch-all
-> path segment, the API-route file kind, and the `authenticate(req, { sid })`
-> hook all ship; `examples/todos/auth.ts` is a dependency-free stand-in for a
-> real auth library (Better Auth, Lucia, …) at the seam described here — swap
-> the file, keep everything else.
+> up / in / out, user-scoped todos, a protected route). The `route()` fluent
+> API, the catch-all path segment, the API-route file kind, the
+> `authenticate(req, { sid })` hook, and `redirect()` from `mount` all ship.
+> Auth is real **Better Auth** over **Prisma 7 / SQLite**, wired in
+> `adapters/` — swap `adapters/auth.ts` for another library at the same seam
+> and everything else stays.
 
 ## `routes/` holds two file kinds
 
@@ -97,10 +98,12 @@ export default defineConfig({
 Logging in must *write* (verify credentials, mint a session, set a cookie) — the
 read-only `authenticate` hook can't do it. That's the issuance half, and it's
 what the catch-all `route().all()` above is for: the library owns the whole
-`/api/auth/*` subtree. `auth.ts` is the **second infra singleton, a sibling of
-`db.ts`** — it lives at the app root, not in `domain/`, because it's
-infrastructure that owns its own tables, not your business logic. It's imported
-in exactly two places: the `authenticate` hook and the delegation route.
+`/api/auth/*` subtree. `adapters/auth.ts` sits beside `adapters/db.ts` — both
+are server-only infrastructure, not `domain/` business logic. `adapters/db.ts`
+owns the Prisma client and exports the Better Auth adapter (`authAdapter`);
+`adapters/auth.ts` consumes it, so db wiring and auth config stay separate.
+`auth` is imported in exactly two places: the `authenticate` hook and the
+delegation route.
 
 ### Two rules
 
@@ -189,16 +192,21 @@ my-app/
 │   ├── __error.tsx         #   mount rejection / 403 (§10)
 │   ├── index.tsx           #   /            live object (todos)
 │   ├── login.tsx           #   /login       live object (auth forms)
+│   ├── account.tsx         #   /account     protected (throw redirect)
 │   └── api.auth.$.ts       #   /api/auth/*  route().all() → auth.handler
 ├── domain/                 # app core — bounded modules (Phoenix contexts)
 │   ├── scope.ts            #   Scope type + scopeFrom(ctx.session)
-│   ├── todos.ts            #   listTodos / addTodo / toggleTodo(scope, …)
-│   └── todos/              #   (only once it grows) queries.ts, schema.ts
-├── db.ts                   # db client singleton (Prisma / Drizzle / bun:sqlite)
-├── auth.ts                 # auth-library instance (owns user/session tables)
+│   └── todos.ts            #   listTodos / addTodo / toggleTodo(scope, …)
+├── adapters/               # server-only infrastructure
+│   ├── db.ts               #   Prisma client + Better Auth adapter (authAdapter)
+│   └── auth.ts             #   betterAuth(...) consuming authAdapter
+├── lib/
+│   └── components/         # shared UI (rsc renderers, 'use client' islands)
+├── prisma/schema.prisma    # Todo + Better Auth models
+├── prisma.config.ts
 └── rpxd.config.ts          # storage, transport, session.authenticate
 ```
 
-Dependency direction stays one-way: `routes/` → `domain/` → (`db.ts`,
-`auth.ts`). Routes touch `db`/`auth` only at the two seams that *are* the web
+Dependency direction stays one-way: `routes/` → `domain/` → `adapters/`.
+Routes touch `adapters/` only at the two seams that *are* the web
 layer's job — the `authenticate` hook and the `api.auth` delegation.

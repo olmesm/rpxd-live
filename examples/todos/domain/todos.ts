@@ -1,22 +1,31 @@
 /**
- * Todos domain module — the service-layer boundary (Phoenix "context", kept
- * out of the `ctx` namespace on purpose; see `docs/domain-layer.md`).
+ * Todos domain module — the service-layer boundary (Phoenix "context").
  *
- * `routes/` calls these functions; only this layer imports `db`. Business logic
- * and persistence live here, so handlers stay thin orchestration and the whole
- * module unit-tests without rpxd (see `test-bun/domain-todos.test.ts`). Any DB
- * transaction would open and close inside one of these functions — never spans
- * a handler's awaits.
- *
- * Every function takes a {@link Scope} first — the rpxd echo of Phoenix's
- * `Scope`: who is acting, threaded from `ctx.session` into scoped queries.
- * Functions are async to mirror a real data layer: routes `await` them.
+ * `routes/` calls these functions; only the domain layer touches the data
+ * layer. Prisma is loaded **lazily and server-only**: `import.meta.env.SSR` is
+ * a static `false` in the Vite client build, so `@prisma/client` (which uses
+ * `node:crypto`) is tree-shaken out of the browser bundle even though a route
+ * component imports this module. Queries scope by {@link Scope}.
  */
-import { db, type TodoRow } from "../db";
 import type { Scope } from "./scope";
 
 export type { Scope, ScopeUser } from "./scope";
-export type { TodoRow };
+
+/** A persisted todo row (the subset the UI needs). */
+export interface TodoRow {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
+const select = { id: true, text: true, done: true } as const;
+// `srv-` ids mark server-confirmed rows (vs optimistic tempIds, §4).
+const newId = () => `srv-${crypto.randomUUID()}`;
+
+const client = () => {
+  if (import.meta.env.SSR) return import("../adapters/db").then((m) => m.db);
+  throw new Error("db access is server-only");
+};
 
 /**
  * The row owner: a signed-in user's todos follow their identity across
@@ -26,17 +35,30 @@ function ownerOf(scope: Scope): string {
   return scope.user?.id ?? scope.sid;
 }
 
-/** Load every todo in scope. */
+/** Load every todo in scope (oldest first); a new owner is seeded a starter row. */
 export async function listTodos(scope: Scope): Promise<TodoRow[]> {
-  return db.todos.all(ownerOf(scope));
+  const db = await client();
+  const owner = ownerOf(scope);
+  const rows = await db.todo.findMany({ where: { owner }, orderBy: { created: "asc" }, select });
+  if (rows.length > 0) return rows;
+  // Seed keeps the default cuid (not a `srv-` id) so a seeded row is
+  // distinguishable from a server-confirmed insert.
+  return [await db.todo.create({ data: { owner, text: "Try rpxd" }, select })];
 }
 
-/** Create a todo in scope and return the persisted row (with its server id). */
+/** Create a todo in scope; returns the persisted row (with its server id). */
 export async function addTodo(scope: Scope, text: string): Promise<TodoRow> {
-  return db.todos.insert(ownerOf(scope), text);
+  const db = await client();
+  return db.todo.create({ data: { id: newId(), owner: ownerOf(scope), text }, select });
 }
 
-/** Toggle a scoped todo's `done`; returns the updated row, or `undefined` if it's gone. */
+/** Toggle a scoped todo's `done`; returns the updated row, or `undefined` if absent. */
 export async function toggleTodo(scope: Scope, id: string): Promise<TodoRow | undefined> {
-  return db.todos.toggle(ownerOf(scope), id);
+  const db = await client();
+  const row = await db.todo.findFirst({
+    where: { id, owner: ownerOf(scope) },
+    select: { done: true },
+  });
+  if (!row) return undefined;
+  return db.todo.update({ where: { id }, data: { done: !row.done }, select });
 }

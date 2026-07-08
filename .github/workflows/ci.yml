@@ -43,8 +43,15 @@ jobs:
         run: bun test spikes/vite-bun-ssr spikes/rsc-flight packages/server-bun/test-bun packages/storage-sqlite/test-bun examples/todos/test-bun packages/cli/test-bun
 
   e2e:
-    name: Playwright e2e (examples/todos)
+    name: e2e (${{ matrix.transport }}, rsc=${{ matrix.rsc }})
     runs-on: ubuntu-latest
+    # Matrix the render/transport combos: SSE/WS are meant to be API-identical
+    # (§11) and rsc is opt-in (§16). rsc-only specs skip on the --no-rsc combos.
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [sse, ws]
+        rsc: ["true", "false"]
     steps:
       - uses: actions/checkout@v4
 
@@ -66,3 +73,6 @@ jobs:
       - name: Run e2e suite
         run: bunx playwright test
         working-directory: e2e
+        env:
+          RPXD_TRANSPORT: ${{ matrix.transport }}
+          RPXD_RSC: ${{ matrix.rsc }}

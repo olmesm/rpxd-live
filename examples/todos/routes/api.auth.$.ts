@@ -4,6 +4,6 @@
  * forwards every method — the library owns sign-up/in/out and session.
  */
 import { route } from "@rpxd/core";
-import { auth } from "../auth";
+import { auth } from "../adapters/auth";
 
 export default route("/api/auth/$").all((req) => auth.handler(req));

@@ -1,5 +1,5 @@
 import { defineConfig } from "@rpxd/cli";
-import { auth } from "./auth";
+import { auth } from "./adapters/auth";
 
 export default defineConfig({
   // memory() storage and sse() transport are the defaults (§14)

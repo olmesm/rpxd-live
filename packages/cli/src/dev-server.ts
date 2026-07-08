@@ -24,7 +24,7 @@ import { fileToRoute, rpxd as rpxdVitePlugin, runCodegen, scanRoutes } from "@rp
 import rscFlightPlugin from "@vitejs/plugin-rsc";
 import { createServerModuleRunner, createServer as createViteServer } from "vite";
 import { WebSocketServer } from "ws";
-import type { RpxdConfig } from "./config.ts";
+import { applyConfigOverrides, type ConfigOverrides, type RpxdConfig } from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
 import {
   loadSsrRuntime,
@@ -37,6 +37,8 @@ import {
 export interface DevServerOptions {
   /** Port to bind; 0 picks an ephemeral port. Default 3000. */
   port?: number;
+  /** CLI flag overrides (`--transport`, `--rsc`/`--no-rsc`) applied over the config. */
+  overrides?: ConfigOverrides;
 }
 
 /** A running dev shell. */
@@ -115,9 +117,10 @@ export async function createDevServer(
 
   // Config (§14): the only non-route file. Bun imports TS directly.
   const configPath = join(root, "rpxd.config.ts");
-  const config: RpxdConfig = existsSync(configPath)
-    ? ((await import(pathToFileURL(configPath).href)).default ?? {})
-    : {};
+  const config: RpxdConfig = applyConfigOverrides(
+    existsSync(configPath) ? ((await import(pathToFileURL(configPath).href)).default ?? {}) : {},
+    opts.overrides,
+  );
 
   // Route codegen before anything imports .rpxd/routes.gen.ts (§7).
   runCodegen(root);
