@@ -215,6 +215,7 @@ export async function createDevServer(
     httpRoutes,
     storage: config.storage,
     authenticate: config.session?.authenticate,
+    allowedOrigins: config.allowedOrigins,
     render: makeDevRender(vite, routeFiles, { rsc: config.rsc, shell }),
     ...ssrRuntime.makeShellRenderers(shell, { mode: "dev" }),
     // Dev overlay (§14): runtime errors render the framework page with the

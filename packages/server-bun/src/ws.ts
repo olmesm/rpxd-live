@@ -71,6 +71,14 @@ export function wsTransport(
    * same handlers from the `ws` package with this.
    */
   async function prepare(req: Request): Promise<unknown | Response> {
+    // Origin gate (#52): reject a cross-site upgrade before authenticating, so a
+    // malicious page can't open an authenticated duplex socket with the victim's
+    // ambient credentials (cross-site WebSocket hijacking). Shares the handler's
+    // policy so SSE/POST and WS enforce the same allowlist. Covers the dev-server
+    // path too, which calls `prepare` directly.
+    if (!handler.checkOrigin(req)) {
+      return new Response("forbidden origin", { status: 403 });
+    }
     const url = new URL(req.url);
     const sid = sidOf(req);
     let sessionData: unknown = {};

@@ -116,6 +116,14 @@ type Control =
   only on protocol version mismatch or auth rejection).
 - Authentication happens once at connect (cookie/token via config hook); every
   reducer sees the resulting `ctx.session`.
+- The control plane (`/__rpxd/ws|stream|rpc|control`) is **same-origin by
+  default** — checked before authentication. The same-origin policy does not
+  apply to WebSocket handshakes, so an Origin check is the defense against
+  cross-site WebSocket hijacking (and blind cross-site POST). A cross-origin
+  `Origin` that isn't allow-listed gets `403`; an absent `Origin` (non-browser
+  clients) is allowed. Widen with `allowedOrigins` in `rpxd.config.ts`. SSR `GET`
+  and `route()` handlers are **not** gated — a top-level navigation is
+  legitimately cross-site.
 - The server evicts an instance when subscribers reach 0, after a warm TTL
   (~60s): snapshot to storage, drop from memory. Cold wake re-runs `mount`
   (snapshots are session continuity, not cache — spec §9).

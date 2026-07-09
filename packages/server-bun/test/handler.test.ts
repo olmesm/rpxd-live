@@ -319,6 +319,73 @@ describe("stream + rpc + control (§11)", () => {
   });
 });
 
+describe("origin policy — cross-site control-plane defense (#52)", () => {
+  const CROSS = { ...COOKIE, origin: "http://evil.example" };
+  const SAME = { ...COOKIE, origin: base }; // base === request origin → same-origin
+
+  async function mount(handler: ReturnType<typeof makeHandler>, headers: Record<string, string>) {
+    return handler.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ type: "mount", path: "/org/9/board" }),
+      }),
+    );
+  }
+
+  it("rejects a cross-origin control POST with 403 (before authenticate)", async () => {
+    let authRan = false;
+    const handler = makeHandler({
+      authenticate: () => {
+        authRan = true;
+        return {};
+      },
+    });
+    const res = await mount(handler, CROSS);
+    expect(res.status).toBe(403);
+    expect(authRan).toBe(false); // origin gate runs first — auth is not a side-channel
+    await handler.dispose();
+  });
+
+  it("rejects a cross-origin rpc POST and stream GET with 403", async () => {
+    const handler = makeHandler();
+    const rpc = await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: CROSS,
+        body: JSON.stringify({ v: V, instance: "x", rpcId: "x", calls: [] }),
+      }),
+    );
+    expect(rpc.status).toBe(403);
+    const stream = await handler.fetch(new Request(`${base}/__rpxd/stream`, { headers: CROSS }));
+    expect(stream.status).toBe(403);
+    await handler.dispose();
+  });
+
+  it("allows a same-origin control POST", async () => {
+    const handler = makeHandler();
+    const res = await mount(handler, SAME);
+    expect(res.status).toBe(200);
+    await handler.dispose();
+  });
+
+  it("does not origin-gate SSR GET navigation (a top-level nav is legitimately cross-site)", async () => {
+    const handler = makeHandler();
+    const res = await handler.fetch(
+      new Request(`${base}/org/7/board`, { headers: { ...COOKIE, origin: "http://evil.example" } }),
+    );
+    expect(res.status).toBe(200);
+    await handler.dispose();
+  });
+
+  it("allows a cross-origin request when the origin is on the allowlist", async () => {
+    const handler = makeHandler({ allowedOrigins: ["http://evil.example"] });
+    const res = await mount(handler, CROSS);
+    expect(res.status).toBe(200);
+    await handler.dispose();
+  });
+});
+
 describe("SSR attach adoption (§12)", () => {
   async function ssrBoot(handler: ReturnType<typeof makeHandler>) {
     const res = await handler.fetch(new Request(`${base}/org/5/board`, { headers: COOKIE }));

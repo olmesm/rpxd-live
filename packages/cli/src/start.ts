@@ -165,6 +165,7 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     httpRoutes,
     storage: config.storage,
     authenticate: config.session?.authenticate,
+    allowedOrigins: config.allowedOrigins,
     defaultRateLimit: config.rateLimit,
     ...serverEntryModule.makeShellRenderers(shell),
     render: async (ctx) => {

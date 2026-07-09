@@ -17,6 +17,7 @@ import {
   type StorageAdapter,
 } from "@rpxd/core";
 import { matchHttpRoute, matchRoute } from "./match.ts";
+import { type AllowedOrigins, originAllowed } from "./origin.ts";
 
 /** One registered route: URL path literal + live definition. */
 export interface RouteRegistration {
@@ -54,6 +55,15 @@ export interface RpxdHandlerOptions {
    * reject with 403. Every reducer sees the result as `ctx.session`.
    */
   authenticate?: (req: Request, ctx: { sid: string }) => unknown | Promise<unknown>;
+  /**
+   * Cross-origin allowlist for the control plane (`/__rpxd/ws|stream|rpc|control`,
+   * #52). Defaults to **same-origin only** — the cross-site WebSocket-hijack /
+   * CSRF defense. A same-origin browser app needs no config; a deliberate
+   * cross-origin deployment lists its origins (or passes a predicate). SSR `GET`
+   * and `route()` handlers are never gated — a top-level nav is legitimately
+   * cross-site.
+   */
+  allowedOrigins?: AllowedOrigins;
   /** SSR renderer (§12). Defaults to a minimal HTML shell embedding the bootstrap payload. */
   render?: (ctx: RenderContext) => Response | Promise<Response>;
   /** Unmatched-URL page (§14 `__404`). Defaults to a plain-text 404. */
@@ -551,6 +561,17 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       const url = new URL(req.url);
       const { sid, isNew } = sessionOf(req);
 
+      // Origin gate (#52): the control plane is same-origin by default. Checked
+      // before authenticate so the auth hook is never a cross-site side-channel.
+      // SSR GET and route() handlers are deliberately exempt (see below).
+      const isControlPlane =
+        url.pathname === "/__rpxd/stream" ||
+        url.pathname === "/__rpxd/rpc" ||
+        url.pathname === "/__rpxd/control";
+      if (isControlPlane && !originAllowed(req, opts.allowedOrigins)) {
+        return new Response("forbidden origin", { status: 403 });
+      }
+
       let sessionData: unknown = {};
       if (opts.authenticate) {
         try {
@@ -721,6 +742,15 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       for (const entry of byInstanceId.values()) {
         if (entry.path === path) entry.instance.replaceDef(def);
       }
+    },
+
+    /**
+     * Whether a request passes the control-plane origin policy (#52). Shared
+     * with the WS transport so the SSE/POST and upgrade paths enforce one
+     * source of truth.
+     */
+    checkOrigin(req: Request): boolean {
+      return originAllowed(req, opts.allowedOrigins);
     },
 
     /** Test/introspection hook: number of live instances across sessions. */
