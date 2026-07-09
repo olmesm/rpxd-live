@@ -7,9 +7,9 @@
  * `node:crypto`) is tree-shaken out of the browser bundle even though a route
  * component imports this module. Queries scope by {@link Scope}.
  */
-import type { Scope } from "./scope";
+import type { Scope } from "./scope.ts";
 
-export type { Scope, ScopeUser } from "./scope";
+export type { Scope, ScopeUser } from "./scope.ts";
 
 /** A persisted todo row (the subset the UI needs). */
 export interface TodoRow {

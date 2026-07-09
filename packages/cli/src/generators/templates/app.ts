@@ -132,7 +132,7 @@ export default defineConfig({
 const rpxdConfig = (auth: boolean): string =>
   auth
     ? `import { defineConfig } from "@rpxd/cli";
-import { auth } from "./adapters/auth";
+import { auth } from "./adapters/auth.ts";
 
 /**
  * App config (§14). \`session.authenticate\` runs once per request and its

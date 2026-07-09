@@ -1,5 +1,5 @@
 import { live, redirect } from "@rpxd/core";
-import { scopeFrom } from "../domain/scope";
+import { scopeFrom } from "../domain/scope.ts";
 
 /**
  * A protected page. Its state *is* the user, so the check lives in `setup`

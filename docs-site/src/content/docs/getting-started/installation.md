@@ -9,13 +9,21 @@ rpxd develops and runs primarily on [Bun](https://bun.sh): `rpxd dev` and
 `rpxd build` run Vite on Bun, and the default runtime is `Bun.serve` (HTTP + WS
 on one port) with `bun:sqlite`.
 
-A **Node ≥ 24** runtime is also shipping. `@rpxd/adapter-node` mirrors the Bun
+A **Node ≥ 24** runtime ships alongside. `@rpxd/adapter-node` mirrors the Bun
 adapter over `node:http` + `ws`, `@rpxd/storage-sqlite/node` swaps `bun:sqlite`
 for `better-sqlite3`, and `rpxd start` selects the Node adapter automatically
-when it isn't running under Bun. One caveat before it's turnkey: Node's ESM
-resolver needs explicit file extensions, so an app deployed on Node must use
-extensionful relative imports (`./adapters/auth.ts`) in `rpxd.config.ts` and
-anything it pulls in — Bun resolves those without extensions, Node does not.
+when it isn't running under Bun — no flag. Build once with `rpxd build`, then
+serve the output with either runtime:
+
+```sh
+rpxd start                       # Bun (Bun.serve)
+node ./node_modules/.bin/rpxd start   # Node ≥ 24 (node:http) — TS runs unflagged
+```
+
+Scaffolded apps use **extensionful relative imports** (`./adapters/auth.ts`) so
+they deploy on Node out of the box — Node's ESM resolver requires explicit file
+extensions where Bun infers them. Keep hand-written imports extensionful for the
+same reason (Bun accepts them too).
 
 ## Try the example
 

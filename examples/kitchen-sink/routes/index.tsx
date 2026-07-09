@@ -1,7 +1,7 @@
 import { live } from "@rpxd/core";
-import { authClient } from "../adapters/auth-client";
-import { scopeFrom } from "../domain/scope";
-import { addTodo, listTodos, type TodoFilter, type TodoRow, toggleTodo } from "../domain/todos";
+import { authClient } from "../adapters/auth-client.ts";
+import { scopeFrom } from "../domain/scope.ts";
+import { addTodo, listTodos, type TodoFilter, type TodoRow, toggleTodo } from "../domain/todos.ts";
 
 const FILTERS: TodoFilter[] = ["all", "active", "done"];
 const asFilter = (v: string | undefined): TodoFilter =>
