@@ -26,6 +26,7 @@ import { createServerModuleRunner, createServer as createViteServer } from "vite
 import { WebSocketServer } from "ws";
 import { applyConfigOverrides, type ConfigOverrides, type RpxdConfig } from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
+import { nodeRequestUrl } from "./http-bridge.ts";
 import {
   loadSsrRuntime,
   makeDevRender,
@@ -56,9 +57,15 @@ function headersOf(req: IncomingMessage): Headers {
   return headers;
 }
 
-/** Convert a node request into a web `Request`, wiring abort on close. */
-function toWebRequest(req: IncomingMessage, res: ServerResponse): Request {
-  const url = `http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`;
+/**
+ * Convert a node request into a web `Request`, wiring abort on close. Returns
+ * `null` when the request line / `Host` is malformed enough that URL parsing
+ * throws — the caller answers 400 rather than letting the exception crash the
+ * dev server process.
+ */
+function toWebRequest(req: IncomingMessage, res: ServerResponse): Request | null {
+  const url = nodeRequestUrl(req);
+  if (!url) return null;
   const headers = headersOf(req);
   const abort = new AbortController();
   res.on("close", () => abort.abort());
@@ -241,7 +248,13 @@ export async function createDevServer(
   const wsGlue = wsTransport(handler, { authenticate: config.session?.authenticate });
   const wss = new WebSocketServer({ noServer: true });
   httpServer.on("upgrade", (req, rawSocket, head) => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const urlStr = nodeRequestUrl(req);
+    if (!urlStr) {
+      rawSocket.write("HTTP/1.1 400 Bad Request\r\nconnection: close\r\n\r\n");
+      rawSocket.destroy();
+      return;
+    }
+    const url = new URL(urlStr);
     if (url.pathname !== "/__rpxd/ws") return; // Vite HMR and friends
     void (async () => {
       const prepared = await wsGlue.prepare(new Request(url, { headers: headersOf(req) }));
@@ -269,8 +282,14 @@ export async function createDevServer(
   httpServer.on("request", (req, res) => {
     const url = req.url ?? "/";
     if (url.startsWith("/__rpxd/")) {
+      const webReq = toWebRequest(req, res);
+      if (!webReq) {
+        res.statusCode = 400;
+        res.end("bad request");
+        return;
+      }
       void handler
-        .fetch(toWebRequest(req, res))
+        .fetch(webReq)
         .then((webRes) => writeWebResponse(res, webRes))
         .catch((e) => {
           console.error("[rpxd] request failed:", e);
@@ -281,8 +300,14 @@ export async function createDevServer(
     }
     // Vite serves assets/transforms; unmatched URLs fall through to SSR.
     vite.middlewares(req, res, () => {
+      const webReq = toWebRequest(req, res);
+      if (!webReq) {
+        res.statusCode = 400;
+        res.end("bad request");
+        return;
+      }
       void handler
-        .fetch(toWebRequest(req, res))
+        .fetch(webReq)
         .then((webRes) => writeWebResponse(res, webRes))
         .catch((e) => {
           console.error("[rpxd] request failed:", e);
