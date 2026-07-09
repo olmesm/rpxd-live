@@ -12,7 +12,7 @@ export default defineConfig({
 ```
 
 Because snapshots are continuity, not cache (§9), an expired snapshot only
-costs the next visitor a re-mount — nothing is lost that `mount` can't
+costs the next visitor a reload — nothing is lost that `setup` + `load` can't
 rebuild. The pubsub bus stays in-process (`LocalBus`), so this adapter is
 single-node; use [`@rpxd/storage-redis`](../storage-redis) when broadcasts
 must cross nodes.

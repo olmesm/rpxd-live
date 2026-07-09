@@ -24,9 +24,11 @@ string — an opaque field in your state:
 ```tsx
 load: async (_url, ctx) => {
   const doc = await getDoc(ctx.params.slug);
+  // Serialize before the mutator — patchState is sync by design.
+  const body = await rsc(<Markdown source={doc.raw} />); // → Flight string
   ctx.patchState((s) => {
     s.doc = doc;
-    s.body = rsc(<Markdown source={doc.raw} />); // → Flight string in state
+    s.body = body;
   });
 };
 ```

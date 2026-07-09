@@ -11,7 +11,7 @@ export default defineConfig({ storage: memory() }); // also the default
 ```
 
 Snapshots in rpxd are **session continuity, not cache** (§9): a cold wake
-always re-runs `mount`, so losing memory on restart only costs a re-mount.
+always re-runs `setup` + `load`, so losing memory on restart only costs a reload.
 
 The implementation lives in `@rpxd/core` (the runtime defaults to it);
 this package is the canonical import for userland configs. For durability

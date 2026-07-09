@@ -10,7 +10,7 @@ import it directly to embed rpxd in your own Bun server.
 
 - **`createRpxdHandler`** — web-standard `Request` → `Response` handler for
   the whole wire: `GET /__rpxd/stream` (SSE envelopes), `POST /__rpxd/rpc`
-  (batches), `POST /__rpxd/control` (mount / resync / params), plus SSR
+  (batches), `POST /__rpxd/control` (mount / resync / url / release), plus SSR
   with attach tokens so the page adopts its server-warmed instance. Owns
   sessions (cookie), instance registry, warm-TTL eviction, and rpc dedupe.
   Plain HTTP routes (`httpRoutes`, from `route()`) are matched before the
