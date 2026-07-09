@@ -13,7 +13,7 @@ describe("session-change re-mount", () => {
   it("reuses the warm instance for the same session, re-mounts on change", async () => {
     let mounts = 0;
     const def: LiveDefinition<{ who: string }, "/", { sid: string; user?: string }> = {
-      mount: async (_p, ctx) => {
+      setup: (ctx) => {
         mounts++;
         return { who: ctx.session.user ?? "anon" };
       },

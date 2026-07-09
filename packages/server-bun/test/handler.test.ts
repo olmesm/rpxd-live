@@ -10,10 +10,10 @@ interface BoardState {
 }
 
 const boardDef: LiveDefinition<BoardState, "/org/$orgId/board", Record<string, unknown>> = {
-  mount: async ({ orgId }) => ({ items: ["first"], orgId }),
-  params: async ({ filter }, ctx) => {
+  setup: (ctx) => ({ items: ["first"], orgId: ctx.params.orgId }),
+  load: async ({ search }, ctx) => {
     ctx.patchState((s) => {
-      s.filter = filter ?? "all";
+      s.filter = search.filter ?? "all";
     });
   },
   rpc: {
@@ -107,7 +107,7 @@ describe("SSR mount (§12)", () => {
     const json = /<script id="__rpxd" type="application\/json">(.*?)<\/script>/s.exec(html)?.[1];
     const boot = JSON.parse(json as string);
     // Stream-default SSR (§12): first paint carries the loader's synchronous
-    // projection chrome (`filter`) — mount state + one flush, no data wait.
+    // projection chrome (`filter`) — setup state + one flush, no data wait.
     expect(boot.snapshot.state).toEqual({ items: ["first"], orgId: "7", filter: "all" });
     expect(boot.seq).toBe(2);
     expect(boot.attachToken).toBeTruthy();
@@ -128,8 +128,8 @@ describe("SSR mount (§12)", () => {
       loading: boolean;
     }
     const feedDef: LiveDefinition<FeedState, "/feed", Record<string, unknown>> = {
-      mount: async () => ({ rows: [] as string[], loading: false }),
-      params: async (_search, ctx) => {
+      setup: () => ({ rows: [] as string[], loading: false }),
+      load: async (_url, ctx) => {
         ctx.patchState((s) => {
           s.loading = true; // synchronous projection — lands in first paint
         });
@@ -155,8 +155,8 @@ describe("SSR mount (§12)", () => {
       loading: boolean;
     }
     const feedDef: LiveDefinition<FeedState, "/feed", Record<string, unknown>> = {
-      mount: async () => ({ rows: [] as string[], loading: false }),
-      params: async (_search, ctx) => {
+      setup: () => ({ rows: [] as string[], loading: false }),
+      load: async (_url, ctx) => {
         ctx.patchState((s) => {
           s.loading = true;
         });
@@ -166,7 +166,7 @@ describe("SSR mount (§12)", () => {
           s.loading = false;
         });
       },
-      paramsOptions: { blockSsr: true },
+      loadOptions: { blockSsr: true },
     };
     const handler = createRpxdHandler({ routes: [{ path: "/feed", def: feedDef }] });
     const res = await handler.fetch(new Request(`${base}/feed`, { headers: COOKIE }));
@@ -257,7 +257,7 @@ describe("stream + rpc + control (§11)", () => {
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
         headers: COOKIE,
-        body: JSON.stringify({ type: "params", instance, search: { filter: "done" } }),
+        body: JSON.stringify({ type: "url", instance, search: { filter: "done" } }),
       }),
     );
     const env = await sse.next();

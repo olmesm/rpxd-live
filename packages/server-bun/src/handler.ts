@@ -58,7 +58,7 @@ export interface RpxdHandlerOptions {
   render?: (ctx: RenderContext) => Response | Promise<Response>;
   /** Unmatched-URL page (§14 `__404`). Defaults to a plain-text 404. */
   renderNotFound?: (info: { path: string }) => Response | Promise<Response>;
-  /** Mount-rejection / crash page (§10, §14 `__error`). Defaults to plain text. */
+  /** setup/guard/load-rejection / crash page (§10, §14 `__error`). Defaults to plain text. */
   renderError?: (info: { path: string; error: unknown }) => Response | Promise<Response>;
   /** Warm TTL before an unsubscribed instance is snapshotted + evicted (§11). Default 60s. */
   warmTtlMs?: number;
@@ -97,7 +97,7 @@ export function encodeSse(env: Envelope): string {
  * Endpoints:
  * - `GET /__rpxd/stream` — SSE envelope stream (all session instances)
  * - `POST /__rpxd/rpc` — rpc batch upstream
- * - `POST /__rpxd/control` — `mount` / `resync` / `params`
+ * - `POST /__rpxd/control` — `mount` / `resync` / `url`
  * - any other GET matching a route — SSR mount (§12)
  *
  * @example
@@ -141,24 +141,28 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     return map;
   }
 
-  // Fire the params loader (§7) — the single place URL-dependent data loads.
-  // Runs on every page load, fresh or warm: the URL is the query key, so a
-  // full-page load (or Link mount) must reconcile the instance to its search,
-  // not just the first mount. SSR sequencing (§12): a route opting into
-  // `blockSsr` awaits the full load so the first document carries data
-  // (crawlable). The default streams — the loader runs synchronously up to its
-  // first `await`, so once `setSearch` returns its projection (filter/loading
-  // chrome) is already staged; we flush exactly that and serialize it, then let
-  // the awaited data stream in over the push stream.
-  async function reconcileSearch(
+  // Reconcile an instance to a URL (§7) — `guard` then `load`. Runs on every
+  // page load, fresh or warm: the URL is the query key, so a full-page load (or
+  // Link mount) must reconcile to its search, not just the first `setup`.
+  // `guard` (§10) is awaited so a deny `throw redirect` 302s *before* we serve —
+  // the redirect propagates to the caller. SSR sequencing (§12): `blockSsr`
+  // awaits the full load so the first document carries data (crawlable); the
+  // default streams — the loader runs synchronously up to its first `await`, so
+  // once it hands back its projection is staged; we flush exactly that and
+  // serialize it, then let the awaited data stream in over the push stream.
+  async function reconcileUrl(
     def: RouteRegistration["def"],
     instance: InstanceEntry["instance"],
     search: Record<string, string | undefined>,
   ): Promise<void> {
-    if (!def.params) return;
-    const run = instance.setSearch(search).catch(() => {});
-    if (def.paramsOptions?.blockSsr) await run;
-    else await instance.flushStaged();
+    if (def.guard) await instance.authorize(search); // deny → throw redirect → 302
+    if (!def.load) return;
+    const run = instance.load(search);
+    if (def.loadOptions?.blockSsr) await run; // loader redirect → propagates → 302
+    else {
+      void run.catch(() => {}); // stream: a loader redirect is swallowed — use guard
+      await instance.flushStaged();
+    }
   }
 
   async function mountInstance(
@@ -179,12 +183,12 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         }
         // Reconcile the warm instance to this load's URL (§7).
         const route = opts.routes.find((r) => r.path === existing.path);
-        if (route) await reconcileSearch(route.def, existing.instance, search);
+        if (route) await reconcileUrl(route.def, existing.instance, search);
         return existing;
       }
       // The authenticated session changed (login/logout, §10): the principal —
-      // and any session-scoped state `mount` computed — is stale. Evict, drop
-      // the snapshot, and re-mount fresh below rather than adopt the warm
+      // and any session-scoped state `setup` computed — is stale. Evict, drop
+      // the snapshot, and re-create fresh below rather than adopt the warm
       // instance (§12), which would render the old principal.
       if (existing.evictTimer) clearTimeout(existing.evictTimer);
       entries.delete(pathname);
@@ -209,7 +213,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       storageKey: `${sid}:${pathname}`,
       defaultRateLimit: opts.defaultRateLimit,
     });
-    await reconcileSearch(route.def, instance, search);
+    await reconcileUrl(route.def, instance, search);
 
     const entry: InstanceEntry = {
       instance,
@@ -324,15 +328,15 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     const msg = (await req.json()) as
       | { type: "mount"; path: string; search?: Record<string, string> }
       | { type: "resync"; instance: string }
-      | { type: "params"; instance: string; search: Record<string, string> };
+      | { type: "url"; instance: string; search: Record<string, string> };
 
     if (msg.type === "mount") {
       let entry: InstanceEntry;
       try {
         entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
       } catch (e) {
-        // `mount` threw redirect() (§10): tell the client to navigate rather
-        // than mount. A GET load handles this as a 302 (see fetch catch).
+        // `setup`/`guard` threw redirect() (§10): tell the client to navigate rather
+        // than instantiate. A GET load handles this as a 302 (see fetch catch).
         if (isRedirect(e)) return Response.json({ redirect: e.location });
         throw e;
       }
@@ -349,7 +353,15 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       entry.instance.resync();
       return new Response(null, { status: 204 });
     }
-    await entry.instance.setSearch(msg.search);
+    // Runtime URL change (nav.patch, §7): reconcile guard+load. A guard deny
+    // → redirect JSON for the client to soft-nav (§10).
+    const route = opts.routes.find((r) => r.path === entry.path);
+    try {
+      if (route) await reconcileUrl(route.def, entry.instance, msg.search);
+    } catch (e) {
+      if (isRedirect(e)) return Response.json({ redirect: e.location });
+      throw e;
+    }
     return new Response(null, { status: 204 });
   }
 
@@ -423,7 +435,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           }
         }
         if (req.method === "GET") {
-          // SSR (§12): mount runs during SSR; the connection adopts the warm
+          // SSR (§12): setup+guard+load run during SSR; the connection adopts the warm
           // instance via the attach token.
           const search: Record<string, string> = {};
           url.searchParams.forEach((v, k) => {
@@ -445,7 +457,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         }
         return new Response("not found", { status: 404 });
       } catch (e) {
-        // `mount` threw redirect() (§10): a full page load follows a real 302.
+        // `setup`/`guard`/`load` threw redirect() (§10): a full page load follows a real 302.
         if (isRedirect(e)) {
           return withSession(
             new Response(null, { status: e.status, headers: { location: e.location } }),
@@ -459,7 +471,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           }
           return new Response("not found", { status: 404 });
         }
-        // mount rejection → error route (§10)
+        // setup/load rejection → error route (§10)
         if (opts.renderError) {
           return withSession(await opts.renderError({ path: url.pathname, error: e }), sid, isNew);
         }
@@ -496,7 +508,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           const msg = JSON.parse(raw) as
             | RpcBatch
             | {
-                type: "resync" | "params" | "mount";
+                type: "resync" | "url" | "mount";
                 instance?: string;
                 path?: string;
                 search?: Record<string, string>;
@@ -515,7 +527,18 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           const entry = msg.instance ? byInstanceId.get(msg.instance) : undefined;
           if (!entry) return;
           if (msg.type === "resync") entry.instance.resync();
-          if (msg.type === "params" && msg.search) await entry.instance.setSearch(msg.search);
+          if (msg.type === "url" && msg.search) {
+            // Runtime URL change over WS (§7): reconcile guard+load; a guard deny
+            // → a redirect envelope for the client to soft-nav (§10).
+            const route = opts.routes.find((r) => r.path === entry.path);
+            try {
+              if (route) await reconcileUrl(route.def, entry.instance, msg.search);
+            } catch (e) {
+              if (isRedirect(e)) {
+                send({ seq: entry.instance.seq, instance: entry.instance.id, redirect: e.location });
+              } else throw e;
+            }
+          }
         },
         close: cleanup,
       };

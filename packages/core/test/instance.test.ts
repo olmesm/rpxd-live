@@ -639,24 +639,17 @@ describe("URL loader (§7)", () => {
   });
 });
 
-describe("guard (§10)", () => {
-  it("runs before load; a deny (redirect) skips the load and re-throws", async () => {
-    const calls: string[] = [];
+describe("guard / authorize (§10)", () => {
+  it("authorize runs the guard; a deny throws redirect", async () => {
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
       guard: async ({ search }) => {
-        calls.push("guard");
         if (search.filter === "secret") throw redirect("/403");
-      },
-      load: async () => {
-        calls.push("load");
       },
     };
     const { inst } = await make(def);
-    await inst.load({ filter: "ok" });
-    expect(calls).toEqual(["guard", "load"]); // guard runs first
-    await expect(inst.load({ filter: "secret" })).rejects.toMatchObject({ location: "/403" });
-    expect(calls).toEqual(["guard", "load", "guard"]); // denied load never ran
+    await expect(inst.authorize({ filter: "ok" })).resolves.toBeUndefined();
+    await expect(inst.authorize({ filter: "secret" })).rejects.toMatchObject({ location: "/403" });
   });
 
   it("re-checks on every URL change (search too), catching a spoofed param", async () => {
@@ -665,29 +658,21 @@ describe("guard (§10)", () => {
       guard: async ({ search }) => {
         if (search.userId && search.userId !== "me") throw redirect("/403");
       },
-      load: async () => {},
     };
     const { inst } = await make(def);
-    await expect(inst.load({ userId: "me" })).resolves.toBeUndefined();
-    await expect(inst.load({ userId: "other" })).rejects.toMatchObject({ location: "/403" });
+    await expect(inst.authorize({ userId: "me" })).resolves.toBeUndefined();
+    await expect(inst.authorize({ userId: "other" })).rejects.toMatchObject({ location: "/403" });
   });
 
-  it("runs even with no load (auth-only route)", async () => {
-    let ran = false;
-    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      setup: () => initial(),
-      guard: async () => {
-        ran = true;
-        throw redirect("/login");
-      },
-    };
-    const { inst } = await make(def);
-    await expect(inst.load({})).rejects.toMatchObject({ location: "/login" });
-    expect(ran).toBe(true);
+  it("is a no-op when no guard is declared", async () => {
+    const { inst } = await make(baseDef);
+    await expect(inst.authorize({ anything: "x" })).resolves.toBeUndefined();
   });
 
-  it("gets the typed url + a cancellation signal", async () => {
+  it("gets the typed url + signal; a newer call aborts the prior guard", async () => {
     let seen: { params: { id: string }; search: SearchParams; signal: boolean } | undefined;
+    let firstAborted = false;
+    let release: () => void = () => {};
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
       guard: async (url, ctx) => {
@@ -696,10 +681,23 @@ describe("guard (§10)", () => {
           search: url.search,
           signal: ctx.signal instanceof AbortSignal,
         };
+        if (url.search.slow) {
+          ctx.signal.addEventListener("abort", () => {
+            firstAborted = true;
+          });
+          await new Promise<void>((r) => {
+            release = r;
+          });
+        }
       },
     };
     const { inst } = await make(def);
-    await inst.load({ q: "x" });
+    const slow = inst.authorize({ slow: "1" });
+    await tick();
+    await inst.authorize({ q: "x" }); // newer call aborts the slow guard's signal
+    expect(firstAborted).toBe(true);
+    release();
+    await slow.catch(() => {});
     expect(seen).toEqual({ params: { id: "42" }, search: { q: "x" }, signal: true });
   });
 });

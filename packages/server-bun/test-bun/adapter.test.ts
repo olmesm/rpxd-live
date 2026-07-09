@@ -8,7 +8,7 @@ import { bunAdapter } from "../src/adapter.ts";
 import { createRpxdHandler } from "../src/handler.ts";
 
 const def: LiveDefinition<{ n: number }, "/", Record<string, unknown>> = {
-  mount: async () => ({ n: 1 }),
+  setup: () => ({ n: 1 }),
 };
 
 describe("bunAdapter", () => {
