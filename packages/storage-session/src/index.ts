@@ -25,21 +25,36 @@ export interface SessionStorageOptions {
 export function session(opts: SessionStorageOptions = {}): StorageAdapter {
   const ttlMs = opts.ttlMs ?? 30 * 60_000;
   const snapshots = new Map<string, { snap: Snapshot; expires: number }>();
+  let lastSweep = Date.now();
 
-  const sweep = () => {
-    const now = Date.now();
+  // Bulk-evict expired entries. Kept off the read path (which now checks only
+  // the requested key) and run at most once per TTL from `set`, so a hot `get`
+  // is O(1) instead of O(entries).
+  const sweep = (now: number) => {
+    lastSweep = now;
     for (const [key, entry] of snapshots) {
       if (entry.expires <= now) snapshots.delete(key);
     }
   };
 
+  // Match the durable adapters' round-trip semantics: stored state is isolated
+  // from the live/returned object, so callers can't mutate storage by reference.
+  const clone = (snap: Snapshot): Snapshot => structuredClone(snap);
+
   return {
     get(key) {
-      sweep();
-      return snapshots.get(key)?.snap;
+      const entry = snapshots.get(key);
+      if (!entry) return undefined;
+      if (entry.expires <= Date.now()) {
+        snapshots.delete(key); // lazy per-key expiry
+        return undefined;
+      }
+      return clone(entry.snap);
     },
     set(key, snap) {
-      snapshots.set(key, { snap, expires: Date.now() + ttlMs });
+      const now = Date.now();
+      snapshots.set(key, { snap: clone(snap), expires: now + ttlMs });
+      if (now - lastSweep >= ttlMs) sweep(now);
     },
     delete(key) {
       snapshots.delete(key);
