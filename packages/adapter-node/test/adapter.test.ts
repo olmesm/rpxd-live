@@ -5,11 +5,32 @@
  * serves here through `node:http` bytes.
  */
 
+import net from "node:net";
 import type { LiveDefinition } from "@rpxd/core";
 import { createRpxdHandler, wsTransport } from "@rpxd/server-bun";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { nodeAdapter } from "../src/index.ts";
+
+/** Speak one raw HTTP request over a socket (fetch() forbids invalid Host headers). */
+function rawRequest(port: number, lines: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(port, "localhost", () => {
+      socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+    });
+    let buf = "";
+    socket.on("data", (d) => {
+      buf += d.toString();
+    });
+    socket.on("end", () => resolve(buf));
+    socket.on("close", () => resolve(buf));
+    socket.on("error", reject);
+    setTimeout(() => {
+      socket.destroy();
+      resolve(buf);
+    }, 2000);
+  });
+}
 
 const def: LiveDefinition<{ n: number }, "/", Record<string, unknown>> = {
   setup: () => ({ n: 1 }),
@@ -57,6 +78,57 @@ describe("nodeAdapter", () => {
     expect(new TextDecoder().decode(value)).toContain("retry:");
     ctrl.abort();
     await reader.cancel().catch(() => {});
+  });
+
+  it("answers 400 to a malformed Host header instead of crashing the process", async () => {
+    const handler = createRpxdHandler({ routes: [{ path: "/", def }], warmTtlMs: 10 });
+    const handle = nodeAdapter().serve({ port: 0, fetch: handler.fetch });
+    cleanups.push(
+      () => handler.dispose(),
+      () => handle.stop(),
+    );
+    await handle.ready;
+
+    // A space makes the authority invalid, so `new Request()` would throw; Node's
+    // header parser still passes it through to our handler.
+    const raw = await rawRequest(handle.port, [
+      "GET / HTTP/1.1",
+      "Host: exa mple.com",
+      "Connection: close",
+    ]);
+    expect(raw).toMatch(/^HTTP\/1\.1 400/);
+
+    // The server must still be alive for a well-formed request.
+    const res = await fetch(`http://localhost:${handle.port}/`);
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects a malformed Host on the ws upgrade path without crashing", async () => {
+    const handler = createRpxdHandler({ routes: [{ path: "/", def }], warmTtlMs: 10 });
+    const ws = wsTransport(handler);
+    const handle = nodeAdapter().serve({
+      port: 0,
+      websocket: ws.websocket,
+      fetch: async (req, upgrade) => (await ws.handleUpgrade(req, upgrade)) ?? handler.fetch(req),
+    });
+    cleanups.push(
+      () => handler.dispose(),
+      () => handle.stop(),
+    );
+    await handle.ready;
+
+    await rawRequest(handle.port, [
+      "GET /__rpxd/ws HTTP/1.1",
+      "Host: exa mple.com",
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+      "Sec-WebSocket-Version: 13",
+    ]);
+
+    // The server survived the bad upgrade.
+    const res = await fetch(`http://localhost:${handle.port}/`);
+    expect(res.status).toBe(200);
   });
 
   it("reads env through the seam", () => {
