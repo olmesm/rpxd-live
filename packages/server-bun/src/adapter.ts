@@ -7,6 +7,13 @@
 export interface ServeHandle {
   port: number;
   stop(): void | Promise<void>;
+  /**
+   * Resolves once the listener is bound. Bun binds synchronously so `port` is
+   * readable immediately; `node:http` binds on the next tick, so the Node
+   * adapter only knows an ephemeral (`port: 0`) port after this resolves.
+   * Await it before reading `port` when the requested port may be `0`.
+   */
+  ready?: Promise<void>;
 }
 
 /** Minimal duplex socket surface the runtime needs (§11 ws opt-in). */

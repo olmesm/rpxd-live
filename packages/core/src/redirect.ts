@@ -20,11 +20,14 @@
 export class RedirectError extends Error {
   /** Discriminator for {@link isRedirect} (survives cross-realm instanceof gaps). */
   readonly $redirect = true as const;
-  constructor(
-    readonly location: string,
-    readonly status: number = 302,
-  ) {
+  readonly location: string;
+  readonly status: number;
+  // Plain field assignment (not a parameter property) so the source stays
+  // erasable — Node runs it under default, unflagged TypeScript stripping.
+  constructor(location: string, status = 302) {
     super(`redirect to ${location}`);
+    this.location = location;
+    this.status = status;
     this.name = "RedirectError";
   }
 }

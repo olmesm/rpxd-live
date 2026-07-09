@@ -1,17 +1,21 @@
 /**
- * `rpxd start` (§14): pure Bun, no Vite at runtime. Serves the client build
- * statically, SSRs from the server bundle, and runs the live wire through
- * the same `createRpxdHandler` as dev.
+ * `rpxd start` (§14): no Vite at runtime. Serves the client build statically,
+ * SSRs from the server bundle, and runs the live wire through the same
+ * `createRpxdHandler` as dev. Runtime-agnostic — `bunAdapter` under Bun,
+ * `nodeAdapter` (`node:http`) under Node ≥ 24.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, normalize, resolve } from "node:path";
+import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import { nodeAdapter } from "@rpxd/adapter-node";
 import type { LiveRoute, RouteDefinition } from "@rpxd/core";
 import {
   bunAdapter,
   createRpxdHandler,
   type HttpRouteRegistration,
   type RouteRegistration,
+  type ServerAdapter,
   wsTransport,
 } from "@rpxd/server-bun";
 import type { FunctionComponent } from "react";
@@ -49,6 +53,21 @@ const CONTENT_TYPES: Record<string, string> = {
   ".ico": "image/x-icon",
   ".woff2": "font/woff2",
 };
+
+/** True when running on Bun; false under Node (`node:http` adapter). */
+const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
+
+/**
+ * Stream a file as a web `Response`, working on both runtimes: `Bun.file`
+ * under Bun, `fs.createReadStream` → web `ReadableStream` under Node.
+ */
+function fileResponse(filePath: string, headers: Record<string, string>): Response {
+  if (isBun) return new Response(Bun.file(filePath), { headers });
+  const body = Readable.toWeb(createReadStream(filePath)) as unknown as ReadableStream<Uint8Array>;
+  return new Response(body, {
+    headers: { ...headers, "content-length": String(statSync(filePath).size) },
+  });
+}
 
 /**
  * Serve a built rpxd app (`rpxd build` output) with pure Bun.
@@ -163,12 +182,9 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     const filePath = join(clientDir, safe);
     if (!filePath.startsWith(clientDir) || !existsSync(filePath)) return null;
     const ext = filePath.slice(filePath.lastIndexOf("."));
-    const file = Bun.file(filePath);
-    return new Response(file, {
-      headers: {
-        "content-type": CONTENT_TYPES[ext] ?? "application/octet-stream",
-        "cache-control": "public, max-age=31536000, immutable",
-      },
+    return fileResponse(filePath, {
+      "content-type": CONTENT_TYPES[ext] ?? "application/octet-stream",
+      "cache-control": "public, max-age=31536000, immutable",
     });
   };
 
@@ -178,7 +194,8 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
       ? wsTransport(handler, { authenticate: config.session?.authenticate })
       : undefined;
 
-  const handle = bunAdapter().serve({
+  const adapter: ServerAdapter = isBun ? bunAdapter() : nodeAdapter();
+  const handle = adapter.serve({
     port: opts.port ?? 3000,
     websocket: ws?.websocket,
     fetch: async (req, upgrade) => {
@@ -198,6 +215,8 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
       return handler.fetch(req);
     },
   });
+  // node:http binds on the next tick — await before reading the ephemeral port.
+  await handle.ready;
 
   return {
     port: handle.port,
