@@ -9,15 +9,17 @@ Most apps never install this directly beyond importing `live()`; the
 
 ## What lives here
 
-- **`live(path)`** — the fluent route builder. State locks at `.mount()`,
-  payloads lock at `.input()`, and `.render()` hands the component fully
+- **`live(path)`** — the fluent route builder. State locks at `.setup()` (sync;
+  wires subscriptions), `.guard()` gates access (auth), `.load()` is the URL
+  loader, payloads lock at `.input()`, and `.render()` hands the component fully
   typed props with an exact-keyed `rpc` facade. Zero annotations.
 - **`route(path)`** — the fluent builder for plain HTTP endpoints (webhooks,
   auth delegation): `.get`/`.post`/… implement a method, `.all` forwards a
   whole subtree. Same path typing as `live()`, none of the state machinery.
-- **`redirect(to)`** — thrown from `mount` to bounce (e.g. an unauthenticated
-  visitor). A full load becomes a `302`; a soft navigation gets a `{ redirect }`
-  signal the client router follows. `isRedirect()` recognises it.
+- **`redirect(to)`** — thrown from `guard` (auth's home) — or `setup`/`load` — to
+  bounce (e.g. an unauthenticated visitor). A full load becomes a `302`; a soft
+  navigation gets a `{ redirect }` signal the client router follows.
+  `isRedirect()` recognises it.
 - **`LiveInstance`** — one mounted live object: a per-instance FIFO queue
   serializes mutations, handlers run off-queue (`await` never blocks the
   instance), and every `ctx.patchState` flush becomes one atomic Immer patch

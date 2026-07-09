@@ -1,6 +1,6 @@
 ---
 title: Infinite scroll
-description: Accumulate windows with the params loader — cursor in the URL, an IntersectionObserver sentinel, and the honest snapshot-retention caveat.
+description: Accumulate windows with the `load` loader — cursor in the URL, an IntersectionObserver sentinel, and the honest snapshot-retention caveat.
 sidebar:
   order: 10
 ---
@@ -13,12 +13,12 @@ view.
 
 ```tsx
 export default live("/feed")
-  .mount(async () => ({ items: [] as Post[], cursor: null as string | null, hasMore: false, loading: true }))
-  .params(async ({ cursor }, ctx) => {
-    const append = cursor != null;
+  .setup(() => ({ items: [] as Post[], cursor: null as string | null, hasMore: false, loading: true }))
+  .load(async ({ search }, ctx) => {
+    const append = search.cursor != null;
     ctx.patchState((s) => { s.loading = true; });
     const { items, nextCursor } = await listPosts(scopeFrom(ctx.session), {
-      cursor: cursor ?? null, limit: 20, signal: ctx.signal,
+      cursor: search.cursor ?? null, limit: 20, signal: ctx.signal,
     });
     ctx.patchState((s) => {
       s.items = append ? [...s.items, ...items] : items;   // append vs replace
@@ -56,8 +56,8 @@ not O(total).
 Appending means `state.items` grows with every window — and rpxd persists
 **whole-state** snapshots (§9). So the accumulated feed is written through on
 every flush and pushed in full on a reconnect resync, both O(total). And on a
-cold wake the instance re-runs `mount` and rebuilds from the URL's cursor, which
-means the *first* window — a deep-scrolled position isn't restored.
+cold wake the instance re-runs `setup` and `load` rebuilds from the URL's cursor,
+which means the *first* window — a deep-scrolled position isn't restored.
 
 Prefer **replace-window** [pagination](/rpxd-live/guides/pagination/) unless the
 feed genuinely needs to accumulate. If it does:

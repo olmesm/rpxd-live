@@ -20,8 +20,8 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 ## What is rpxd?
 
 rpxd is a live-object framework for React. You write a **live object** per
-page — a server-side, per-session stateful object with a `mount`, reducers
-(`rpc`s), and a `render`. State changes are streamed to the browser as Immer
+page — a server-side, per-session stateful object with a `setup`, reducers
+(`rpc`s), and a `render` (plus `load` for URL-dependent data). State changes are streamed to the browser as Immer
 patches over SSE or WebSocket, and the client replays your optimistic updates
 on top for instant feedback.
 
@@ -30,7 +30,7 @@ annotations, no generated client, no glue.
 
 <CardGrid stagger>
   <Card title="One fluent chain" icon="seti:typescript">
-    `live().mount().rpc().render()`. State locks the shape, rpcs lock the
+    `live().setup().load().rpc().render()`. State locks the shape, rpcs lock the
     payloads, render gets fully-typed props including an exact-keyed `rpc`
     facade. Contract enforced by the type system.
   </Card>

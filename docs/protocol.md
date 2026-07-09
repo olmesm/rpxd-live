@@ -31,6 +31,8 @@ type Envelope = {
   idMap?: Record<string, string>;
   /** Present when the acked rpc batch failed; confirmed state is unchanged beyond `patches`. */
   error?: { name: string; message: string; rpc?: string };
+  /** Runtime redirect target (§10): a `guard`/`load` deny on a URL change — the client soft-navs. */
+  redirect?: string;
 };
 
 type Patch = {
@@ -81,14 +83,20 @@ type RpcBatch = {
 type Control =
   | { v: 1; type: "attach"; instance: string; token: string; seq: number } // SSR adoption (§12)
   | { v: 1; type: "resync"; instance: string; seq: number }                // gap recovery
-  | { v: 1; type: "mount"; path: string; search: Record<string, string> }  // cold mount
-  | { v: 1; type: "params"; instance: string; search: Record<string, string> }; // nav.patch
+  | { v: 1; type: "mount"; path: string; search: Record<string, string>; stream?: string } // cold / tier-2 mount
+  | { v: 1; type: "url"; instance: string; search: Record<string, string> }  // nav.patch → guard + load (§7)
+  | { v: 1; type: "release"; instance: string; stream: string };             // tier-2 abandons an instance (§7)
 ```
 
 - `attach` within the pending-attach TTL (~10s) adopts the SSR-warmed instance and resumes the
   stream from `seq`. Expired/unknown token → server silently re-mounts and pushes `full`.
 - `resync` → server pushes `full` with current `seq`. Also the reconnect path: `EventSource`
   reconnects, client re-attaches with last seen `seq`, server compares and pushes `full` if behind.
+- `url` reconciles the instance to a new URL: `guard` (auth) then `load` (§7). A `guard`/`load` deny
+  → `{ redirect }` JSON (SSE control response) or a `redirect` envelope (WS) the router soft-navs.
+- `mount` carries a client-owned `stream` id for a **tier-2 soft reload** (§7): a same-route path
+  change joins the fresh instance to the already-open stream; `release` drops the abandoned instance
+  from that stream so it evicts. The transport and app shell survive; only page state resets.
 
 ## Connection lifecycle (§11)
 
@@ -97,8 +105,8 @@ type Control =
 - Authentication happens once at connect (cookie/token via config hook); every reducer sees the
   resulting `ctx.session`.
 - Server evicts an instance when subscribers reach 0, after a warm TTL (~60s): snapshot to
-  storage, drop from memory. Cold wake re-runs `mount` (snapshots are session continuity, not
-  cache — spec §9).
+  storage, drop from memory. Cold wake re-runs `setup` + `load` (snapshots are session continuity,
+  not cache — spec §9).
 - Disconnect mid-handler → runtime aborts `ctx.signal`; the handler winds down cooperatively
   (`finally` blocks run); no ack is sent (client will resend on reconnect; dedupe window decides).
 

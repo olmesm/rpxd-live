@@ -84,16 +84,17 @@ map to TypeScript and Prisma:
 | ---------------- | -------------------------------------------------------------- |
 | `--kind http`    | Emit a `route()` endpoint (`routes/<plural>.ts`) instead of a page |
 | `--no-protected` | Make the page public (see below)                               |
-| `--protected`    | Force the mount → `/login` gate (auth apps only)               |
+| `--protected`    | Force the guard → `/login` gate (auth apps only)               |
 | `--no-test`      | Skip the test                                                  |
 | `--force`        | Overwrite existing files                                       |
 
 **Auth apps protect pages by default.** When the app has auth, a scaffolded
-page's `mount` redirects to `/login` when signed out, and the generated test
+page's `guard` redirects to `/login` when signed out, and the generated test
 signs in so it still passes — pass `--no-protected` for a public page. Without
 auth, pages are public (there's no login route to bounce to), and `--protected`
-is ignored with a note. An `http` route has no mount gate, so protection never
-applies to it.
+is ignored with a note. An `http` route has no `guard` gate, so protection never
+applies to it. (The auth-generated account page is the one exception: its state
+*is* the signed-in user, so its redirect lives in `setup` rather than `guard`.)
 
 ### Relationships
 

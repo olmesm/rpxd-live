@@ -111,7 +111,7 @@ describe("ws transport (§11)", () => {
     expect(ack.rpcId).toBe("ws-1");
     expect(ack.patches?.[0]?.value).toBe("over-ws");
 
-    // control messages ride the socket too — the params loader writes page
+    // control messages ride the socket too — the `load` loader writes page
     // state (§7), so the patch lands on the page, not the $session slice
     socket.send(JSON.stringify({ type: "url", instance, search: { filter: "done" } }));
     const paramsEnv = await next();

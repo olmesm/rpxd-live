@@ -46,10 +46,12 @@ normative spec is `spec.md`; the wire protocol is `docs/protocol.md`.
   patchState model makes the bug class unexpressible.)
 - Web-standard `Request`/`Response` in server code; Bun types only inside
   `bunAdapter` / storage-sqlite
-- `live()` is a fluent chain: `.mount()` locks state, `.rpc(name, r =>
-  r.input().optimistic().handler())` locks payloads, `.render()` hands the
-  component fully typed props including the exact-keyed `rpc` facade. Zero
-  annotations needed; contract locked in `packages/core/test/live.test-d.ts`.
+- `live()` is a fluent chain: `.setup()` (sync) locks state + wires
+  subscriptions, `.guard()` gates access (auth), `.load()` is the URL loader,
+  `.rpc(name, r => r.input().optimistic().handler())` locks payloads,
+  `.render()` hands the component fully typed props including the exact-keyed
+  `rpc` facade. Zero annotations needed; contract locked in
+  `packages/core/test/live.test-d.ts`.
 - Handlers are async `(payload, ctx)` and never block the instance; ALL
   state writes go through `ctx.patchState(sync mutator)`; `ctx.state` is a
   live read-only view. `.atomic()` = whole-rpc rollback. String `+=` growth

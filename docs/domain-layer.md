@@ -1,9 +1,9 @@
 # Domain layer — organising app logic (convention)
 
 rpxd's `routes/` is your web edge — the Phoenix `app_web` equivalent: one live
-object per page, `mount`/handlers/`render`. It says nothing about where your
-business logic and data access live. This is the convention we recommend for
-that other half, modelled on **Phoenix contexts**.
+object per page, `setup`/`load`/handlers/`render`. It says nothing about where
+your business logic and data access live. This is the convention we recommend
+for that other half, modelled on **Phoenix contexts**.
 
 It is a **convention only** — no runtime, no codegen, no framework awareness.
 The framework never touches your database (spec §14); this is purely how you
@@ -60,11 +60,15 @@ buys the same things:
 
 ```tsx
 // routes/index.tsx — the edge
-import { addTodo, listTodos } from "../domain/todos";
+import { addTodo, listTodos, type TodoRow } from "../domain/todos";
 import { scopeFrom } from "../domain/scope";
 
 export default live("/")
-  .mount(async (_params, ctx) => ({ todos: await listTodos(scopeFrom(ctx.session)) }))
+  .setup(() => ({ todos: [] as TodoRow[] })) // sync skeleton, no IO
+  .load(async (_url, ctx) => {
+    const todos = await listTodos(scopeFrom(ctx.session)); // the loader fetches
+    ctx.patchState((s) => { s.todos = todos; });
+  })
   .rpc("add", (r) =>
     r.handler(async ({ text }, ctx) => {
       const todo = await addTodo(scopeFrom(ctx.session), text); // logic lives in domain/
@@ -116,7 +120,7 @@ database.
 ## Naming
 
 Don't call the directory `contexts/` — rpxd already uses "context" for the
-handler `ctx` (`MountCtx`, `RpcCtx`, `HandlerCtx`), and `lib/` is conventionally
+handler `ctx` (`SetupCtx`, `RpcCtx`, `HandlerCtx`), and `lib/` is conventionally
 shared UI. `domain/` is collision-free and names the thing honestly; `app/` is
 the other reasonable choice if you want the literal Phoenix homage.
 

@@ -31,7 +31,7 @@ test("navigating back and forth keeps each page working", async ({ page }) => {
 
   await page.click("nav >> text=todos");
   await expect(page.getByTestId("todos")).toBeAttached();
-  // The todos page is live again after the round trip (fresh mount).
+  // The todos page is live again after the round trip (fresh setup + load).
   await page.fill('input[name="text"]', "back again");
   await page.click("text=Add");
   await expect(page.getByTestId("todos")).toContainText("back again");

@@ -20,7 +20,7 @@ describe("sqlite storage adapter", () => {
 
   it("backs a LiveInstance write-through + session continuity (§9)", async () => {
     const storage = sqlite(":memory:");
-    // Filter is view state → the params loader writes page state (§7). Page
+    // Filter is view state → the `load` loader writes page state (§7). Page
     // state is rebuilt from the URL on cold wake; the session slice + seq are
     // what sqlite carries across for continuity.
     const def: LiveDefinition<{ n: number }, "/", { userId?: string }> = {

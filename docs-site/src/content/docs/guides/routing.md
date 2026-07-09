@@ -30,7 +30,7 @@ Each page carries an in-file path literal — `live("/org/$orgId/board")`. The
 filename is truth; the literal is its typed mirror, **scaffolded and maintained
 by the `rpxd dev` watcher**. Rename the file and the literal is rewritten;
 hand-edit the literal and it's corrected. Path params are inferred from the
-literal, so `mount` and every `rpc` ctx get typed `params`.
+literal, so `setup` and every `rpc` ctx get typed `params`.
 
 ## Generated route map
 
@@ -49,9 +49,9 @@ This distinction drives the whole navigation model:
 
 - **Path params are identity.** Navigating to a different `orgId` is a different
   instance — so navigation **remounts**.
-- **Search params are view state.** They drive the `.params()` **loader** via
+- **Search params are view state.** They drive the `.load()` **loader** via
   `nav.patch(search)` — **no remount**. The loader is an async fn that writes
-  page state; it runs after `mount` and on every change, latest-wins, and is the
+  page state; it runs after `setup` and on every change, latest-wins, and is the
   single place URL-dependent data (filters, pages) loads. The URL is the query
   key, so those views are shareable, bookmarkable, and rebuilt on cold wake.
 

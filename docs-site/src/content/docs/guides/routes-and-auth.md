@@ -1,6 +1,6 @@
 ---
 title: HTTP routes & authentication
-description: Plain HTTP endpoints via route(), the authenticate hook, and enforcing auth by throwing redirect() from mount. Demonstrated with Better Auth over Prisma/SQLite.
+description: Plain HTTP endpoints via route(), the authenticate hook, and enforcing auth by throwing redirect() from guard. Demonstrated with Better Auth over Prisma/SQLite.
 sidebar:
   order: 6
 ---
@@ -113,12 +113,39 @@ delegation route.
    because those are projections of the filename. It must never own `auth.ts`,
    the scope shape, or a handler body: those are yours to edit.
 
-## Enforcing auth — the `mount` gate
+## Enforcing auth — the `guard`
 
-A protected page enforces authn where it already runs server code: `mount`. Read
-`scope.user`; if it's absent, **`throw redirect("/login")`** — the
-`require_authenticated_user` equivalent. Because the bounce happens before any
-handler, `domain/` never sees an unauthenticated call.
+A protected page enforces authn in `guard` — access control's **home**. `guard`
+runs before `load` on *every* URL change (path or search), so it re-checks even
+a spoofed or hand-edited `?param`. Read `scope.user`; if it's absent,
+**`throw redirect("/login")`** — the `require_authenticated_user` equivalent.
+Because the bounce happens before `load` and before any handler, `domain/` never
+sees an unauthenticated call.
+
+```tsx
+// routes/todos.tsx
+import { live, redirect } from "@rpxd/core";
+import { scopeFrom } from "../domain/scope";
+import { listTodos, type TodoRow } from "../domain/todos";
+
+export default live("/todos")
+  .setup(() => ({ todos: [] as TodoRow[] }))
+  .guard((_url, ctx) => {
+    if (!scopeFrom(ctx.session).user) throw redirect("/login");
+  })
+  .load(async (_url, ctx) => {
+    const todos = await listTodos(scopeFrom(ctx.session));
+    ctx.patchState((s) => {
+      s.todos = todos;
+    });
+  })
+  .render(({ state }) => <ul>{/* … */}</ul>);
+```
+
+**When the page's state *is* the user, the check can live in `setup`.** `setup`
+runs before `guard`, so a page whose skeleton depends on the identity (e.g.
+`{ email: user.email }`) may fail fast there instead — a coarse first gate,
+documented as allowed:
 
 ```tsx
 // routes/account.tsx
@@ -126,7 +153,7 @@ import { live, redirect } from "@rpxd/core";
 import { scopeFrom } from "../domain/scope";
 
 export default live("/account")
-  .mount(async (_params, ctx) => {
+  .setup((ctx) => {
     const scope = scopeFrom(ctx.session);
     if (!scope.user) throw redirect("/login");
     return { email: scope.user.email };
@@ -134,30 +161,31 @@ export default live("/account")
   .render(({ state }) => <p>signed in as {state.email}</p>);
 ```
 
-**`redirect()` works on both entry points.** A full page load gets a real `302`
-(crawlable, no flash, no protected component shipped); a soft `Link` / `nav`
-navigation gets a `{ redirect }` signal on the control-mount response, which the
+**`redirect()` works from `setup` and `guard`, on both entry points.** A full
+page load gets a real `302` (crawlable, no flash, no protected component
+shipped); a soft `Link` / `nav.patch` navigation gets the deny as a
+`{ redirect }` JSON control frame (SSE) or a `redirect` envelope (WS), which the
 client router turns into a soft navigation. So `throw redirect("/login")`
 behaves the same whether the visitor typed the URL or clicked a link. (A plain
 `throw` still routes to `__error` — `redirect` is the specific, recognised
 signal.)
 
-## Auth transitions re-mount
+## Auth transitions re-run `setup`
 
-`mount` reads `ctx.session` once and computes session-scoped state (a user's
-todos). The warm per-session instance is normally reused across reloads for
-continuity — but a login or logout changes *who* is acting, so that cached state
-is stale. The handler compares the fresh `authenticate` result against the
-instance's session and, when they differ, **evicts and re-mounts** (dropping the
-snapshot too). So after the auth route sets/clears its cookie, a normal
-navigation re-runs `mount` with the new principal — no manual invalidation. Same
-session → warm instance reused as before; the re-mount fires only on an actual
-auth change.
+`setup` reads `ctx.session` once when it builds the skeleton, and `guard` /
+`load` read it on each URL change. The warm per-session instance is normally
+reused across reloads for continuity — but a login or logout changes *who* is
+acting, so that cached state is stale. The handler compares the fresh
+`authenticate` result against the instance's session and, when they differ,
+**evicts and re-runs `setup`** (dropping the snapshot too). So after the auth
+route sets/clears its cookie, a normal navigation re-runs `setup` with the new
+principal — no manual invalidation. Same session → warm instance reused as
+before; the re-setup fires only on an actual auth change.
 
 :::caution
 This is why `authenticate` should return a **stable session projection** (e.g.
 `{ sid, user: { id, email } }`) rather than the auth library's full session
-object — the handler compares projections to decide whether to re-mount.
+object — the handler compares projections to decide whether to re-run `setup`.
 :::
 
 ## `sid` vs the auth session
@@ -178,7 +206,7 @@ my-app/
 ├── routes/                 # web edge — file-based
 │   ├── __root.tsx          #   HTML shell + providers
 │   ├── __404.tsx
-│   ├── __error.tsx         #   mount rejection / 403
+│   ├── __error.tsx         #   setup/guard rejection / 403
 │   ├── index.tsx           #   /            live object (todos)
 │   ├── login.tsx           #   /login       live object (auth forms)
 │   ├── account.tsx         #   /account     protected (throw redirect)
