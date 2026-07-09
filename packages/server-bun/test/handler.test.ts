@@ -366,7 +366,10 @@ describe("SSR attach adoption (§12)", () => {
   });
 
   it("falls back to a full snapshot when the token is stale", async () => {
-    const handler = makeHandler({ attachTtlMs: 1 });
+    // Token expires fast (attachTtlMs), but the un-attached instance must stay
+    // warm long enough for the late client to still find it (#61) — so give
+    // unattachedTtlMs headroom over the token.
+    const handler = makeHandler({ attachTtlMs: 1, unattachedTtlMs: 200 });
     const boot = await ssrBoot(handler);
     await new Promise((r) => setTimeout(r, 10)); // let the token expire
 
@@ -419,6 +422,110 @@ describe("eviction (§11)", () => {
     abort.abort();
     await new Promise((r) => setTimeout(r, 60));
     expect(handler.instanceCount).toBe(0);
+    await handler.dispose();
+  });
+});
+
+describe("un-attached instance bounds — cookieless GET flood (#61)", () => {
+  const mount = (handler: ReturnType<typeof makeHandler>, sid: string, path = "/org/1/board") =>
+    handler.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers: { cookie: `rpxd_sid=${sid}` },
+        body: JSON.stringify({ type: "mount", path }),
+      }),
+    );
+  /** Read-only liveness probe: 202 = instance still owned/live, 404 = evicted. */
+  const alive = async (handler: ReturnType<typeof makeHandler>, sid: string, instance: string) => {
+    const res = await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: { cookie: `rpxd_sid=${sid}` },
+        body: JSON.stringify({ v: V, instance, rpcId: "probe", calls: [] }),
+      }),
+    );
+    return res.status === 202;
+  };
+
+  it("evicts a never-attached instance on the short unattachedTtlMs, not warmTtlMs", async () => {
+    // A cookieless GET warms an instance no client ever attaches to. It must not
+    // linger for the full warm-TTL — the un-attached hold is the attach window.
+    const handler = makeHandler({ warmTtlMs: 500, attachTtlMs: 10 }); // unattachedTtlMs ← attachTtlMs
+    await handler.fetch(
+      new Request(`${base}/org/7/board`, { headers: { cookie: "rpxd_sid=ttl-anon" } }),
+    );
+    expect(handler.instanceCount).toBe(1);
+    await new Promise((r) => setTimeout(r, 80)); // past unattachedTtlMs(10), well under warmTtlMs(500)
+    expect(handler.instanceCount).toBe(0);
+    await handler.dispose();
+  });
+
+  it("keeps an attached instance for the full warmTtlMs after its stream aborts", async () => {
+    // Once a real client has attached, the instance earns the long warm-TTL —
+    // the short un-attached TTL must not apply to it.
+    const handler = makeHandler({ warmTtlMs: 300, attachTtlMs: 10 });
+    const abort = new AbortController();
+    await mount(handler, "ttl-real", "/org/3/board");
+    const streamRes = await handler.fetch(
+      new Request(`${base}/__rpxd/stream`, {
+        headers: { cookie: "rpxd_sid=ttl-real" },
+        signal: abort.signal,
+      }),
+    );
+    const sse = new SseReader(streamRes);
+    await sse.next(); // subscribed → attached
+    abort.abort();
+    await new Promise((r) => setTimeout(r, 80)); // past unattachedTtlMs, under warmTtlMs(300)
+    expect(handler.instanceCount).toBe(1); // survives on the warm TTL
+    await handler.dispose();
+  });
+
+  it("caps concurrent never-attached instances, evicting the oldest", async () => {
+    const handler = makeHandler({
+      warmTtlMs: 1000,
+      attachTtlMs: 1000,
+      maxUnattachedInstances: 2,
+    });
+    const a = (await (await mount(handler, "cap-a")).json()).instance as string;
+    const b = (await (await mount(handler, "cap-b")).json()).instance as string;
+    expect(handler.instanceCount).toBe(2);
+    const c = (await (await mount(handler, "cap-c")).json()).instance as string;
+    expect(handler.instanceCount).toBe(2); // the 3rd evicts the oldest un-attached
+    expect(await alive(handler, "cap-a", a)).toBe(false); // oldest gone
+    expect(await alive(handler, "cap-b", b)).toBe(true);
+    expect(await alive(handler, "cap-c", c)).toBe(true);
+    await handler.dispose();
+  });
+
+  it("treats the cap as LRU — a warm re-mount bumps recency", async () => {
+    const handler = makeHandler({
+      warmTtlMs: 1000,
+      attachTtlMs: 1000,
+      maxUnattachedInstances: 2,
+    });
+    const a = (await (await mount(handler, "lru-a")).json()).instance as string;
+    const b = (await (await mount(handler, "lru-b")).json()).instance as string;
+    // Warm re-mount of `a` (same sid+path) reuses it AND bumps it to most-recent.
+    const aAgain = (await (await mount(handler, "lru-a")).json()).instance as string;
+    expect(aAgain).toBe(a); // warm reuse, not a fresh instance
+    const c = (await (await mount(handler, "lru-c")).json()).instance as string;
+    expect(handler.instanceCount).toBe(2);
+    expect(await alive(handler, "lru-b", b)).toBe(false); // b is now the LRU → evicted
+    expect(await alive(handler, "lru-a", a)).toBe(true); // bumped → survives
+    expect(await alive(handler, "lru-c", c)).toBe(true);
+    await handler.dispose();
+  });
+
+  it("disables the cap when maxUnattachedInstances is null", async () => {
+    const handler = makeHandler({
+      warmTtlMs: 1000,
+      attachTtlMs: 1000,
+      maxUnattachedInstances: null,
+    });
+    await mount(handler, "off-a");
+    await mount(handler, "off-b");
+    await mount(handler, "off-c");
+    expect(handler.instanceCount).toBe(3); // no bound
     await handler.dispose();
   });
 });

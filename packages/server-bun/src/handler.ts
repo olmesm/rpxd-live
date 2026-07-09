@@ -64,6 +64,22 @@ export interface RpxdHandlerOptions {
   warmTtlMs?: number;
   /** Pending-attach TTL for SSR adoption tokens (§12). Default 10s. */
   attachTtlMs?: number;
+  /**
+   * Warm TTL for an instance no client has ever attached to (#61). A cookieless
+   * GET (crawler, bot, cookie-denying client) warms an instance that is never
+   * adopted; it only needs to outlive its attach window, so this defaults to
+   * {@link attachTtlMs} rather than the full {@link warmTtlMs}. Bounds how long
+   * scan traffic pins un-adopted instances. Must be ≥ `attachTtlMs` or a
+   * slow-but-legitimate client can be evicted out of the SSR-adopt fast path.
+   */
+  unattachedTtlMs?: number;
+  /**
+   * Hard cap on concurrent never-attached instances (#61). When exceeded, the
+   * least-recently-used un-attached instance is evicted (without a snapshot —
+   * it was never a real session). Bounds memory under scan floods regardless of
+   * traffic shape. `null` disables the cap. Default 1024.
+   */
+  maxUnattachedInstances?: number | null;
   defaultRateLimit?: RateLimit;
 }
 
@@ -78,6 +94,13 @@ interface InstanceEntry {
   params: Record<string, string>;
   attach?: { token: string; expires: number };
   evictTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Whether a client has ever subscribed to this instance (#61). Un-attached
+   * instances get the short {@link RpxdHandlerOptions.unattachedTtlMs} and count
+   * against {@link RpxdHandlerOptions.maxUnattachedInstances}; once attached, an
+   * instance earns the full warm TTL and is exempt from the cap.
+   */
+  everAttached: boolean;
 }
 
 /**
@@ -126,9 +149,19 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   const storage = opts.storage ?? memory();
   const warmTtlMs = opts.warmTtlMs ?? 60_000;
   const attachTtlMs = opts.attachTtlMs ?? 10_000;
+  // Un-attached instances only need to outlive their attach window (#61).
+  const unattachedTtlMs = opts.unattachedTtlMs ?? attachTtlMs;
+  const maxUnattachedInstances =
+    opts.maxUnattachedInstances === undefined ? 1024 : opts.maxUnattachedInstances;
   /** sessionId → instanceKey → entry */
   const sessions = new Map<string, Map<string, InstanceEntry>>();
   const byInstanceId = new Map<string, InstanceEntry>();
+  /**
+   * Never-attached instances in LRU order (#61) — insertion order is recency;
+   * a warm reuse re-inserts to bump. Bounds the un-adopted set under scan
+   * floods: exceeding `maxUnattachedInstances` sheds the oldest (front).
+   */
+  const unattached = new Set<InstanceEntry>();
 
   /**
    * Resolve an instance id for a client request, but only if it belongs to the
@@ -227,6 +260,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           clearTimeout(existing.evictTimer);
           existing.evictTimer = undefined;
         }
+        // Warm reuse counts as recent use — bump it to most-recent in the LRU
+        // (#61) so a live-but-un-adopted instance isn't shed before a colder one.
+        if (unattached.delete(existing)) unattached.add(existing);
         // Reconcile the warm instance to this load's URL (§7).
         const route = opts.routes.find((r) => r.path === existing.path);
         if (route) await reconcileUrl(route.def, existing.instance, search);
@@ -239,6 +275,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       if (existing.evictTimer) clearTimeout(existing.evictTimer);
       entries.delete(pathname);
       byInstanceId.delete(existing.instance.id);
+      unattached.delete(existing);
       await existing.instance.dispose();
       await storage.delete(`${sid}:${pathname}`);
     }
@@ -268,21 +305,63 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       path: match.path,
       params: match.params,
       attach: { token: crypto.randomUUID(), expires: Date.now() + attachTtlMs },
+      everAttached: false,
     };
     entries.set(pathname, entry);
     byInstanceId.set(instance.id, entry);
+    unattached.add(entry);
+    enforceUnattachedCap(entry);
     scheduleEvictionIfIdle(sid, pathname, entry);
     return entry;
   }
 
+  /**
+   * Shed least-recently-used never-attached instances until the set is within
+   * {@link RpxdHandlerOptions.maxUnattachedInstances} (#61). `keep` is the entry
+   * we just registered — never evict it, even if the cap is 0/1. Cap-evictions
+   * dispose *without* a snapshot and delete any storage a cookieless mount left
+   * behind: it was never an adopted session, so persisting it is pure waste.
+   */
+  function enforceUnattachedCap(keep: InstanceEntry): void {
+    if (maxUnattachedInstances == null) return;
+    for (const entry of unattached) {
+      if (unattached.size <= maxUnattachedInstances) break;
+      if (entry === keep) continue;
+      if (entry.evictTimer) {
+        clearTimeout(entry.evictTimer);
+        entry.evictTimer = undefined;
+      }
+      unattached.delete(entry);
+      sessions.get(entry.sid)?.delete(entry.key);
+      byInstanceId.delete(entry.instance.id);
+      void entry.instance
+        .dispose(false)
+        .then(() => storage.delete(`${entry.sid}:${entry.key}`))
+        .catch(() => {});
+    }
+  }
+
+  /**
+   * Mark an instance attached (#61) — a client has subscribed. It leaves the
+   * un-attached LRU set (exempt from the cap) and earns the full warm TTL.
+   */
+  function markAttached(entry: InstanceEntry): void {
+    entry.everAttached = true;
+    unattached.delete(entry);
+  }
+
   function scheduleEvictionIfIdle(sid: string, key: string, entry: InstanceEntry): void {
     if (entry.instance.subscriberCount > 0 || entry.evictTimer || disposed) return;
-    // Keep pending-attach instances alive at least until the token expires.
-    const graceMs = Math.max(warmTtlMs, (entry.attach?.expires ?? 0) - Date.now());
+    // A never-attached instance only needs to outlive its attach window (#61);
+    // once adopted, it earns the full warm TTL. Either way, keep a
+    // pending-attach instance alive at least until its token expires.
+    const baseTtl = entry.everAttached ? warmTtlMs : unattachedTtlMs;
+    const graceMs = Math.max(baseTtl, (entry.attach?.expires ?? 0) - Date.now());
     entry.evictTimer = setTimeout(() => {
       if (entry.instance.subscriberCount > 0) return;
       sessions.get(sid)?.delete(key);
       byInstanceId.delete(entry.instance.id);
+      unattached.delete(entry);
       void entry.instance.dispose(); // final write-through snapshot (§11)
     }, graceMs);
   }
@@ -309,6 +388,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         clearTimeout(entry.evictTimer);
         entry.evictTimer = undefined;
       }
+      markAttached(entry); // a client has subscribed — earns the warm TTL (#61)
       unsubs.set(entry.instance.id, entry.instance.addListener(send));
       const adopted =
         initial &&
@@ -566,6 +646,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       sessions.clear();
       byInstanceId.clear();
       streamRegistry.clear();
+      unattached.clear();
       for (const entry of all) {
         if (entry.evictTimer) clearTimeout(entry.evictTimer);
       }
