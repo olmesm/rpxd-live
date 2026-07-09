@@ -28,7 +28,7 @@ export default live("/issues")
   ));
 ```
 
-The [todos example](/rpxd-live/examples/todos/) is a working version of this.
+The [kitchen-sink example](/rpxd-live/examples/kitchen-sink/) is a working version of this.
 
 ## Reset the cursor when a filter changes
 

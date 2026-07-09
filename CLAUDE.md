@@ -32,7 +32,7 @@ normative spec is `spec.md`; the wire protocol is `docs/protocol.md`.
 - `packages/storage-*` — memory/session/sqlite/redis adapters
 - `packages/testing` — `testLive(route)` harness: typed `t.rpc.*`, envelope
   capture, broadcast injection, `t.settled()`
-- `examples/todos` — the demo app; doubles as the acceptance suite target
+- `examples/kitchen-sink` — the demo app; doubles as the acceptance suite target
 - Tests live next to their package: `test/` (Vitest, Node) vs `test-bun/`
   (Bun runtime required).
 

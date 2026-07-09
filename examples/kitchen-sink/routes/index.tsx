@@ -1,4 +1,5 @@
 import { live } from "@rpxd/core";
+import { authClient } from "../adapters/auth-client";
 import { scopeFrom } from "../domain/scope";
 import { addTodo, listTodos, type TodoFilter, type TodoRow, toggleTodo } from "../domain/todos";
 
@@ -71,12 +72,7 @@ export default live("/")
                 type="button"
                 data-testid="sign-out"
                 onClick={async () => {
-                  // Better Auth wants a JSON content-type and body (even empty).
-                  await fetch("/api/auth/sign-out", {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: "{}",
-                  });
+                  await authClient.signOut();
                   window.location.assign("/");
                 }}
               >

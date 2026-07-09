@@ -28,7 +28,7 @@ adapters/        # server-only clients behind the domain
   auth.ts        #   the auth library (see routes-and-auth.md)
 ```
 
-`examples/todos` is laid out this way — read it alongside this doc. API routes
+`examples/kitchen-sink` is laid out this way — read it alongside this doc. API routes
 (webhooks, auth) and how an auth library wires into `authenticate` are covered
 in [`routes-and-auth.md`](./routes-and-auth.md).
 
@@ -48,7 +48,7 @@ buys the same things:
 - **Swappable persistence.** Swap the client in `adapters/db.ts` (the example
   uses Prisma/SQLite) and nothing under `routes/` changes.
 - **Tests without the harness.** The pure parts (e.g. `scopeFrom`) unit-test
-  with no `live()`, ctx, or db (see `examples/todos/test-bun/scope.test.ts`);
+  with no `live()`, ctx, or db (see `examples/kitchen-sink/test-bun/scope.test.ts`);
   the DB-backed queries are integration-tested end-to-end by the Playwright
   suite. Mock at the domain boundary — coarse and stable — instead of reaching
   for a db handle on `ctx`.
@@ -124,7 +124,7 @@ the other reasonable choice if you want the literal Phoenix homage.
 
 Start at 1; move up only when an app earns it.
 
-1. **Convention** — documented here, demonstrated in `examples/todos`. *(This
+1. **Convention** — documented here, demonstrated in `examples/kitchen-sink`. *(This
    is where we are.)*
 2. **Lint** — a Biome rule forbidding a `db` import under `routes/` (a natural
    sibling to spec §4's identity-lookup rule). The enforceable form of the

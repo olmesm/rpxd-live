@@ -1,4 +1,4 @@
-/** SSR attach + optimistic updates (§4, §12) against examples/todos. */
+/** SSR attach + optimistic updates (§4, §12) against examples/kitchen-sink. */
 import { expect, test } from "@playwright/test";
 
 test("SSR renders live state and hydrates cleanly", async ({ page }) => {

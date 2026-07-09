@@ -63,6 +63,11 @@ new data in with **no remount**. Writes **page state** via `ctx.patchState`;
 `ctx.session` is read-only. Loading and errors are ordinary state the loader
 writes — there's no ack.
 
+The **first argument is the *search* params** (`?filter=…`) — untyped view state
+(`Record<string, string | undefined>`). **Path** params (`/org/$orgId` → `orgId`)
+are on **`ctx.params`**, typed from the route literal, the same as in `mount` and
+rpc handlers — see `ctx.params.orgId` in the example above.
+
 It's **latest-wins**: a newer invocation aborts the prior run's `ctx.signal` and
 drops its late flushes, so rapid filter/page changes resolve to the last URL.
 Pass `ctx.signal` to `fetch` so a superseded load stops early. Because the URL

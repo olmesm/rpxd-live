@@ -20,7 +20,7 @@ import { buildApp, type StartedApp, startApp } from "../src/index.ts";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const appRoot = join(repoRoot, ".rpxd-gen-test");
-const todosModules = join(repoRoot, "examples/todos/node_modules");
+const todosModules = join(repoRoot, "examples/kitchen-sink/node_modules");
 const COOKIE = "rpxd_sid=gen-test";
 let app: StartedApp;
 

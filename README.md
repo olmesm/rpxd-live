@@ -34,7 +34,7 @@ export default live("/org/$orgId/board")
 
 ```sh
 bun install
-cd examples/todos && bun run dev   # http://localhost:3000 — todos, /chat, /import, /doc
+cd examples/kitchen-sink && bun run dev   # http://localhost:3000 — todos, /chat, /import, /doc, /stream
 ```
 
 ## Packages
@@ -61,6 +61,6 @@ TDD-first — see [`CLAUDE.md`](./CLAUDE.md) for conventions.
 bun run test        # Vitest unit + type tests
 bun run typecheck   # tsc
 bun run lint        # Biome
-bun test spikes packages/*/test-bun examples/todos/test-bun   # Bun-runtime tests
+bun test spikes packages/*/test-bun examples/kitchen-sink/test-bun   # Bun-runtime tests
 cd e2e && bunx playwright test                                # browser acceptance
 ```

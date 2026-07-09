@@ -1,11 +1,11 @@
 ---
-title: The todos example
-description: A tour of examples/todos — the demo app that doubles as the acceptance suite, exercising optimistic todos, streaming chat, CSV import, auth, and an RSC doc page.
+title: The kitchen-sink example
+description: A tour of examples/kitchen-sink — the demo app that doubles as the acceptance suite, exercising optimistic todos, token streaming, multiplayer chat, CSV import, auth, and an RSC doc page.
 sidebar:
   order: 1
 ---
 
-`examples/todos` is the reference app. It doubles as the acceptance suite —
+`examples/kitchen-sink` is the reference app. It doubles as the acceptance suite —
 Playwright runs against it across every transport and render combination — so
 every page here is a working demonstration of a concept in these docs.
 
@@ -14,12 +14,12 @@ every page here is a working demonstration of a concept in these docs.
 ```sh
 git clone https://github.com/olmesm/rpxd-live
 cd rpxd-live && bun install
-cd examples/todos && bun run setup   # prisma generate + db push
+cd examples/kitchen-sink && bun run setup   # prisma generate + db push
 bun run dev                          # http://localhost:3000
 ```
 
 <a
-  href="https://stackblitz.com/github/olmesm/rpxd-live/tree/main/examples/todos"
+  href="https://stackblitz.com/github/olmesm/rpxd-live/tree/main/examples/kitchen-sink"
   target="_blank"
   rel="noopener"
 >
@@ -37,8 +37,9 @@ locally with `bun run dev`.
 
 | Route | File | Demonstrates |
 | --- | --- | --- |
-| `/` | `index.tsx` | optimistic todos — add / toggle, `keyOf`, user-scoped queries |
-| `/chat` | `chat.tsx` | streaming — `for await` + `append` patches, `ctx.abort` |
+| `/` | `index.tsx` | optimistic todos — add / toggle, `keyOf`, user-scoped queries; URL-driven [filtering](/rpxd-live/guides/filtering-and-search/) via the `params` loader |
+| `/stream` | `stream.tsx` | streaming — `for await` + `append` patches (O(delta) wire), `ctx.abort` |
+| `/chat` | `chat.tsx` | multiplayer — pubsub broadcast, single-code-path `on` handler (`self: true`) |
 | `/import` | `import.tsx` | slow work — per-chunk `patchState`, `onError` repair |
 | `/doc` | `doc.tsx` | an [RSC field](/rpxd-live/concepts/rsc/) — server-rendered markdown |
 | `/login` | `login.tsx` | auth forms (Better Auth email/password) |
@@ -51,7 +52,7 @@ locally with `bun run dev`.
 The app follows the [domain-layer convention](/rpxd-live/guides/domain-layer/):
 
 ```
-examples/todos/
+examples/kitchen-sink/
 ├── routes/            # the edge — live objects + the auth route
 ├── domain/
 │   ├── scope.ts       # Scope + scopeFrom — client-safe, no db
