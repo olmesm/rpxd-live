@@ -1,8 +1,8 @@
 import { live } from "@rpxd/core";
 
-/** Exists to exercise the __error page: mount always rejects (§10). */
+/** Exists to exercise the __error page: setup always throws (§10). */
 export default live("/boom")
-  .mount(async (): Promise<{ never: true }> => {
-    throw new Error("mount exploded");
+  .setup((): { never: true } => {
+    throw new Error("setup exploded");
   })
   .render(() => <main>never rendered</main>);

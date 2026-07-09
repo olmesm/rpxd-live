@@ -37,15 +37,15 @@ locally with `bun run dev`.
 
 | Route | File | Demonstrates |
 | --- | --- | --- |
-| `/` | `index.tsx` | optimistic todos — add / toggle, `keyOf`, user-scoped queries; URL-driven [filtering](/rpxd-live/guides/filtering-and-search/) via the `params` loader |
+| `/` | `index.tsx` | optimistic todos — add / toggle, `keyOf`, user-scoped queries; URL-driven [filtering](/rpxd-live/guides/filtering-and-search/) via the `load` loader |
 | `/stream` | `stream.tsx` | streaming — `for await` + `append` patches (O(delta) wire), `ctx.abort` |
 | `/chat` | `chat.tsx` | multiplayer — pubsub broadcast, single-code-path `on` handler (`self: true`) |
 | `/import` | `import.tsx` | slow work — per-chunk `patchState`, `onError` repair |
 | `/doc` | `doc.tsx` | an [RSC field](/rpxd-live/concepts/rsc/) — server-rendered markdown |
 | `/login` | `login.tsx` | auth forms (Better Auth email/password) |
-| `/account` | `account.tsx` | a [protected route](/rpxd-live/guides/routes-and-auth/#enforcing-auth--the-mount-gate) — `throw redirect("/login")` |
+| `/account` | `account.tsx` | a [protected route](/rpxd-live/guides/routes-and-auth/#enforcing-auth--the-guard) — `throw redirect("/login")` |
 | `/api/auth/*` | `api.auth.$.ts` | the [delegation route](/rpxd-live/guides/routes-and-auth/) — `route().all()` |
-| `/boom` | `boom.tsx` | the `__error` path — a deliberate mount crash |
+| `/boom` | `boom.tsx` | the `__error` path — a deliberate setup crash |
 
 ## The shape
 

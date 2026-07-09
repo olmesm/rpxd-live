@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LiveInstance } from "../src/instance.ts";
-import type { LiveDefinition, Mutator } from "../src/live.ts";
+import type { LiveDefinition, Mutator, SearchParams } from "../src/live.ts";
 import { type Envelope, PROTOCOL_VERSION, type RpcBatch } from "../src/protocol.ts";
+import { redirect } from "../src/redirect.ts";
 import { memory, type StorageAdapter } from "../src/storage.ts";
 
 interface TodoState {
@@ -54,7 +55,7 @@ async function make(
 const initial = (): TodoState => ({ todos: [], log: [], answer: "" });
 
 const baseDef: LiveDefinition<TodoState, "/t/$id", Session> = {
-  mount: async () => initial(),
+  setup: () => initial(),
   rpc: {
     add: {
       async handler({ text }: { text: string }, ctx) {
@@ -76,7 +77,7 @@ const baseDef: LiveDefinition<TodoState, "/t/$id", Session> = {
 describe("LiveInstance basics", () => {
   it("mounts with a full-snapshot seq and acks a plain rpc with combined patches", async () => {
     const { inst, envelopes } = await make(baseDef);
-    expect(inst.seq).toBe(1); // mount emitted the initial full envelope
+    expect(inst.seq).toBe(1); // setup emitted the initial full envelope
 
     await inst.handleBatch(batch("add", { text: "milk" }));
     expect(inst.state.todos).toHaveLength(1);
@@ -130,7 +131,7 @@ describe("LiveInstance basics", () => {
 describe("concurrency (§3): handlers never block the instance", () => {
   it("runs a fast rpc while a slow handler awaits", async () => {
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => initial(),
+      setup: () => initial(),
       rpc: {
         ...baseDef.rpc,
         slow: {
@@ -159,7 +160,7 @@ describe("concurrency (§3): handlers never block the instance", () => {
   it("ctx.state reads are live — current even after awaits", async () => {
     const seen: string[][] = [];
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => initial(),
+      setup: () => initial(),
       rpc: {
         ...baseDef.rpc,
         watcher: {
@@ -183,7 +184,7 @@ describe("concurrency (§3): handlers never block the instance", () => {
   it("ctx.state rejects writes with a helpful error", async () => {
     let error: Error | undefined;
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => initial(),
+      setup: () => initial(),
       rpc: {
         mutant: {
           async handler(_p, ctx) {
@@ -207,7 +208,7 @@ describe("concurrency (§3): handlers never block the instance", () => {
 describe("streaming + append op (§2, §3)", () => {
   it("flushes one envelope per patchState tick; ack carries the final-tick patches", async () => {
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => initial(),
+      setup: () => initial(),
       rpc: {
         stream: {
           async handler(_p, ctx) {
@@ -232,7 +233,7 @@ describe("streaming + append op (§2, §3)", () => {
 
   it("compiles string-suffix growth to append patches carrying only the delta", async () => {
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => initial(),
+      setup: () => initial(),
       rpc: {
         ask: {
           async handler(_p, ctx) {
@@ -263,7 +264,7 @@ describe("streaming + append op (§2, §3)", () => {
 
 describe("atomic rpcs (§3)", () => {
   const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-    mount: async () => initial(),
+    setup: () => initial(),
     rpc: {
       transfer: {
         atomic: true,
@@ -303,7 +304,7 @@ describe("cancellation (§3)", () => {
   it("aborts ctx.signal on dispose", async () => {
     let aborted = false;
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => initial(),
+      setup: () => initial(),
       rpc: {
         watch: {
           async handler(_p, ctx) {
@@ -327,7 +328,7 @@ describe("cancellation (§3)", () => {
   it("ctx.abort(name) aborts in-flight invocations of a named rpc", async () => {
     let aborted = false;
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => initial(),
+      setup: () => initial(),
       rpc: {
         ask: {
           async handler(_p, ctx) {
@@ -356,7 +357,7 @@ describe("cancellation (§3)", () => {
 
 describe("validation, rate limiting, onError", () => {
   const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-    mount: async () => initial(),
+    setup: () => initial(),
     rpc: {
       add: {
         input: z.object({ text: z.string().min(1) }),
@@ -415,7 +416,7 @@ describe("validation, rate limiting, onError", () => {
 
 describe("pubsub (§8)", () => {
   const defFor = (): LiveDefinition<TodoState, "/t/$id", Session> => ({
-    mount: async (_params, ctx) => {
+    setup: (ctx) => {
       ctx.subscribe("room:1");
       return initial();
     },
@@ -461,9 +462,9 @@ describe("pubsub (§8)", () => {
   });
 });
 
-describe("params loader (§7)", () => {
+describe("URL loader (§7)", () => {
   // A URL-keyed loader that windows `todos` by filter — the canonical shape.
-  const load = (filter: string, signal?: AbortSignal) =>
+  const fetchItems = (filter: string, signal?: AbortSignal) =>
     new Promise<{ id: string; text: string }[]>((resolve, reject) => {
       const timer = setTimeout(() => resolve([{ id: `${filter}-1`, text: filter }]), 5);
       signal?.addEventListener("abort", () => {
@@ -473,14 +474,14 @@ describe("params loader (§7)", () => {
     });
 
   const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-    mount: async () => initial(),
-    params: async ({ filter }, ctx) => {
-      const f = filter ?? "all";
+    setup: () => initial(),
+    load: async ({ search }, ctx) => {
+      const f = search.filter ?? "all";
       ctx.patchState((s) => {
         s.filter = f;
         s.loading = true;
       });
-      const items = await load(f, ctx.signal);
+      const items = await fetchItems(f, ctx.signal);
       ctx.patchState((s) => {
         s.todos = items;
         s.loading = false;
@@ -490,7 +491,7 @@ describe("params loader (§7)", () => {
 
   it("writes page state (not the $session slice) and fires the loader", async () => {
     const { inst, envelopes } = await make(def);
-    await inst.setSearch({ filter: "done" });
+    await inst.load({ filter: "done" });
     expect(inst.state.filter).toBe("done");
     expect(inst.state.todos).toEqual([{ id: "done-1", text: "done" }]);
     expect(inst.state.loading).toBe(false);
@@ -502,8 +503,8 @@ describe("params loader (§7)", () => {
 
   it("keeps the previous window visible while loading (keepPreviousData)", async () => {
     const { inst } = await make(def);
-    await inst.setSearch({ filter: "open" });
-    const load2 = inst.setSearch({ filter: "done" });
+    await inst.load({ filter: "open" });
+    const load2 = inst.load({ filter: "done" });
     // Synchronous projection landed; old items still present mid-load.
     await tick();
     expect(inst.state.filter).toBe("done");
@@ -515,8 +516,8 @@ describe("params loader (§7)", () => {
 
   it("is latest-wins: a superseded run's late flush is dropped", async () => {
     const { inst } = await make(def);
-    const a = inst.setSearch({ filter: "a" });
-    const b = inst.setSearch({ filter: "b" });
+    const a = inst.load({ filter: "a" });
+    const b = inst.load({ filter: "b" });
     await Promise.all([a, b]);
     await inst.idle();
     // Only the last URL's window lands, regardless of resolution order.
@@ -527,24 +528,24 @@ describe("params loader (§7)", () => {
   it("aborts the prior loader's signal when superseded", async () => {
     let aborted = false;
     const spyDef: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => initial(),
-      params: async ({ filter }, ctx) => {
+      setup: () => initial(),
+      load: async ({ search }, ctx) => {
         ctx.signal.addEventListener("abort", () => {
           aborted = true;
         });
-        await load(filter ?? "all", ctx.signal).catch(() => {});
+        await fetchItems(search.filter ?? "all", ctx.signal).catch(() => {});
       },
     };
     const { inst } = await make(spyDef);
-    void inst.setSearch({ filter: "a" });
-    await inst.setSearch({ filter: "b" });
+    void inst.load({ filter: "a" });
+    await inst.load({ filter: "b" });
     expect(aborted).toBe(true);
   });
 
   it("does not throw when the loader rejects; error is userland state", async () => {
     const boomDef: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => initial(),
-      params: async (_search, ctx) => {
+      setup: () => initial(),
+      load: async (_url, ctx) => {
         ctx.patchState((s) => {
           s.loading = true;
         });
@@ -559,40 +560,175 @@ describe("params loader (§7)", () => {
       },
     };
     const { inst } = await make(boomDef);
-    await expect(inst.setSearch({ filter: "x" })).resolves.toBeUndefined();
+    await expect(inst.load({ filter: "x" })).resolves.toBeUndefined();
     expect(inst.state.loadError).toBe("db down");
     expect(inst.state.loading).toBe(false);
   });
 
-  it("cold wake re-runs mount; the window rebuilds from the URL via setSearch (§9)", async () => {
+  it("re-throws a redirect from the loader for the caller to map (§10)", async () => {
+    const gated: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async () => {
+        throw redirect("/login");
+      },
+    };
+    const { inst } = await make(gated);
+    await expect(inst.load({ filter: "x" })).rejects.toMatchObject({
+      $redirect: true,
+      location: "/login",
+    });
+  });
+
+  it("a superseded run's redirect does not fire — only the current run redirects (§10)", async () => {
+    let release: () => void = () => {};
+    const gated: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async ({ search }) => {
+        if (search.filter === "stale") {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+          throw redirect("/should-not-happen");
+        }
+      },
+    };
+    const { inst } = await make(gated);
+    const stale = inst.load({ filter: "stale" }); // will be superseded mid-flight
+    await tick();
+    await inst.load({ filter: "fresh" }); // claims the run tag
+    release(); // the stale run now throws redirect — but it's no longer current
+    await expect(stale).resolves.toBeUndefined();
+  });
+
+  it("receives typed path params alongside search in the url arg", async () => {
+    let seen: { params: { id: string }; search: Record<string, string | undefined> } | undefined;
+    const spy: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async (url) => {
+        seen = url as typeof seen;
+      },
+    };
+    const { inst } = await make(spy);
+    await inst.load({ filter: "x" });
+    expect(seen?.params).toEqual({ id: "42" });
+    expect(seen?.search).toEqual({ filter: "x" });
+  });
+
+  it("cold wake re-runs setup; the window rebuilds from the URL via load (§9)", async () => {
     const storage = memory();
-    let mounts = 0;
+    let setups = 0;
     const counting: LiveDefinition<TodoState, "/t/$id", Session> = {
       ...def,
-      mount: async () => {
-        mounts += 1;
+      setup: () => {
+        setups += 1;
         return initial();
       },
     };
     const first = await make(counting, { storage, key: "k1" });
-    await first.inst.setSearch({ filter: "done" });
+    await first.inst.load({ filter: "done" });
     const seqBefore = first.inst.seq;
     await first.inst.dispose();
 
-    // Cold wake: mount re-runs (page state fresh), then the client re-presents
-    // the URL — setSearch rebuilds the same window. No session-slice reliance.
+    // Cold wake: setup re-runs (page state fresh), then the client re-presents
+    // the URL — load rebuilds the same window.
     const second = await make(counting, { storage, key: "k1" });
-    expect(mounts).toBe(2);
+    expect(setups).toBe(2);
     expect(second.inst.seq).toBeGreaterThan(seqBefore);
-    await second.inst.setSearch({ filter: "done" });
+    await second.inst.load({ filter: "done" });
     expect(second.inst.state.todos).toEqual([{ id: "done-1", text: "done" }]);
+  });
+});
+
+describe("guard / authorize (§10)", () => {
+  it("authorize runs the guard; a deny throws redirect", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      guard: async ({ search }) => {
+        if (search.filter === "secret") throw redirect("/403");
+      },
+    };
+    const { inst } = await make(def);
+    await expect(inst.authorize({ filter: "ok" })).resolves.toBeUndefined();
+    await expect(inst.authorize({ filter: "secret" })).rejects.toMatchObject({ location: "/403" });
+  });
+
+  it("re-checks on every URL change (search too), catching a spoofed param", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      guard: async ({ search }) => {
+        if (search.userId && search.userId !== "me") throw redirect("/403");
+      },
+    };
+    const { inst } = await make(def);
+    await expect(inst.authorize({ userId: "me" })).resolves.toBeUndefined();
+    await expect(inst.authorize({ userId: "other" })).rejects.toMatchObject({ location: "/403" });
+  });
+
+  it("is a no-op when no guard is declared", async () => {
+    const { inst } = await make(baseDef);
+    await expect(inst.authorize({ anything: "x" })).resolves.toBeUndefined();
+  });
+
+  it("gets the typed url + signal; a newer call aborts the prior guard", async () => {
+    let seen: { params: { id: string }; search: SearchParams; signal: boolean } | undefined;
+    let firstAborted = false;
+    let release: () => void = () => {};
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      guard: async (url, ctx) => {
+        seen = {
+          params: url.params,
+          search: url.search,
+          signal: ctx.signal instanceof AbortSignal,
+        };
+        if (url.search.slow) {
+          ctx.signal.addEventListener("abort", () => {
+            firstAborted = true;
+          });
+          await new Promise<void>((r) => {
+            release = r;
+          });
+        }
+      },
+    };
+    const { inst } = await make(def);
+    const slow = inst.authorize({ slow: "1" });
+    await tick();
+    await inst.authorize({ q: "x" }); // newer call aborts the slow guard's signal
+    expect(firstAborted).toBe(true);
+    release();
+    await slow.catch(() => {});
+    expect(seen).toEqual({ params: { id: "42" }, search: { q: "x" }, signal: true });
+  });
+
+  it("swallows a superseded guard's throw (a signal-respecting AbortError never propagates)", async () => {
+    let release: () => void = () => {};
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      guard: async (url, ctx) => {
+        if (url.search.slow) {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+          // A guard that respects the signal throws once aborted.
+          if (ctx.signal.aborted) throw new DOMException("aborted", "AbortError");
+        }
+      },
+    };
+    const { inst } = await make(def);
+    const slow = inst.authorize({ slow: "1" });
+    await tick();
+    await inst.authorize({ q: "x" }); // newer call aborts the slow guard
+    release();
+    // The superseded run's AbortError must be swallowed, not propagated.
+    await expect(slow).resolves.toBeUndefined();
   });
 });
 
 describe("id linking escape hatch (§4)", () => {
   it("sends ctx.resolveId mappings in the ack idMap", async () => {
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-      mount: async () => initial(),
+      setup: () => initial(),
       rpc: {
         create: {
           async handler({ tempId }: { tempId: string }, ctx) {

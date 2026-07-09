@@ -18,15 +18,16 @@ Import from it directly for `Link`, `useNav`, and `RenderProps`.
 - **`LiveConnection`** — the transport: SSE + HTTP POST by default, one
   duplex WebSocket with `transport: ws()`, exponential-backoff reconnects,
   and at-least-once batch resend (the server dedupes by `rpcId`).
-- **`LiveApp`** — the client shell: renders the current route and
-  soft-swaps route + connection on navigation. The previous page stays
-  interactive until the next page's snapshot arrives. A `{ redirect }`
-  signal from a route's `mount` (e.g. `throw redirect("/login")`) is
-  turned into a soft navigation to the target.
+- **`LiveApp`** — the client shell: renders the current route and, on
+  navigation, either reuses the connection (a same-route path change — tier 2,
+  the SSE transport and shell survive) or swaps route + connection (a different
+  route — tier 3). The previous page stays interactive until the next page's
+  snapshot arrives. A `{ redirect }` signal from a route's `guard`/`setup` (e.g.
+  `throw redirect("/login")`) is turned into a soft navigation to the target.
 - **`Link` / `useNav`** — typed navigation. Route paths autocomplete from
   the generated route table (`Register` interface merge); path params are
-  identity (navigate = remount), search params are view state
-  (`nav.patch` → the `params` reducer, no remount).
+  identity (navigate = soft reload), search params are view state
+  (`nav.patch` reruns `guard`+`load`, state preserved).
 
 ## Usage
 

@@ -8,7 +8,8 @@ sidebar:
 rpxd is a **live-object framework for React**. Instead of a REST/RPC layer plus
 client state management plus a cache plus optimistic-update plumbing, you write
 one **live object** per page: a server-side, per-session stateful object with a
-`mount`, some reducers, and a `render`.
+`setup` (state), reducers, and a `render` — plus `load` when the page reads
+URL-dependent data and `guard` for access control.
 
 Everything else — streaming state to the browser, applying the minimal diff,
 replaying optimistic updates, reconnecting, multiplayer — is handled by the
@@ -20,8 +21,8 @@ A live object has three parts, expressed as one fluent chain:
 
 ```tsx
 export default live("/counter")
-  // 1. mount — runs on the server, returns the initial state
-  .mount(async (_params, ctx) => ({ count: 0 }))
+  // 1. setup — runs on the server (sync), returns the initial state
+  .setup(() => ({ count: 0 }))
   // 2. rpc — a reducer; runs on the server, mutates state through ctx.patchState
   .rpc("inc", (r) =>
     r.handler(async (_payload, ctx) => {
@@ -38,8 +39,9 @@ export default live("/counter")
   ));
 ```
 
-- **`mount`** runs server-side and returns the initial state. Its shape *locks*
-  the state type for everything downstream.
+- **`setup`** runs server-side, synchronously, and returns the initial state.
+  Its shape *locks* the state type for everything downstream. URL-dependent data
+  loads in **`load`**; access control lives in **`guard`**.
 - **`rpc`s** are reducers. They run on the server as plain async functions; all
   state writes go through `ctx.patchState(mutator)`. rpxd diffs the mutation
   with [Immer](https://immerjs.github.io/immer/) and streams the **minimal
@@ -50,7 +52,7 @@ export default live("/counter")
 
 ## What makes it different
 
-- **One fluent chain, zero annotations.** State locks at `.mount()`, payloads
+- **One fluent chain, zero annotations.** State locks at `.setup()`, payloads
   lock at each `.rpc()`, and `.render()` receives props typed from all of it —
   including a `rpc` facade where unknown names and wrong payloads are *compile*
   errors. No codegen, no generated client.
@@ -72,7 +74,7 @@ export default live("/counter")
 - [Your first live object](/rpxd-live/getting-started/first-live-object/) — build
   one end to end.
 - [The fluent chain](/rpxd-live/guides/the-fluent-chain/) — the full
-  `live().mount().rpc().render()` surface.
+  `live().setup().load().rpc().render()` surface.
 
 :::note
 The normative specification lives in

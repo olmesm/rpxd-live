@@ -1,13 +1,14 @@
 /**
- * Server-side navigation from `mount` (§10, the routes & auth guide). Throwing
- * `redirect("/login")` sends the visitor elsewhere *before* the page renders:
- * the server turns it into a `302` on a full page load and a client navigation
- * during SPA nav. This is the login-bounce primitive — enforcement (checking
- * `scope.user`) stays userland; the redirect mechanism is the framework's.
+ * Server-side navigation from `setup`/`guard`/`load` (§10, the routes & auth
+ * guide). Throwing `redirect("/login")` sends the visitor elsewhere *before* the
+ * page renders: the server turns it into a `302` on a full page load and a
+ * client navigation during SPA nav. This is the login-bounce primitive —
+ * enforcement (checking `scope.user`) stays userland; the redirect mechanism is
+ * the framework's. `guard` is auth's home (§7).
  */
 
 /**
- * The signal a rejected `mount` throws to redirect. Carries the target
+ * The signal a rejected hook throws to redirect. Carries the target
  * `location` and HTTP `status` (302 by default). Branded so `isRedirect`
  * works even across module realms. Prefer the {@link redirect} helper.
  *
@@ -19,24 +20,26 @@
 export class RedirectError extends Error {
   /** Discriminator for {@link isRedirect} (survives cross-realm instanceof gaps). */
   readonly $redirect = true as const;
-  constructor(
-    readonly location: string,
-    readonly status: number = 302,
-  ) {
+  readonly location: string;
+  readonly status: number;
+  // Plain field assignment (not a parameter property) so the source stays
+  // erasable — Node runs it under default, unflagged TypeScript stripping.
+  constructor(location: string, status = 302) {
     super(`redirect to ${location}`);
+    this.location = location;
+    this.status = status;
     this.name = "RedirectError";
   }
 }
 
 /**
- * Build a {@link RedirectError} to throw from `mount` (§10).
+ * Build a {@link RedirectError} to throw from `setup`/`guard`/`load` (§10).
  *
  * @example
  * ```ts
- * .mount(async (_params, ctx) => {
+ * .guard((_url, ctx) => {
  *   const scope = scopeFrom(ctx.session);
  *   if (!scope.user) throw redirect("/login");
- *   return { widgets: await listWidgets(scope) };
  * })
  * ```
  */
@@ -50,7 +53,7 @@ export function redirect(to: string, status = 302): RedirectError {
  *
  * @example
  * ```ts
- * try { await mount(); } catch (e) { if (isRedirect(e)) return location(e.location); }
+ * try { await load(); } catch (e) { if (isRedirect(e)) return location(e.location); }
  * ```
  */
 export function isRedirect(value: unknown): value is RedirectError {

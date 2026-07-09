@@ -22,6 +22,14 @@ export interface WebSocketLike {
 const WS_BACKOFF_BASE_MS = 1000;
 const WS_BACKOFF_CAP_MS = 30_000;
 
+/** A per-connection stream id — `crypto.randomUUID` where available, else a fallback. */
+function randomId(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  return c?.randomUUID
+    ? c.randomUUID()
+    : `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 /** SSR bootstrap payload embedded by the server (§12). */
 export interface Bootstrap {
   instance: string;
@@ -44,6 +52,11 @@ export interface ConnectionOptions {
    * envelope protocol, identical API shape.
    */
   transport?: "sse" | "ws";
+  /**
+   * Runtime redirect sink (§10): a `guard`/`load` deny during a URL change
+   * (`nav.patch`) or a tier-2 remount. The app soft-navigates to the target.
+   */
+  onRedirect?: (location: string) => void;
   /** Injectable transport primitives (tests, non-browser environments). */
   fetchImpl?: typeof fetch;
   eventSource?: (url: string) => EventSourceLike;
@@ -62,8 +75,16 @@ export interface ConnectionOptions {
  * ```
  */
 export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
-  readonly store: LiveStore<S, Session>;
   readonly #opts: ConnectionOptions;
+  /** The instance the store is currently bound to — swapped by a tier-2 remount (§7). */
+  #instance: string;
+  /** Client-owned stream id: names this connection's stream for late-mount/release (§7). */
+  readonly #streamId = randomId();
+  /** Monotonic remount tag — a superseded tier-2 remount must not rebind the store (§7). */
+  #remountRunId = 0;
+  #store: LiveStore<S, Session>;
+  /** Runtime-redirect sink (§10) — seeded from opts, settable for SSR connections. */
+  #onRedirect: ((location: string) => void) | undefined;
   #source: EventSourceLike | undefined;
   #socket: WebSocketLike | undefined;
   #socketOpen = false;
@@ -73,20 +94,37 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
 
   constructor(opts: ConnectionOptions) {
     this.#opts = opts;
-    this.store = new LiveStore<S, Session>({
-      instance: opts.instance,
-      meta: opts.meta,
-      send: (batch) => this.#send(batch),
-      requestResync: () => this.#control({ type: "resync", instance: opts.instance }),
-    });
+    this.#instance = opts.instance;
+    this.#onRedirect = opts.onRedirect;
+    this.#store = this.#makeStore(opts.instance);
     if (opts.bootstrap) {
       // Seed confirmed state from the SSR snapshot — no connect spinner (§12).
-      this.store.applyEnvelope({
+      this.#store.applyEnvelope({
         seq: opts.bootstrap.seq,
         instance: opts.instance,
         full: opts.bootstrap.snapshot as { state: unknown; session: unknown },
       });
     }
+  }
+
+  /** The store for the currently-bound instance. A tier-2 remount swaps it (§7). */
+  get store(): LiveStore<S, Session> {
+    return this.#store;
+  }
+
+  /** Install/replace the runtime-redirect sink (§10) — the app shell wires it to soft-nav. */
+  setRedirectSink(fn: (location: string) => void): void {
+    this.#onRedirect = fn;
+  }
+
+  /** Build a store bound to `instance`; its resync/rpc target that exact id. */
+  #makeStore(instance: string): LiveStore<S, Session> {
+    return new LiveStore<S, Session>({
+      instance,
+      meta: this.#opts.meta,
+      send: (batch) => this.#send(batch),
+      requestResync: () => this.#control({ type: "resync", instance }),
+    });
   }
 
   /** Open the transport. SSE reconnects via EventSource; WS retries with backoff. */
@@ -98,11 +136,17 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     if (this.#source) return;
     const base = this.#opts.base ?? "";
     const boot = this.#opts.bootstrap;
-    const attach = boot ? `?attach=${boot.attachToken}&seq=${boot.seq}` : "";
+    const query = new URLSearchParams();
+    if (boot) {
+      query.set("attach", boot.attachToken);
+      query.set("seq", String(boot.seq));
+    }
+    // Name this stream so a tier-2 remount can join/release instances on it (§7).
+    query.set("stream", this.#streamId);
     const factory =
       this.#opts.eventSource ??
       ((url: string) => new EventSource(url) as unknown as EventSourceLike);
-    const source = factory(`${base}/__rpxd/stream${attach}`);
+    const source = factory(`${base}/__rpxd/stream?${query}`);
     this.#source = source;
     this.store.setStatus("connecting");
 
@@ -117,7 +161,9 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       }
     });
     source.addEventListener("env", (event) => {
-      this.store.applyEnvelope(JSON.parse(event.data) as Envelope);
+      const env = JSON.parse(event.data) as Envelope;
+      if (this.#handleRedirectEnvelope(env)) return;
+      this.store.applyEnvelope(env);
       if (this.store.status !== "live") this.store.setStatus("live");
     });
     source.addEventListener("error", () => {
@@ -151,7 +197,9 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       if (reconnected) this.store.resendUnacked();
     });
     socket.addEventListener("message", (event) => {
-      this.store.applyEnvelope(JSON.parse(String(event.data)) as Envelope);
+      const env = JSON.parse(String(event.data)) as Envelope;
+      if (this.#handleRedirectEnvelope(env)) return;
+      this.store.applyEnvelope(env);
       if (this.store.status !== "live") this.store.setStatus("live");
     });
     const retry = () => {
@@ -174,13 +222,92 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     });
   }
 
-  /** Push a search-param change to the `params` reducer (§7) — no remount. */
-  patchParams(search: Record<string, string>): void {
-    if (this.#socketOpen && this.#socket) {
-      this.#socket.send(JSON.stringify({ type: "params", instance: this.#opts.instance, search }));
+  /**
+   * Tier-1 search change (§7): rerun `guard`+`load` for a new URL over the same
+   * instance — no `setup`, state preserved (keepPreviousData). A `guard` deny
+   * comes back as `{ redirect }` (SSE control response) or a `redirect` envelope
+   * (WS) and is routed to `onRedirect` for a soft-nav (§10).
+   */
+  patchSearch(search: Record<string, string>): void {
+    const instance = this.#instance;
+    if (this.#opts.transport === "ws" && this.#socketOpen && this.#socket) {
+      // A WS deny arrives as a `redirect` envelope on the socket (see message).
+      this.#socket.send(JSON.stringify({ type: "url", instance, search }));
       return;
     }
-    void this.#control({ type: "params", instance: this.#opts.instance, search });
+    void this.#control({ type: "url", instance, search }).then((res) => {
+      if (res instanceof Response && res.ok) void this.#consumeRedirect(res);
+    });
+  }
+
+  /**
+   * Tier-2 soft reload (§7): a same-route path change. Mount the new instance,
+   * join it to this live stream, swap the store to it, and release the old one —
+   * the transport and app shell survive; only page state resets. A `setup`/
+   * `guard` deny throws `redirect()` for the caller to soft-nav (§10).
+   *
+   * **Latest-wins**: two overlapping remounts share this one connection, so a
+   * run tag (claimed synchronously, before the mount await) gates the store
+   * swap — a remount whose `mountRequest` resolves after a newer one started
+   * neither rebinds the store nor fires its redirect; it just releases the
+   * instance it mounted so the loser doesn't leak.
+   */
+  async remount(path: string, search: Record<string, string>): Promise<void> {
+    const runId = ++this.#remountRunId;
+    const parsed = await this.#mountRequest(path, search);
+    const superseded = runId !== this.#remountRunId;
+    if ("redirect" in parsed) {
+      if (superseded) return; // a newer remount owns the outcome
+      throw redirect(parsed.redirect);
+    }
+    if (superseded) {
+      // A newer remount already (or will) bind the store; drop the instance we
+      // mounted so it evicts instead of lingering subscribed to the stream.
+      void this.#control({ type: "release", instance: parsed.instance, stream: this.#streamId });
+      return;
+    }
+    const previous = this.#instance;
+    this.#instance = parsed.instance;
+    this.#store = this.#makeStore(parsed.instance);
+    if (this.#opts.transport === "ws" && this.#socketOpen && this.#socket) {
+      // The socket *is* the stream: join the new instance to it (warm-reuse of
+      // the just-mounted instance) so its snapshot arrives on this socket.
+      this.#socket.send(JSON.stringify({ type: "mount", path, search }));
+    } else {
+      // SSE: the server joined the new instance to this stream by id at mount;
+      // resync *after* the swap so the fresh store receives its full snapshot.
+      void this.#control({ type: "resync", instance: parsed.instance });
+    }
+    void this.#control({ type: "release", instance: previous, stream: this.#streamId });
+  }
+
+  /** POST a `mount` naming this stream; returns the new instance id or a redirect. */
+  async #mountRequest(
+    path: string,
+    search: Record<string, string>,
+  ): Promise<{ instance: string } | { redirect: string }> {
+    const res = await this.#fetch()(`${this.#opts.base ?? ""}/__rpxd/control`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "mount", path, search, stream: this.#streamId }),
+      credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error(`remount failed: ${res.status}`);
+    return (await res.json()) as { instance: string } | { redirect: string };
+  }
+
+  /** Route a `{ redirect }` control response to `onRedirect` (§10). */
+  async #consumeRedirect(res: Response): Promise<void> {
+    if (!(res.headers.get("content-type") ?? "").includes("application/json")) return;
+    const body = (await res.json().catch(() => null)) as { redirect?: string } | null;
+    if (body?.redirect) this.#onRedirect?.(body.redirect);
+  }
+
+  /** A `redirect` envelope (WS runtime deny, §10) for the bound instance → soft-nav. */
+  #handleRedirectEnvelope(env: Envelope): boolean {
+    if (!env.redirect || env.instance !== this.#instance) return false;
+    this.#onRedirect?.(env.redirect);
+    return true;
   }
 
   /** Close the transport. Server-side warm TTL takes it from here (§11). */

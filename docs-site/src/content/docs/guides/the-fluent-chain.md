@@ -1,6 +1,6 @@
 ---
 title: The fluent chain
-description: The full live().mount().params().rpc().on().render() surface and how types flow through it with zero annotations.
+description: The full live().setup().guard().load().rpc().on().render() surface and how types flow through it with zero annotations.
 sidebar:
   order: 1
 ---
@@ -12,13 +12,14 @@ are compile errors.
 
 ```tsx
 export default live("/org/$orgId/board")
-  .mount(async ({ orgId }, ctx) => {
-    ctx.subscribe(`org:${orgId}`);
+  .setup((ctx) => {
+    ctx.subscribe(`org:${ctx.params.orgId}`);
     return { projects: [] as Project[], filter: "all", loading: true };
   })
-  .params(async ({ filter }, ctx) => {
+  .load(async ({ search }, ctx) => {
+    const filter = search.filter ?? "all";
     ctx.patchState((s) => {
-      s.filter = filter ?? "all";
+      s.filter = filter;
       s.loading = true;
     });
     const projects = await listProjects(ctx.params.orgId, { filter, signal: ctx.signal });
@@ -46,27 +47,39 @@ export default live("/org/$orgId/board")
 
 ## The steps
 
-### `.mount(async (params, ctx) => state)`
+### `.setup((ctx) => state)`
 
-Runs server-side on page load (and on cold wake). Returns the initial state; its
-shape **locks the state type** for `params`, every `rpc`, `on`, and `render`.
-Path params (`orgId`) are typed from the path literal. Call `ctx.subscribe` here
-to join pubsub topics. Mount may `throw redirect("/login")` to bounce (see
+Runs server-side on page load (and on cold wake), **synchronously**. Returns the
+initial state skeleton; its shape **locks the state type** for `guard`, `load`,
+every `rpc`, `on`, and `render`. Path params (`orgId`) are typed from the path
+literal, on `ctx.params`. Call `ctx.subscribe` here to join pubsub topics. Being
+sync makes "all data loads in `load`" a structural guarantee and keeps a
+same-route path step's skeleton instant — no IO here. `setup` may
+`throw redirect("/login")` as a coarse fail-fast, but auth's home is `guard` (see
 [Routes & auth](/rpxd-live/guides/routes-and-auth/)).
 
-### `.params(async (search, ctx) => void, opts?)`
+### `.guard(async ({ params, search }, ctx) => void)`
+
+Optional. **Auth.** Runs before `load` on **every URL change** (path *or*
+search), so a spoofed or hand-edited `?userId=…` is re-checked — not just on the
+first load. `throw redirect(...)` to deny; return to allow. `ctx` is
+`{ params, session, signal }` — no `patchState`, because a guard decides access,
+it doesn't write state.
+
+### `.load(async ({ params, search }, ctx) => void, opts?)`
 
 The **URL-keyed loader** — the single place URL-dependent data loads. Runs once
-after `mount` (first paint) and again on every `nav.patch`. Path params are
-identity (navigation = remount); search params are view state, so this streams
-new data in with **no remount**. Writes **page state** via `ctx.patchState`;
-`ctx.session` is read-only. Loading and errors are ordinary state the loader
-writes — there's no ack.
+after `setup` (first paint) and again on every `nav.patch`. A search change
+(`nav.patch`) streams new data in over the reused connection with **no `setup`**,
+state preserved; a same-route path change reruns `setup`+`load` (fresh state, the
+connection survives). Writes **page state** via `ctx.patchState`; `ctx.session`
+is read-only. Loading and errors are ordinary state the loader writes — there's
+no ack.
 
-The **first argument is the *search* params** (`?filter=…`) — untyped view state
-(`Record<string, string | undefined>`). **Path** params (`/org/$orgId` → `orgId`)
-are on **`ctx.params`**, typed from the route literal, the same as in `mount` and
-rpc handlers — see `ctx.params.orgId` in the example above.
+The **first argument is the whole URL** — `{ params, search }`. `search`
+(`?filter=…`) is untyped view state (`Record<string, string | undefined>`);
+`params` (`/org/$orgId` → `orgId`) are typed from the route literal, the same as
+in `setup` and rpc handlers — see `ctx.params.orgId` in the example above.
 
 It's **latest-wins**: a newer invocation aborts the prior run's `ctx.signal` and
 drops its late flushes, so rapid filter/page changes resolve to the last URL.

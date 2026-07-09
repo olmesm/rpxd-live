@@ -13,9 +13,13 @@ reference) is built with [Astro Starlight](https://starlight.astro.build/) from
 ```tsx
 // routes/org.$orgId.board.tsx — one live object per page, fully inferred
 export default live("/org/$orgId/board")
-  .mount(async ({ orgId }, ctx) => {
-    ctx.subscribe(`org:${orgId}`);
-    return { projects: await db.project.findMany({ where: { orgId } }) };
+  .setup((ctx) => {
+    ctx.subscribe(`org:${ctx.params.orgId}`);
+    return { projects: [] as Project[] }; // sync skeleton — data loads in `load`
+  })
+  .load(async (_url, ctx) => {
+    const projects = await db.project.findMany({ where: { orgId: ctx.params.orgId } });
+    ctx.patchState((s) => { s.projects = projects; });
   })
   .rpc("create", (r) =>
     r.input(z.object({ name: z.string() })).handler(async ({ name }, ctx) => {

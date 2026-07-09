@@ -1,11 +1,11 @@
 ---
 title: Pagination
-description: Cursor and offset pagination built on the params loader — page/cursor in the URL, prev/next via nav.patch, replace-window with keepPreviousData.
+description: Cursor and offset pagination built on the `load` loader — page/cursor in the URL, prev/next via nav.patch, replace-window with keepPreviousData.
 sidebar:
   order: 9
 ---
 
-Pagination is a [params loader](/rpxd-live/guides/loading-data/) that reads a
+Pagination is a [loader (`load`)](/rpxd-live/guides/loading-data/) that reads a
 page or cursor from the URL and **replaces** the window. The page lives in the
 URL, so it's shareable and back-button-correct; the previous page stays visible
 while the next loads.
@@ -18,11 +18,11 @@ domain layer for the next window plus the cursor that follows it:
 
 ```tsx
 export default live("/issues")
-  .mount(async () => ({ items: [] as Issue[], cursor: null as string | null, hasMore: false, loading: true }))
-  .params(async ({ cursor }, ctx) => {
+  .setup(() => ({ items: [] as Issue[], cursor: null as string | null, hasMore: false, loading: true }))
+  .load(async ({ search }, ctx) => {
     ctx.patchState((s) => { s.loading = true; });
     const { items, nextCursor } = await listIssues(scopeFrom(ctx.session), {
-      cursor: cursor ?? null, limit: 20, signal: ctx.signal,
+      cursor: search.cursor ?? null, limit: 20, signal: ctx.signal,
     });
     ctx.patchState((s) => {
       s.items = items;                       // replace the window
@@ -56,9 +56,9 @@ When you need numbered pages or a total count, read a `page` number instead. The
 const PAGE_SIZE = 20;
 
 export default live("/issues")
-  .mount(async () => ({ items: [] as Issue[], page: 1, pageCount: 1, loading: true }))
-  .params(async ({ page }, ctx) => {
-    const p = Math.max(1, Number(page ?? "1"));
+  .setup(() => ({ items: [] as Issue[], page: 1, pageCount: 1, loading: true }))
+  .load(async ({ search }, ctx) => {
+    const p = Math.max(1, Number(search.page ?? "1"));
     ctx.patchState((s) => { s.page = p; s.loading = true; });
     const { items, total } = await listIssues(scopeFrom(ctx.session), {
       limit: PAGE_SIZE, offset: (p - 1) * PAGE_SIZE, signal: ctx.signal,

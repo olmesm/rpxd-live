@@ -18,16 +18,18 @@ transport.
 
 ## How it works
 
-Wrap a component in `rsc(...)` inside `mount` or a reducer. It becomes a Flight
+Wrap a component in `rsc(...)` inside `load` or a reducer. It becomes a Flight
 string — an opaque field in your state:
 
 ```tsx
-mount: async ({ slug }) => {
-  const doc = await getDoc(slug);
-  return {
-    doc,
-    body: rsc(<Markdown source={doc.raw} />), // → Flight string in state
-  };
+load: async (_url, ctx) => {
+  const doc = await getDoc(ctx.params.slug);
+  // Serialize before the mutator — patchState is sync by design.
+  const body = await rsc(<Markdown source={doc.raw} />); // → Flight string
+  ctx.patchState((s) => {
+    s.doc = doc;
+    s.body = body;
+  });
 };
 ```
 

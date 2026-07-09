@@ -29,7 +29,7 @@ export interface PubSubBus {
 /**
  * Whole-state snapshot — never a patch log (§9). `session` rides along for
  * session continuity; `state` is only reused within the same page lifetime
- * (cold wake re-runs `mount`).
+ * (cold wake re-runs `setup`+`load`).
  */
 export interface Snapshot {
   state: unknown;

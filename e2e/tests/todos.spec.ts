@@ -55,7 +55,7 @@ test("optimistic toggle survives a reload via the warm instance (§11)", async (
   await expect(page.getByTestId("todos").locator("li").first().locator("input")).toBeChecked();
 });
 
-test("filtering via the params loader is URL-driven (§7): nav.patch reruns the query", async ({
+test("filtering via the load loader is URL-driven (§7): nav.patch reruns the query", async ({
   page,
 }) => {
   await page.goto("/");

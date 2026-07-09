@@ -29,9 +29,9 @@ describe("prod error hardening (§10)", () => {
 
   it("keeps the real message in dev mode", async () => {
     const { renderError } = makeShellRenderers({ ErrorPage }, { mode: "dev" });
-    const res = await renderError?.({ path: "/boom", error: new Error("mount exploded") });
+    const res = await renderError?.({ path: "/boom", error: new Error("setup exploded") });
     const html = await res?.text();
-    expect(html).toContain("mount exploded");
+    expect(html).toContain("setup exploded");
   });
 });
 

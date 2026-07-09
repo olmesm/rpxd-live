@@ -5,21 +5,25 @@ Server-side stateful objects with reducers; client is plain React receiving stat
 
 - One live object per page; everything below is ordinary React fed via props
 - Instances are **per-session**; multiplayer via pubsub (no shared instances, no `key`/`scope`)
+- **Lifecycle by cadence** (§7): `setup` (sync) runs on identity — a **path-param** change — and returns the state skeleton + wires subscriptions; `guard` (async, optional) and `load` (async) run on **every URL change** (path *or* search); `load` is the single place URL-dependent data loads. `guard` is auth (deny → `redirect`); `load` streams data via `ctx.patchState`
 - Handlers run server-side as plain async fns; state writes go through `ctx.patchState(mut)` — sync Immer mutators, exact patches; `ctx.state` is a live read-only view (always current, even after awaits)
-- Per-instance FIFO queue serializes **mutations** (patchState flushes, `on` handlers, `params`) — LWW by ordering. Handlers never hold it: awaits don't block the instance (concurrency by default)
+- Per-instance FIFO queue serializes **mutations** (patchState flushes, `on` handlers, `load`) — LWW by ordering. Handlers never hold it: awaits don't block the instance (concurrency by default)
 - Render props: `state`, `session`, `rpc`, `sync` (`pending`, `errors`), `nav`, `keyOf`
 
 ```tsx
-// routes/org.$orgId.board.tsx — fluent chain: state locks at .mount(),
+// routes/org.$orgId.board.tsx — fluent chain: state shape locks at .setup(),
 // everything downstream infers from it (zero annotations)
 export default live("/org/$orgId/board")
-  .mount(async ({ orgId }, ctx) => {
-    ctx.subscribe(`org:${orgId}`);
-    return { projects: await db.project.findMany({ where: { orgId } }) };
+  .setup((ctx) => {                                     // sync: subscriptions + skeleton (§1, §8)
+    ctx.subscribe(`org:${ctx.params.orgId}`);
+    return { projects: [] as Project[], filter: "all", loading: true };
   })
-  .params(async ({ filter }, ctx) => {                 // URL-keyed loader (§7)
-    ctx.patchState((s) => { s.filter = filter ?? "all"; s.loading = true; });
-    const projects = await db.project.findMany({ where: { orgId, ...where(filter) } });
+  .guard(async ({ params }, ctx) => {                   // auth, every URL change (§10)
+    if (!(await canView(ctx.session, params.orgId))) throw redirect("/403");
+  })
+  .load(async ({ params, search }, ctx) => {            // the loader (§7): every URL change
+    ctx.patchState((s) => { s.filter = search.filter ?? "all"; s.loading = true; });
+    const projects = await db.project.findMany({ where: { orgId: params.orgId, ...where(search.filter) } });
     ctx.patchState((s) => { s.projects = projects; s.loading = false; });
   })
   .rpc("create", (r) =>
@@ -47,7 +51,7 @@ Immer patches over a push stream with seq numbers; full snapshot as recovery.
 ## 3. Async Handlers & patchState (Streaming)
 Handlers are plain async fns; `ctx.patchState(mut)` is the only write; every flush is one atomic patch.
 
-- `handler(payload, ctx)` — awaits **never block the instance**; other rpcs, broadcasts, and `params` run freely while a handler waits (concurrency by default, no flag)
+- `handler(payload, ctx)` — awaits **never block the instance**; other rpcs, broadcasts, and `load` run freely while a handler waits (concurrency by default, no flag)
 - `ctx.state`: live read-only view — reads after `await` see current state; writes throw ("use ctx.patchState")
 - `ctx.patchState(mut)`: `mut` is a **sync** Immer mutator on a fresh draft → exact patches. Same-tick calls from one rpc coalesce into one flush; each flush = one atomic envelope. Drafts never escape the callback → the stale-draft bug class is structurally impossible (no lint rule needed)
 - **Streaming = a loop**: `for await (chunk) { ctx.patchState(...) }` — one envelope per chunk tick
@@ -123,18 +127,21 @@ File-based with codegen; wouter under the hood; URL is identity.
 
 - Flat filenames: `org.$orgId.board.tsx` → `/org/$orgId/board`; `index.tsx` → `/`
 - **In-file path literal** (`live("/org/$orgId/board")`) scaffolded and maintained by the watcher — filename is truth, literal is its typed mirror (rename → rewritten; hand-edit → corrected)
-- Path params inferred from the literal → typed in `mount`/`rpc` ctx
+- Path params inferred from the literal → typed in `setup`/`guard`/`load`/`rpc` ctx (`ctx.params`)
 - `.rpxd/routes.gen.ts` generated + committed; `Register` interface merge → typed `<Link to params>` and `nav.navigate`
-- **Path params = identity** → navigate = remount; **search params = view state** → `params` **loader** via `nav.patch`, no remount
-- **`params` is the URL-keyed loader** — an async fn (`(search, ctx) => …`), not a sync reducer: the single place URL-dependent data loads. Runs once after `mount` (initial paint) and again on every `nav.patch`. Writes **page state** through `ctx.patchState`; `ctx.session` is read-only. Loading/errors are ordinary state the loader writes — no ack. **Latest-wins**: a newer invocation aborts the prior's `ctx.signal` and drops its late flushes, so the last URL wins. Pass `ctx.signal` to `fetch` so a superseded load stops early. The URL is the query key → filtering/pagination are shareable, bookmarkable, back-button-correct, and reproducible on cold wake (mount re-runs, the loader rebuilds the window from the URL)
-- **`mount` no longer must fetch**: it sets up URL-invariant state + subscriptions; what depends on the URL lives in `params`. State split by cadence — invariant → `mount` (once), variant → `params` (per URL change)
+- **Three lifecycle hooks, keyed by cadence:**
+  - **`setup((ctx) => S)`** — **sync**. Runs on identity (a **path-param** change). Wires subscriptions (§8), returns the state skeleton (locks type `S`). No IO — being sync makes "all data loads in `load`" a structural guarantee, and keeps a path step's skeleton instant. May `throw redirect` for a coarse fail-fast, but auth's home is `guard`.
+  - **`guard(({ params, search }, ctx) => void)`** — async, optional. Runs before `load` on **every URL change** (path *or* search). Auth: `throw redirect` to deny. It runs on search changes too, so a spoofed/edited `?cursor=…` or `?userId=…` is re-checked (§10).
+  - **`load(({ params, search }, ctx) => void, opts?)`** — async. The single place URL-dependent data loads. Runs after `setup` and on **every URL change**. First arg is the whole URL (`params` = path, `search` = query); writes **page state** via `ctx.patchState`; `ctx.session` is read-only. Loading/errors are ordinary state — no ack. **Latest-wins**: a newer invocation aborts the prior's `ctx.signal` and drops its late flushes. Pass `ctx.signal` to `fetch`. `throw redirect` to deny. The URL is the query key → filtering/pagination are shareable, bookmarkable, back-button-correct, reproducible on cold wake.
+- **Navigation — three tiers, two verbs.** `nav.patch(search)` changes search only (tier 1): reruns `guard`+`load`, no `setup`, **state preserved** (keepPreviousData + optimistic survive). `nav.navigate(...)` changes the path: **same route pattern** (tier 2) reruns `setup`+`guard`+`load` over the **reused connection** (soft reload — new instance, fresh state/subscriptions, but the SSE + app shell survive; the page component is keyed by path id so its local state resets); **different route** (tier 3) swaps the component. The framework picks tier 2 vs 3 by matched pattern; userland only calls `patch`/`navigate`.
+- **Path vs search is a continuity knob**: search change (tier 1) preserves state (keepPreviousData); path change (tier 2/3) resets to skeleton and swaps subscriptions. Model a continuity stepper as `?id=`, a clean switch as `/…/$id`.
 - Search params untyped in v1 (`Record<string, string | undefined>`)
 - Wouter unexported; public surface = `Link`, `nav`
 
 ## 8. Pubsub (Multiplayer)
 Per-session instances coordinated by broadcast; persistence layer carries the bus.
 
-- `ctx.subscribe(topic)` in mount; `ctx.broadcast(topic, event, payload)` in rpcs; `.on(event, ...)` handlers are sync mutators
+- `ctx.subscribe(topic)` in `setup` (re-runs on a path change → subscription set always matches the current identity, no stale subs); `ctx.broadcast(topic, event, payload)` in rpcs; `.on(event, ...)` handlers are sync mutators
 - **Exclude-self by default**; `{ self: true }` opt-in enables single-code-path pattern (rpc broadcasts only, all mutation in `on`)
 - Kills instance affinity: any node hosts any session
 
@@ -143,15 +150,16 @@ Write-through snapshots behind a small interface; also hosts the pubsub bus.
 
 - `StorageAdapter`: `get/set` of `{ state, seq, version }` + pubsub; adapters: `memory()` (default), `session()`, `sqlite()` (via `bun:sqlite`; Node adapter uses `better-sqlite3`), `redis()`
 - Write-through on every patchState flush / rpc completion
-- **Snapshots = session continuity only**; cold wake always re-runs `mount` (avoids missed-broadcast staleness)
-- Version tag mismatch → discard, re-mount (no migrations)
+- **Snapshots = session continuity only**; cold wake always re-runs `setup`+`load` (avoids missed-broadcast staleness)
+- Version tag mismatch → discard, re-setup (no migrations)
 - Whole-state snapshots, never patch logs
 
 ## 10. Sessions, Auth & Errors
 Connection authenticated once; context flows to every reducer.
 
 - Authenticate at connect (cookie/token) via config hook → `ctx.session` everywhere
-- `mount` can reject → error route (403 path)
+- **Authorization is `guard`** (§7): runs before `load` on every URL change — path *and* search — so it re-checks on `nav.patch` too (a spoofed `?cursor=…`/`?userId=…` can't expose data). `throw redirect` denies → 302 (full load) / soft-nav (patch). `setup` may also `throw redirect` for a coarse identity fail-fast, but per-URL authz belongs in `guard`
+- `load` may `throw redirect` as well; a redirect thrown in `setup`/`guard`/`load` is control-flow (→ route), distinct from a data throw (→ `sync.errors`)
 - Handler throws: draft discarded, ack rejected, `onError` runs if declared (§5), `sync.errors` populated
 - **DB writes are userland's transaction responsibility** (documented)
 - Per-session rate limiting (token bucket), configurable per rpc — buckets are per rpc *per instance*; with per-session instances (§1) that is per session per route, a finer grain than a shared per-session pool
@@ -168,13 +176,13 @@ Connections are disposable; state is not. SSE default, WS opt-in.
 - Disconnect mid-handler → `ctx.signal` aborts (§3)
 
 ## 12. SSR
-Mount runs during SSR; connection adopts the warm instance.
+`setup`+`guard`+`load` run during SSR; connection adopts the warm instance.
 
-- HTTP → mount → `params` loader → HTML + embedded `{ snapshot, seq, attachToken }`
+- HTTP → `setup` → `guard` → `load` → HTML + embedded `{ snapshot, seq, attachToken }`
 - Connection presents token within pending-attach TTL (~10s) → adopts instance, resumes from seq
-- Token expired → silent re-mount + full snapshot; seq check covers gap broadcasts
-- Mount runs **once** per page load; no connect-spinner; crawlable
-- **Params-loader SSR sequencing** — the loader runs synchronously up to its first `await`, so its *projection* (filter/loading chrome) is staged the instant `mount`+loader hand back control. Default **stream**: flush that staged projection, serialize it, let the awaited data stream in over the push stream after hydration (fast TTFB; a crawler/no-JS client sees the chrome, not the rows). Opt into **`blockSsr`** to await the full load before serializing — first paint carries data (crawlable, no spinner) at the cost of TTFB. Deterministic either way: capture is keyed to *what is staged*, never a timer
+- Token expired → silent re-setup + full snapshot; seq check covers gap broadcasts
+- `setup` runs **once** per identity; no connect-spinner; crawlable
+- **SSR sequencing** — three synchronous contributions to first paint, in order: (1) `setup`'s skeleton (sync, instant — can't block); (2) `load`'s synchronous prefix (its projection — filter/loading chrome — staged and flushed the instant `load` hands back control); then (3) `load`'s awaited data. Default **stream**: serialize (1)+(2), let (3) stream over the push stream after hydration (fast TTFB; a crawler/no-JS client sees the chrome, not the rows). Opt into **`blockSsr`** to await the full load before serializing — first paint carries data (crawlable, no spinner) at the cost of TTFB. Deterministic either way: capture is keyed to *what is staged*, never a timer. A `redirect` thrown in `setup`/`guard`/`load` during SSR → 302
 
 ## 13. Out of Scope
 Deliberately not covered by this spec; the seams below keep each addable later without a rewrite.
@@ -186,7 +194,7 @@ Deliberately not covered by this spec; the seams below keep each addable later w
 - Presence recipe (userland, ~20 lines)
 - CRDT field type for collaborative text
 - Per-rpc `concurrent` flag
-- Node server adapter (seam exists day one, §14)
+- ~~Node server adapter~~ — **shipped**: `@rpxd/adapter-node` (`node:http` + `ws`, §14), Node ≥ 24
 
 ## 14. Zero-Config App Shell, Runtime & Tooling
 Userland = config file + `routes/`. Framework owns server, client entry, hydration, bundling.
@@ -205,14 +213,15 @@ export default defineConfig({
 routes/
   __root.tsx             → HTML shell + providers (static, no live state)
   __404.tsx              → unmatched URL
-  __error.tsx            → mount rejection / handler crash
+  __error.tsx            → setup/guard/load rejection / handler crash
   index.tsx              → /
   org.$orgId.board.tsx   → /org/$orgId/board
 rpxd.config.ts
 ```
 
 - **Runtime: Bun primary** — `Bun.serve` (HTTP + WS one port), `bun:sqlite`
-- **`ServerAdapter` seam from day one**: `serve` / `stream` (SSE) / `ws?` / `env` — web-standard `Request`/`Response`/`ReadableStream` internally, no Bun types past the boundary → Node adapter later is ~100 lines
+- **Node runtime (Node ≥ 24)**: `@rpxd/adapter-node` mirrors the Bun adapter over `node:http` + `ws`; `rpxd start` selects it automatically off-Bun. Node's unflagged TypeScript stripping runs the source directly (the runtime is kept erasable — no parameter properties/enums), and `@rpxd/storage-sqlite/node` swaps `bun:sqlite` for `better-sqlite3`
+- **`ServerAdapter` seam from day one**: `serve` / `stream` (SSE) / `ws?` / `env` — web-standard `Request`/`Response`/`ReadableStream` internally, no Bun types past the boundary → the Node adapter is ~130 lines of `node:http` bridging
 - **Vite = dev server + bundler, running on Bun**: `rpxd dev` = one Bun process, Vite in middleware mode (HMR, Fast Refresh, codegen watcher) + rpxd runtime, one port. `rpxd build` = `vite build` (client + SSR bundles); `rpxd start` = pure Bun, no Vite at runtime
 - rpxd Vite plugin owns: route codegen (§7), reducer HMR (§15), RSC wiring (§16)
 - DB is userland (`db.ts` import); framework never touches it
@@ -224,7 +233,7 @@ rpxd.config.ts
 ## 16. RSC Fields (experimental flag)
 Server-rendered component subtrees as opaque state values; Flight is the serialization, patches the transport.
 
-- `rsc(<Component />)` in mount/reducers → Flight string → opaque state field; heavy deps (markdown, shiki) never ship to client
+- `rsc(<Component />)` in `load`/reducers → Flight string → opaque state field; heavy deps (markdown, shiki) never ship to client
 - Client deserializes marked fields on patch apply/snapshot; `{state.body}` renders hydrated subtree
 - Patches replace the whole field (no Flight diffing); React reconciles
 - Works through storage, SSR, reconnect unchanged — it's just a string in state
@@ -233,10 +242,10 @@ Server-rendered component subtrees as opaque state values; Flight is the seriali
 - **Isolation**: `rsc: false` is the default; RSC fields are strictly opt-in, so nothing in the core runtime depends on the bundler integration
 
 ```tsx
-mount: async ({ slug }) => ({
-  doc: await db.doc.find(slug),
-  body: rsc(<Markdown source={doc.raw} />),
-}),
+load: async ({ params }, ctx) => {
+  const doc = await db.doc.find(params.slug);
+  ctx.patchState((s) => { s.body = rsc(<Markdown source={doc.raw} />); });
+},
 ```
 
 ## 17. Monorepo, Tooling & Documentation Standards
@@ -247,9 +256,9 @@ rpxd/
     core/            # runtime: queue, patches, protocol, live()
     client/          # useLive, optimistic replay, keyOf, Link/nav
     server-bun/      # Bun ServerAdapter (primary)
-    adapter-node/    # ServerAdapter seam placeholder (rpxd runs on Bun)
+    adapter-node/    # Node ServerAdapter (node:http + ws)
     storage-memory/
-    storage-sqlite/  # bun:sqlite
+    storage-sqlite/  # bun:sqlite (+ better-sqlite3 via ./node)
     storage-redis/
     storage-session/
     vite-plugin/     # codegen, HMR, RSC wiring

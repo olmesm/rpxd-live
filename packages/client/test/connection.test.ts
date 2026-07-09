@@ -61,7 +61,8 @@ describe("LiveConnection (§11, §12)", () => {
     expect(conn.store.snapshot().state).toEqual({ items: ["a"] }); // no connect spinner
     expect(conn.store.seq).toBe(4);
     conn.connect();
-    expect(source().url).toBe("/__rpxd/stream?attach=tok-1&seq=4");
+    // Carries the attach token+seq and this connection's stream id (§7).
+    expect(source().url).toMatch(/^\/__rpxd\/stream\?attach=tok-1&seq=4&stream=.+/);
   });
 
   it("applies env events and tracks status through open/error", () => {
@@ -102,11 +103,130 @@ describe("LiveConnection (§11, §12)", () => {
     );
   });
 
-  it("routes patchParams through the control endpoint (§7)", () => {
+  it("routes patchSearch (tier 1) through the control endpoint as a url change (§7)", () => {
     const { conn, requests } = makeConnection(bootstrap);
-    conn.patchParams({ filter: "done" });
+    conn.patchSearch({ filter: "done" });
     const control = requests.find((r) => r.url.endsWith("/__rpxd/control"));
-    expect(control?.body).toEqual({ type: "params", instance: "i1", search: { filter: "done" } });
+    expect(control?.body).toEqual({ type: "url", instance: "i1", search: { filter: "done" } });
+  });
+
+  it("a guard deny during patchSearch routes { redirect } to onRedirect (§10)", async () => {
+    const redirects: string[] = [];
+    const fetchImpl = (async () =>
+      Response.json({ redirect: "/login" })) as unknown as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      bootstrap,
+      fetchImpl,
+      onRedirect: (loc) => redirects.push(loc),
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.patchSearch({ admin: "1" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(redirects).toEqual(["/login"]);
+  });
+
+  it("tier-2 remount swaps the store, resyncs the new instance, releases the old (§7)", async () => {
+    const requests: { url: string; body: unknown }[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      requests.push({ url: String(url), body });
+      if (body?.type === "mount") return Response.json({ instance: "srv-i2", seq: 1 });
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "srv-i1",
+      fetchImpl,
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.connect();
+    const before = conn.store;
+
+    await conn.remount("/t/2", { q: "x" });
+    expect(conn.store).not.toBe(before); // rebound to a fresh store
+
+    const control = requests.filter((r) => r.url.endsWith("/__rpxd/control")).map((r) => r.body);
+    // mount names this stream, resync targets the new instance, release drops the old.
+    const mount = control.find((b) => (b as { type: string }).type === "mount") as {
+      path: string;
+      stream: string;
+    };
+    expect(mount.path).toBe("/t/2");
+    expect(typeof mount.stream).toBe("string");
+    expect(control).toContainEqual({ type: "resync", instance: "srv-i2" });
+    expect(control).toContainEqual({ type: "release", instance: "srv-i1", stream: mount.stream });
+
+    // The new store applies the new instance's snapshot off the shared stream.
+    const es = FakeEventSource.instances.at(-1) as FakeEventSource;
+    es.emit(
+      "env",
+      JSON.stringify({
+        seq: 1,
+        instance: "srv-i2",
+        full: { state: { items: ["z"] }, session: {} },
+      }),
+    );
+    expect(conn.store.snapshot().state).toEqual({ items: ["z"] });
+  });
+
+  it("latest-wins: a superseded remount (resolving late) does not rebind the store (§7)", async () => {
+    const control: { body: Record<string, unknown> | null }[] = [];
+    let resolveOld: (r: Response) => void = () => {};
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      control.push({ body });
+      // Older remount (→/t/2) resolves LATE; newer (→/t/3) resolves immediately.
+      if (body?.type === "mount" && body.path === "/t/2") {
+        return new Promise<Response>((res) => {
+          resolveOld = res;
+        });
+      }
+      if (body?.type === "mount") return Response.json({ instance: "i3", seq: 1 });
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      fetchImpl,
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.connect();
+
+    const older = conn.remount("/t/2", {}); // runId 1 — mount pending
+    const newer = conn.remount("/t/3", {}); // runId 2 — wins
+    await newer;
+    resolveOld(Response.json({ instance: "i2", seq: 1 })); // older resolves out of order
+    await older;
+
+    const bodies = control.map((c) => c.body);
+    // The winner (i3) rebound + resynced; the superseded run never resyncs i2.
+    expect(bodies).toContainEqual({ type: "resync", instance: "i3" });
+    expect(bodies).not.toContainEqual({ type: "resync", instance: "i2" });
+    // The superseded run releases the instance it mounted so it doesn't leak.
+    expect(bodies).toContainEqual(expect.objectContaining({ type: "release", instance: "i2" }));
+
+    // The store is bound to i3: an i2 snapshot is ignored, an i3 one applies.
+    const es = FakeEventSource.instances.at(-1) as FakeEventSource;
+    es.emit(
+      "env",
+      JSON.stringify({ seq: 1, instance: "i2", full: { state: { items: ["old"] }, session: {} } }),
+    );
+    es.emit(
+      "env",
+      JSON.stringify({ seq: 1, instance: "i3", full: { state: { items: ["new"] }, session: {} } }),
+    );
+    expect(conn.store.snapshot().state).toEqual({ items: ["new"] });
+  });
+
+  it("remount rethrows a setup/guard redirect for the router to soft-nav (§10)", async () => {
+    const fetchImpl = (async () =>
+      Response.json({ redirect: "/login" })) as unknown as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "srv-i1",
+      fetchImpl,
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.connect();
+    await expect(conn.remount("/t/2", {})).rejects.toMatchObject({ location: "/login" });
   });
 
   it("mounts cold (no SSR) via control mount then connects", async () => {
@@ -129,7 +249,9 @@ describe("LiveConnection (§11, §12)", () => {
       path: "/org/1/board",
       search: { filter: "all" },
     });
-    expect((FakeEventSource.instances.at(-1) as FakeEventSource).url).toBe("/__rpxd/stream");
+    expect((FakeEventSource.instances.at(-1) as FakeEventSource).url).toMatch(
+      /^\/__rpxd\/stream\?stream=.+/,
+    );
     conn.close();
     expect((FakeEventSource.instances.at(-1) as FakeEventSource).closed).toBe(true);
   });
@@ -161,20 +283,22 @@ class FakeWebSocket {
 
 describe("ws transport (§11 opt-in)", () => {
   function makeWsConnection() {
+    const redirects: string[] = [];
     const conn = new LiveConnection<{ items: string[] }>({
       instance: "i1",
       transport: "ws",
       base: "http://app.test",
       bootstrap,
+      onRedirect: (loc) => redirects.push(loc),
       webSocket: (url) => new FakeWebSocket(url) as unknown as never,
       fetchImpl: (async () => new Response(null, { status: 202 })) as unknown as typeof fetch,
     });
     conn.connect();
-    return { conn, socket: () => FakeWebSocket.instances.at(-1) as FakeWebSocket };
+    return { conn, redirects, socket: () => FakeWebSocket.instances.at(-1) as FakeWebSocket };
   }
 
   it("attaches over ws and routes batches + controls through the socket", async () => {
-    const { conn, socket } = makeWsConnection();
+    const { conn, redirects, socket } = makeWsConnection();
     const ws = socket();
     expect(ws.url).toBe("ws://app.test/__rpxd/ws?attach=tok-1&seq=4");
 
@@ -185,8 +309,8 @@ describe("ws transport (§11 opt-in)", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(ws.sent.some((m) => JSON.parse(m).rpcId)).toBe(true);
 
-    conn.patchParams({ filter: "done" });
-    expect(ws.sent.some((m) => JSON.parse(m).type === "params")).toBe(true);
+    conn.patchSearch({ filter: "done" });
+    expect(ws.sent.some((m) => JSON.parse(m).type === "url")).toBe(true);
 
     const env: Envelope = {
       seq: 5,
@@ -195,6 +319,10 @@ describe("ws transport (§11 opt-in)", () => {
     };
     ws.emit("message", JSON.stringify(env));
     expect(conn.store.confirmed.items).toEqual(["a", "b"]);
+
+    // A WS runtime deny arrives as a redirect envelope → onRedirect (§10).
+    ws.emit("message", JSON.stringify({ seq: 6, instance: "i1", redirect: "/403" }));
+    expect(redirects).toEqual(["/403"]);
   });
 
   it("reconnects with backoff and resends unacked batches", async () => {

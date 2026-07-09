@@ -53,6 +53,8 @@ export interface Envelope {
   idMap?: Record<string, string>;
   /** Present when the acked rpc batch failed. */
   error?: EnvelopeError;
+  /** Runtime redirect target (§10): a `guard`/`load` deny during a URL change — client soft-navs. */
+  redirect?: string;
 }
 
 /** Error surface of a failed rpc batch — feeds `sync.errors` on the client. */

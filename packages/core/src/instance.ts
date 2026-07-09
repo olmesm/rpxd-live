@@ -22,6 +22,7 @@ import {
 import type { Envelope, Patch, RpcBatch, RpcCall } from "./protocol.ts";
 import { SerialQueue } from "./queue.ts";
 import { type RateLimit, RateLimitError, TokenBucket } from "./rate-limit.ts";
+import { isRedirect } from "./redirect.ts";
 import { validateInput } from "./standard-schema.ts";
 import type { StorageAdapter } from "./storage.ts";
 
@@ -34,8 +35,8 @@ setAutoFreeze(false);
 /** Path prefix that routes a patch to the session slice instead of page state (§2). */
 export const SESSION_PREFIX = "$session";
 
-/** Reserved abort-group name for the params loader (§7) — drives latest-wins. */
-const PARAMS_KEY = "$params";
+/** Reserved abort-group name for the URL loader (§7) — drives latest-wins. */
+const LOAD_KEY = "$load";
 
 /** Options for {@link LiveInstance.create}. */
 export interface CreateInstanceOptions<S, Path extends string, Session> {
@@ -91,8 +92,8 @@ function readOnlyView<T extends object>(target: T, cache: WeakMap<object, unknow
 }
 
 /**
- * A mounted live object. Create via {@link LiveInstance.create} — mount runs
- * exactly once per page load (§12); cold wake always re-mounts (§9).
+ * A live object instance. Create via {@link LiveInstance.create} — `setup` runs
+ * once per identity (§12); cold wake always re-runs `setup`+`load` (§9).
  *
  * @example
  * ```ts
@@ -130,8 +131,10 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    */
   #pendingMuts: Mutator<S>[] = [];
   #flushScheduled = false;
-  /** Monotonic params-run tag; a run's flushes are dropped once superseded (§7). */
-  #paramsRunId = 0;
+  /** Monotonic load-run tag; a run's flushes are dropped once superseded (§7). */
+  #loadRunId = 0;
+  /** Abort controller for the in-flight `authorize` guard — newer call cancels it (§10). */
+  #authController: AbortController | undefined;
   /** rpcId → ack envelope, for at-least-once dedupe (§11). */
   readonly #acks = new Map<string, Envelope>();
   #disposed = false;
@@ -148,10 +151,10 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
-   * Mount a new instance. Restores the session slice and seq base from a
+   * Create an instance. Restores the session slice and seq base from a
    * version-matching snapshot (session continuity), then always re-runs
-   * `mount` for page state (§9). Rejection propagates — the transport maps it
-   * to the error route (§10).
+   * `setup` for page state (§9). Rejection propagates — the transport maps a
+   * thrown `redirect` to a 302 and any other throw to the error route (§10).
    */
   static async create<S, Path extends string, Session>(
     opts: CreateInstanceOptions<S, Path, Session>,
@@ -162,7 +165,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       inst.#session = (snap.session as Session) ?? opts.session;
       inst.#seq = snap.seq;
     }
-    inst.#state = await opts.def.mount(opts.params, {
+    inst.#state = opts.def.setup({
+      params: opts.params,
       session: inst.#session,
       subscribe: (topic) => inst.#subscribeTopic(topic),
     });
@@ -214,8 +218,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
 
   /**
    * Apply whatever mutators are currently staged, now, without waiting for the
-   * scheduled coalescing tick (§3). Deterministic because a params loader runs
-   * synchronously up to its first `await` (§7) — so once `setSearch` has handed
+   * scheduled coalescing tick (§3). Deterministic because the loader runs
+   * synchronously up to its first `await` (§7) — so once `load` has handed
    * control back, its projection is already staged. Streaming SSR (§12) drains
    * it to serialize the projection chrome, then lets the awaited data stream.
    */
@@ -271,24 +275,56 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
-   * Run the params loader for a set of search params (§7) — no remount. Fires
-   * once after `mount` (initial load) and again on every `nav.patch`. Writes
-   * page state through `ctx.patchState`; loading/errors are userland state, so
-   * there is no ack. **Latest-wins**: a newer call aborts the prior run's
-   * `ctx.signal` and drops its late flushes, so the last URL always wins.
+   * Run the auth guard for a set of search params (§10). **Awaitable** and kept
+   * separate from `load` so the server can 302 *before* streaming/serving a
+   * guarded page. A deny (`throw redirect`) — or any throw — propagates to the
+   * caller. No-op when no `guard` is declared. A newer call aborts the prior
+   * guard's `signal` (latest-wins for slow async auth lookups); a throw from a
+   * run that a newer call already superseded is swallowed, so a signal-respecting
+   * guard's `AbortError` never reaches the transport as a spurious 500.
+   */
+  async authorize(search: Record<string, string | undefined>): Promise<void> {
+    const guard = this.#def.guard;
+    if (!guard || this.#disposed) return;
+    this.#authController?.abort();
+    const controller = new AbortController();
+    this.#authController = controller;
+    try {
+      await guard(
+        { params: this.#params, search },
+        { params: this.#params, session: this.#session, signal: controller.signal },
+      );
+    } catch (e) {
+      // A newer URL claimed the guard (this controller was aborted): its result
+      // is stale, so drop any throw — including a signal-respecting guard's
+      // `AbortError`. The live run propagates its redirect/auth error normally.
+      if (controller.signal.aborted) return;
+      throw e;
+    }
+  }
+
+  /**
+   * Run the URL loader for a set of search params (§7) — the loader only;
+   * `authorize` runs `guard` separately (the server awaits it first so a deny
+   * 302s before streaming). Fires after `setup`+`authorize` and on every URL
+   * change. The loader gets `{ params, search }`, writes page state through
+   * `ctx.patchState`; loading/errors are userland state, no ack. **Latest-wins**:
+   * a newer call aborts the prior run's `ctx.signal` and drops its late flushes.
+   * A `redirect` thrown by the loader (§10) is re-thrown — only for the current
+   * run — for an awaiting caller to map to a 302 / soft-nav.
    *
    * The caller decides whether to await: the server streams (fire-and-forget)
    * by default and `await`s only when a route opts into blocking SSR (§12);
    * tests await for determinism.
    */
-  async setSearch(search: Record<string, string | undefined>): Promise<void> {
-    const loader = this.#def.params;
+  async load(search: Record<string, string | undefined>): Promise<void> {
+    const loader = this.#def.load;
     if (!loader || this.#disposed) return;
 
     // Latest-wins: cancel any in-flight run, then claim this run's tag.
-    this.#abortRpc(PARAMS_KEY);
-    const runId = ++this.#paramsRunId;
-    const controller = this.#trackAbort(PARAMS_KEY);
+    this.#abortRpc(LOAD_KEY);
+    const runId = ++this.#loadRunId;
+    const controller = this.#trackAbort(LOAD_KEY);
 
     const idMap: Record<string, string> = {};
     const bucket: FlushBucket<S> = { muts: [], atomic: false };
@@ -297,20 +333,22 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     // signal — the run tag is the authority, the signal is the courtesy.
     const queue = ctx.patchState;
     (ctx as { patchState: (mut: Mutator<S>) => void }).patchState = (mut) => {
-      if (runId === this.#paramsRunId) queue(mut);
+      if (runId === this.#loadRunId) queue(mut);
     };
 
     try {
-      await loader(search, ctx);
-      if (runId === this.#paramsRunId) await this.#flushChunk();
+      await loader({ params: this.#params, search }, ctx);
+      if (runId === this.#loadRunId) await this.#flushChunk();
     } catch (e) {
-      if (runId === this.#paramsRunId && !controller.signal.aborted) {
-        // Loaders own their error surface (patchState an error field); a throw
-        // has no ack channel, so it is reported server-side only (§10).
-        console.error("[rpxd] params loader failed:", e);
-      }
+      // Only the current run reacts — a superseded run (newer URL claimed the
+      // tag) neither redirects nor logs. A redirect is control-flow (§10):
+      // re-throw so the caller maps it to a 302 (SSR) / soft-nav (runtime). A
+      // data throw is reported server-side.
+      if (runId !== this.#loadRunId) return;
+      if (isRedirect(e)) throw e;
+      if (!controller.signal.aborted) console.error("[rpxd] load failed:", e);
     } finally {
-      this.#untrackAbort(PARAMS_KEY, controller);
+      this.#untrackAbort(LOAD_KEY, controller);
     }
   }
 

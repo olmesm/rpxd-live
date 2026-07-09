@@ -205,7 +205,7 @@ const welcomeRoute = (): string => `import { live } from "@rpxd/core";
  * \`rpxd scaffold\`-generated resources as your app grows.
  */
 export default live("/")
-  .mount(async () => ({ count: 0 }))
+  .setup(() => ({ count: 0 }))
   .rpc("increment", (r) =>
     r
       .optimistic((state) => {

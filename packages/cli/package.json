@@ -9,6 +9,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@rpxd/adapter-node": "workspace:*",
     "@rpxd/core": "workspace:*",
     "@rpxd/rsc": "workspace:*",
     "@rpxd/server-bun": "workspace:*",

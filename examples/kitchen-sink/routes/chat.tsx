@@ -13,7 +13,7 @@ let messageCounter = 0;
  * `{ self: true }`); ALL mutation happens in the `on` handler.
  */
 export default live("/chat")
-  .mount(async (_params, ctx) => {
+  .setup((ctx) => {
     ctx.subscribe("chat:lobby");
     return { messages: [] as Message[] };
   })

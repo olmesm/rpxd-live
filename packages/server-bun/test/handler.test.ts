@@ -10,10 +10,10 @@ interface BoardState {
 }
 
 const boardDef: LiveDefinition<BoardState, "/org/$orgId/board", Record<string, unknown>> = {
-  mount: async ({ orgId }) => ({ items: ["first"], orgId }),
-  params: async ({ filter }, ctx) => {
+  setup: (ctx) => ({ items: ["first"], orgId: ctx.params.orgId }),
+  load: async ({ search }, ctx) => {
     ctx.patchState((s) => {
-      s.filter = filter ?? "all";
+      s.filter = search.filter ?? "all";
     });
   },
   rpc: {
@@ -107,7 +107,7 @@ describe("SSR mount (§12)", () => {
     const json = /<script id="__rpxd" type="application\/json">(.*?)<\/script>/s.exec(html)?.[1];
     const boot = JSON.parse(json as string);
     // Stream-default SSR (§12): first paint carries the loader's synchronous
-    // projection chrome (`filter`) — mount state + one flush, no data wait.
+    // projection chrome (`filter`) — setup state + one flush, no data wait.
     expect(boot.snapshot.state).toEqual({ items: ["first"], orgId: "7", filter: "all" });
     expect(boot.seq).toBe(2);
     expect(boot.attachToken).toBeTruthy();
@@ -128,8 +128,8 @@ describe("SSR mount (§12)", () => {
       loading: boolean;
     }
     const feedDef: LiveDefinition<FeedState, "/feed", Record<string, unknown>> = {
-      mount: async () => ({ rows: [] as string[], loading: false }),
-      params: async (_search, ctx) => {
+      setup: () => ({ rows: [] as string[], loading: false }),
+      load: async (_url, ctx) => {
         ctx.patchState((s) => {
           s.loading = true; // synchronous projection — lands in first paint
         });
@@ -155,8 +155,8 @@ describe("SSR mount (§12)", () => {
       loading: boolean;
     }
     const feedDef: LiveDefinition<FeedState, "/feed", Record<string, unknown>> = {
-      mount: async () => ({ rows: [] as string[], loading: false }),
-      params: async (_search, ctx) => {
+      setup: () => ({ rows: [] as string[], loading: false }),
+      load: async (_url, ctx) => {
         ctx.patchState((s) => {
           s.loading = true;
         });
@@ -166,7 +166,7 @@ describe("SSR mount (§12)", () => {
           s.loading = false;
         });
       },
-      paramsOptions: { blockSsr: true },
+      loadOptions: { blockSsr: true },
     };
     const handler = createRpxdHandler({ routes: [{ path: "/feed", def: feedDef }] });
     const res = await handler.fetch(new Request(`${base}/feed`, { headers: COOKIE }));
@@ -257,7 +257,7 @@ describe("stream + rpc + control (§11)", () => {
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
         headers: COOKIE,
-        body: JSON.stringify({ type: "params", instance, search: { filter: "done" } }),
+        body: JSON.stringify({ type: "url", instance, search: { filter: "done" } }),
       }),
     );
     const env = await sse.next();
@@ -379,6 +379,69 @@ describe("eviction (§11)", () => {
     abort.abort();
     await new Promise((r) => setTimeout(r, 60));
     expect(handler.instanceCount).toBe(0);
+    await handler.dispose();
+  });
+});
+
+describe("tier-2 soft reload — late mount over the live stream (§7)", () => {
+  const stream = (id: string) =>
+    new Request(`${base}/__rpxd/stream?stream=${id}`, { headers: COOKIE });
+  const control = (body: unknown, signal?: AbortSignal) =>
+    new Request(`${base}/__rpxd/control`, {
+      method: "POST",
+      headers: COOKIE,
+      body: JSON.stringify(body),
+      signal,
+    });
+
+  it("subscribes a newly-mounted instance to the open stream via its stream id", async () => {
+    const handler = makeHandler();
+    // Stream opens first (session empty), then a same-route path mount joins it.
+    const sse = new SseReader(await handler.fetch(stream("s1")));
+    const mountRes = await handler.fetch(
+      control({ type: "mount", path: "/org/7/board", stream: "s1" }),
+    );
+    const { instance } = await mountRes.json();
+    // The new instance's snapshot arrives on the already-open stream — no reconnect.
+    const full = await sse.next();
+    expect(full?.instance).toBe(instance);
+    expect(full?.full).toBeDefined();
+    expect((full?.full?.state as BoardState).orgId).toBe("7");
+    await handler.dispose();
+  });
+
+  it("release unsubscribes the abandoned instance so it evicts; the live one stays", async () => {
+    const handler = makeHandler({ warmTtlMs: 15, attachTtlMs: 5 });
+    const abort = new AbortController();
+    const sse = new SseReader(await handler.fetch(stream("s1")));
+
+    const m1 = await handler.fetch(control({ type: "mount", path: "/org/1/board", stream: "s1" }));
+    const { instance: first } = await m1.json();
+    await sse.next(); // first full
+    await handler.fetch(control({ type: "mount", path: "/org/2/board", stream: "s1" }));
+    await sse.next(); // second full
+    expect(handler.instanceCount).toBe(2);
+
+    // Abandon the first (tier-2 forward nav): release it from this stream.
+    const rel = await handler.fetch(control({ type: "release", instance: first, stream: "s1" }));
+    expect(rel.status).toBe(204);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(handler.instanceCount).toBe(1); // released one evicted, the live one held
+
+    abort.abort();
+    await handler.dispose();
+  });
+
+  it("late-mount subscription is idempotent (a warm re-join does not double-send)", async () => {
+    const handler = makeHandler();
+    const sse = new SseReader(await handler.fetch(stream("s1")));
+    await handler.fetch(control({ type: "mount", path: "/org/4/board", stream: "s1" }));
+    await sse.next(); // full from the first join
+    // A second mount of the same path (warm reuse) must not re-subscribe.
+    await handler.fetch(control({ type: "mount", path: "/org/4/board", stream: "s1" }));
+    // No second full for the same instance on this stream.
+    expect(await sse.next(120)).toBeNull();
+    expect(handler.instanceCount).toBe(1);
     await handler.dispose();
   });
 });

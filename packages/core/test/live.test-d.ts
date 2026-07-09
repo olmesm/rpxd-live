@@ -1,7 +1,7 @@
 /**
  * Type tests for the fluent live() API (spec §1, §3, §5, §7).
  *
- * Contract: ZERO annotations anywhere. State locks at `.mount()`, payloads
+ * Contract: ZERO annotations anywhere. State locks at `.setup()`, payloads
  * lock at `.input()` (or the reducer's own annotation), the rpc name/payload
  * record accumulates across `.rpc()` calls, and `.render()` hands the
  * component fully typed props — including an exact-keyed, payload-typed
@@ -27,10 +27,10 @@ describe("PathParams (§7)", () => {
 });
 
 describe("fluent live() — full inference, no annotations (§1, §5)", () => {
-  it("locks state at mount and threads it through every step", () => {
+  it("locks state at setup and threads it through every step", () => {
     const route = live("/org/$orgId/board")
-      .mount(async ({ orgId }, ctx) => {
-        expectTypeOf(orgId).toEqualTypeOf<string>();
+      .setup((ctx) => {
+        expectTypeOf(ctx.params.orgId).toEqualTypeOf<string>();
         expectTypeOf(ctx.subscribe).parameter(0).toEqualTypeOf<string>();
         return { projects: [] as Project[], importing: false };
       })
@@ -74,9 +74,18 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
         expectTypeOf(state).toEqualTypeOf<Draft<{ projects: Project[]; importing: boolean }>>();
         expectTypeOf(ctx.broadcast).parameter(0).toEqualTypeOf<string>();
       })
-      .params(async (search, ctx) => {
-        // URL-keyed loader (§7): search is untyped view state; ctx is the
-        // handler ctx — page-state writes, signal, live read-only state.
+      .guard(async ({ params, search }, ctx) => {
+        // guard (§10): typed url, session, signal — but NO patchState (it's a gate).
+        expectTypeOf(params).toEqualTypeOf<{ orgId: string }>();
+        expectTypeOf(search).toEqualTypeOf<Record<string, string | undefined>>();
+        expectTypeOf(ctx.signal).toEqualTypeOf<AbortSignal>();
+        // @ts-expect-error — guard is a gate, not a loader: no patchState
+        void ctx.patchState;
+      })
+      .load(async ({ params, search }, ctx) => {
+        // URL loader (§7): first arg is the whole url — typed path params +
+        // untyped search; ctx is the handler ctx (page-state writes, signal).
+        expectTypeOf(params).toEqualTypeOf<{ orgId: string }>();
         expectTypeOf(search).toEqualTypeOf<Record<string, string | undefined>>();
         expectTypeOf(ctx.signal).toEqualTypeOf<AbortSignal>();
         ctx.patchState((s) => {
@@ -110,7 +119,7 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
 
   it("rejects unknown rpc names and wrong payloads in the component", () => {
     live("/")
-      .mount(async () => ({ n: 0 }))
+      .setup(() => ({ n: 0 }))
       .rpc("bump", (r) =>
         r.input(z.object({ by: z.number() })).handler(async (p, ctx) => {
           ctx.patchState((s) => {
@@ -130,7 +139,7 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
 
   it("types handler-only rpcs from the reducer's payload annotation", () => {
     live("/")
-      .mount(async () => ({ log: [] as string[] }))
+      .setup(() => ({ log: [] as string[] }))
       .rpc("say", (r) =>
         r.handler(async (payload: { text: string }, ctx) => {
           ctx.patchState((s) => {
@@ -146,7 +155,7 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
 
   it("infers payloads for optimistic-first chains (no input schema)", () => {
     live("/")
-      .mount(async () => ({ items: [] as string[] }))
+      .setup(() => ({ items: [] as string[] }))
       .rpc("add", (r) =>
         r
           .optimistic((state, payload: { text: string }) => {
@@ -161,18 +170,18 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
       );
   });
 
-  it("rejects mount params not present in the path literal", () => {
-    // @ts-expect-error — $teamId is not a param of this path
-    live("/org/$orgId").mount(async ({ teamId }: { teamId: string }) => ({ teamId }));
+  it("rejects path params not present in the path literal", () => {
+    // @ts-expect-error — $teamId is not a param of this path (only orgId is)
+    live("/org/$orgId").setup((ctx) => ({ teamId: ctx.params.teamId }));
   });
 
   it("rejects reducers that mutate state with the wrong shape", () => {
     live("/")
-      .mount(async () => ({ projects: [] as Project[] }))
+      .setup(() => ({ projects: [] as Project[] }))
       .rpc("bad", (r) =>
         r.handler(async (_p, ctx) => {
           ctx.patchState((s) => {
-            // @ts-expect-error — no such field on the mount state
+            // @ts-expect-error — no such field on the setup state
             s.nope = true;
           });
           // @ts-expect-error — ctx.state is read-only
@@ -183,7 +192,7 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
 
   it("produces the standard LiveRoute def consumed by the runtime", () => {
     const route = live("/")
-      .mount(async () => ({ n: 0 }))
+      .setup(() => ({ n: 0 }))
       .version("v2")
       .rpc("bump", (r) => r.atomic().handler(async (_p, ctx) => ctx.patchState((s) => void s.n++)))
       .render(() => null);

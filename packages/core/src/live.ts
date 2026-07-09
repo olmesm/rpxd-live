@@ -31,12 +31,25 @@ export interface BroadcastOptions {
   self?: boolean;
 }
 
-/** Context available to `mount` (§1, §10). */
-export interface MountCtx<Session> {
+/** Context available to `setup` (§1, §8): path params, session, subscribe. */
+export interface SetupCtx<Params, Session> {
+  /** Typed path params from the route literal (§7). */
+  params: Params;
   /** Authenticated session data (config `session.authenticate`). */
   session: Session;
   /** Subscribe this instance to a pubsub topic; `on:` handlers receive its events. */
   subscribe(topic: string): void;
+}
+
+/**
+ * The whole URL handed to `load` (§7): typed path params plus untyped search.
+ * `params` is the route literal's path params; `search` is the query string.
+ */
+export interface Url<Params> {
+  /** Typed path params from the route literal (`/org/$orgId` → `{ orgId }`). */
+  params: Params;
+  /** Untyped search/query params — view state in v1 (`?filter=…`). */
+  search: SearchParams;
 }
 
 /** Context available to every rpc handler and `on:` handler. */
@@ -97,7 +110,7 @@ export interface HandlerCtx<S, Params, Session> extends RpcCtx<Params, Session> 
 
 /**
  * An rpc handler (§3): a plain async fn. Awaits never block the instance —
- * other rpcs, broadcasts, and `params` run freely while it waits.
+ * other rpcs, broadcasts, and `load` run freely while it waits.
  */
 export type Handler<S, Payload, Params, Session> = (
   payload: Payload,
@@ -105,11 +118,13 @@ export type Handler<S, Payload, Params, Session> = (
 ) => void | Promise<void>;
 
 /**
- * The params loader (§7) — the single place URL-dependent data is loaded.
- * A plain async fn keyed to the URL's search params: runs once after `mount`
- * and again on every `nav.patch`. Writes go through `ctx.patchState` (page
+ * The URL-keyed loader (§7) — the single place URL-dependent data is loaded.
+ * A plain async fn keyed to the whole URL: runs once after `setup` and again on
+ * every URL change (path or search). The first argument is `{ params, search }`
+ * (typed path params + untyped query); writes go through `ctx.patchState` (page
  * state); `ctx.session` is a live read-only view. Loading and errors are
- * ordinary state the loader writes — there is no ack.
+ * ordinary state the loader writes — there is no ack. `throw redirect(...)` to
+ * deny (§10).
  *
  * **Latest-wins**: a newer invocation aborts the prior one's `ctx.signal` and
  * discards its late flushes, so rapid filter/page changes resolve to the last
@@ -118,13 +133,13 @@ export type Handler<S, Payload, Params, Session> = (
  *
  * @example
  * ```ts
- * .params(async ({ filter, cursor }, ctx) => {
- *   ctx.patchState((s) => { s.filter = filter ?? "all"; s.loading = true; });
+ * .load(async ({ params, search }, ctx) => {
+ *   ctx.patchState((s) => { s.filter = search.filter ?? "all"; s.loading = true; });
  *   const page = await listTodos(scopeFrom(ctx.session), {
- *     filter, cursor: cursor ?? null, limit: 20, signal: ctx.signal,
+ *     filter: search.filter, cursor: search.cursor ?? null, limit: 20, signal: ctx.signal,
  *   });
  *   ctx.patchState((s) => {
- *     s.todos = cursor ? [...s.todos, ...page.items] : page.items;
+ *     s.todos = search.cursor ? [...s.todos, ...page.items] : page.items;
  *     s.cursor = page.nextCursor;
  *     s.hasMore = page.nextCursor != null;
  *     s.loading = false;
@@ -132,19 +147,49 @@ export type Handler<S, Payload, Params, Session> = (
  * })
  * ```
  */
-export type ParamsLoader<S, Params, Session> = (
-  search: SearchParams,
+export type Loader<S, Params, Session> = (
+  url: Url<Params>,
   ctx: HandlerCtx<S, Params, Session>,
 ) => void | Promise<void>;
 
-/** Options for the params loader (§7). */
-export interface ParamsOptions {
+/** Context available to `guard` (§10): auth reads + cancellation. No state writes. */
+export interface GuardCtx<Params, Session> {
+  /** Typed path params from the route literal (§7). */
+  params: Params;
+  /** Authenticated session data — read it to authorize (§10). */
+  session: Session;
+  /** Aborted when a newer URL supersedes this run — pass to async auth checks. */
+  readonly signal: AbortSignal;
+}
+
+/**
+ * The auth guard (§7, §10) — runs before `load` on **every** URL change (path
+ * or search). `throw redirect(...)` to deny. Because it runs on search changes
+ * too, a spoofed/edited `?cursor=…`/`?userId=…` is re-checked. It's a gate, not
+ * a loader: no `patchState`. Pass `ctx.signal` to async auth lookups.
+ *
+ * @example
+ * ```ts
+ * .guard(async ({ params }, ctx) => {
+ *   if (!ctx.session.user) throw redirect("/login");
+ *   if (!(await canView(ctx.session, params.id))) throw redirect("/403");
+ * })
+ * ```
+ */
+export type Guard<Params, Session> = (
+  url: Url<Params>,
+  ctx: GuardCtx<Params, Session>,
+) => void | Promise<void>;
+
+/** Options for the URL-keyed loader (§7). */
+export interface LoaderOptions {
   /**
-   * SSR sequencing (§12). Default `false` (stream): the initial document is
-   * the `mount` skeleton and the loader's data streams in over the push
-   * stream after hydration — fast TTFB, but a crawler/no-JS client sees the
-   * skeleton. Set `true` to await the loader before serializing so the first
-   * paint carries data (crawlable, no spinner) at the cost of TTFB.
+   * SSR sequencing (§12). Default `false` (stream): the initial document is the
+   * `setup` skeleton plus the loader's synchronous projection, and the awaited
+   * data streams in over the push stream after hydration — fast TTFB, but a
+   * crawler/no-JS client sees the chrome, not the rows. Set `true` to await the
+   * loader before serializing so the first paint carries data (crawlable, no
+   * spinner) at the cost of TTFB.
    */
   blockSsr?: boolean;
 }
@@ -208,18 +253,25 @@ export type EventHandler<S, Params, Session> = (
  * server handler consume via `route.def`.
  */
 export interface LiveDefinition<S, Path extends string, Session> {
-  /** Runs once per page load (SSR included, §12). Returns initial state. May reject → error route. */
-  mount: (params: PathParams<Path>, ctx: MountCtx<Session>) => S | Promise<S>;
   /**
-   * URL-keyed loader (§7): runs after `mount` and on every `nav.patch`, writes
-   * page state, latest-wins. No remount. See {@link ParamsLoader}.
+   * Runs on identity — a path-param change (SSR included, §12). **Sync**: wires
+   * subscriptions and returns the state skeleton (locks type `S`). No IO —
+   * URL-dependent data loads in {@link LiveDefinition.load}. May `throw redirect`
+   * for a coarse fail-fast (§10).
    */
-  params?: ParamsLoader<S, PathParams<Path>, Session>;
-  /** SSR sequencing for {@link LiveDefinition.params} (§12); default stream. */
-  paramsOptions?: ParamsOptions;
+  setup: (ctx: SetupCtx<PathParams<Path>, Session>) => S;
+  /** Auth (§10): runs before `load` on every URL change, `throw redirect` to deny. See {@link Guard}. */
+  guard?: Guard<PathParams<Path>, Session>;
+  /**
+   * URL-keyed loader (§7): runs after `setup`+`guard` and on every URL change,
+   * writes page state, latest-wins. See {@link Loader}.
+   */
+  load?: Loader<S, PathParams<Path>, Session>;
+  /** SSR sequencing for {@link LiveDefinition.load} (§12); default stream. */
+  loadOptions?: LoaderOptions;
   rpc?: Record<string, RpcDef<S, PathParams<Path>, Session>>;
   on?: Record<string, EventHandler<S, PathParams<Path>, Session>>;
-  /** Snapshot version tag (§9): mismatch → discard snapshot, re-mount. */
+  /** Snapshot version tag (§9): mismatch → discard snapshot, re-setup. */
   version?: string;
 }
 
@@ -271,7 +323,7 @@ export interface RpcChainBuilt<S, In, Params, Session> {
 }
 
 /**
- * The fluent route builder. State `S` is locked by `.mount()`; each
+ * The fluent route builder. State `S` is locked by `.setup()`; each
  * `.rpc(name, ...)` extends the typed rpc record `R`, which `.render()`
  * hands to the component as an exact-keyed, payload-typed `rpc` facade.
  */
@@ -289,15 +341,20 @@ export interface LiveBuilder<S, Path extends string, Session, R> {
     handler: EventHandler<S, PathParams<Path>, Session>,
   ): LiveBuilder<S, Path, Session, R>;
   /**
-   * URL-keyed loader (§7): runs after `mount` and on every `nav.patch`, writes
-   * page state via `ctx.patchState`, latest-wins, no remount. See
-   * {@link ParamsLoader}. Optionally block SSR on the initial load (§12).
+   * Auth guard (§10): runs before `load` on every URL change; `throw redirect`
+   * to deny. First arg is `{ params, search }`; no state writes. See {@link Guard}.
    */
-  params(
-    loader: ParamsLoader<S, PathParams<Path>, Session>,
-    opts?: ParamsOptions,
+  guard(guard: Guard<PathParams<Path>, Session>): LiveBuilder<S, Path, Session, R>;
+  /**
+   * URL-keyed loader (§7): runs after `setup`+`guard` and on every URL change,
+   * writes page state via `ctx.patchState`, latest-wins. First arg is
+   * `{ params, search }`. See {@link Loader}. Optionally block SSR (§12).
+   */
+  load(
+    loader: Loader<S, PathParams<Path>, Session>,
+    opts?: LoaderOptions,
   ): LiveBuilder<S, Path, Session, R>;
-  /** Snapshot version tag (§9): mismatch → discard snapshot, re-mount. */
+  /** Snapshot version tag (§9): mismatch → discard snapshot, re-setup. */
   version(tag: string): LiveBuilder<S, Path, Session, R>;
   /** Bind the component (§1) — receives fully typed {@link RenderProps}. */
   render<Component extends (props: RenderProps<S, Session, Pretty<R>>) => unknown>(
@@ -305,12 +362,15 @@ export interface LiveBuilder<S, Path extends string, Session, R> {
   ): LiveRoute<S, Path, Session, Component>;
 }
 
-/** First (and only) step after `live(path)`: lock state via `mount`. */
+/** First (and only) step after `live(path)`: lock state via `setup`. */
 export interface LiveStart<Path extends string> {
-  /** Runs once per page load (SSR included, §12). Returns initial state. May reject → error route. */
-  mount<S, Session = Record<string, unknown>>(
-    fn: (params: PathParams<Path>, ctx: MountCtx<Session>) => S | Promise<S>,
-  ): LiveBuilder<Awaited<S>, Path, Session, Record<never, never>>;
+  /**
+   * Wire subscriptions and return the state skeleton (§1). **Sync** — locks
+   * type `S` from the return; URL-dependent data loads in `.load()` (§7).
+   */
+  setup<S, Session = Record<string, unknown>>(
+    fn: (ctx: SetupCtx<PathParams<Path>, Session>) => S,
+  ): LiveBuilder<S, Path, Session, Record<never, never>>;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: runtime chain is shaped by the public interfaces above
@@ -335,17 +395,18 @@ function liveBuilder(path: string, def: Record<string, any>): any {
       liveBuilder(path, { ...def, rpc: { ...def.rpc, [name]: build(rpcChain({})).def } }),
     on: (event: string, handler: unknown) =>
       liveBuilder(path, { ...def, on: { ...def.on, [event]: handler } }),
-    params: (loader: unknown, opts?: unknown) =>
-      liveBuilder(path, { ...def, params: loader, paramsOptions: opts }),
+    guard: (guard: unknown) => liveBuilder(path, { ...def, guard }),
+    load: (loader: unknown, opts?: unknown) =>
+      liveBuilder(path, { ...def, load: loader, loadOptions: opts }),
     version: (tag: string) => liveBuilder(path, { ...def, version: tag }),
     render: (component: unknown) => ({ $live: true, path, def, component }),
   };
 }
 
 /**
- * Declare a live object for a route (§1) — fluent: state locks at `.mount()`
- * and every later step infers from it; `.render()` terminates the chain with
- * the same `LiveRoute` object the runtime has always consumed.
+ * Declare a live object for a route (§1) — fluent: state shape locks at
+ * `.setup()` and every later step infers from it; `.render()` terminates the
+ * chain with the same `LiveRoute` object the runtime consumes.
  *
  * The path literal is scaffolded and maintained by the dev watcher — the
  * filename is truth, the literal is its typed mirror (§7).
@@ -353,9 +414,13 @@ function liveBuilder(path: string, def: Record<string, any>): any {
  * @example
  * ```tsx
  * export default live("/org/$orgId/board")
- *   .mount(async ({ orgId }, ctx) => {
- *     ctx.subscribe(`org:${orgId}`);
- *     return { projects: await db.project.findMany({ where: { orgId } }) };
+ *   .setup((ctx) => {
+ *     ctx.subscribe(`org:${ctx.params.orgId}`);
+ *     return { projects: [] as Project[], loading: true };
+ *   })
+ *   .load(async ({ params }, ctx) => {
+ *     const projects = await db.project.findMany({ where: { orgId: params.orgId } });
+ *     ctx.patchState((s) => { s.projects = projects; s.loading = false; });
  *   })
  *   .rpc("create", (r) =>
  *     r.input(z.object({ name: z.string() })).handler(async ({ name }, ctx) => {
@@ -372,7 +437,7 @@ function liveBuilder(path: string, def: Record<string, any>): any {
  */
 export function live<Path extends string>(path: Path): LiveStart<Path> {
   return {
-    mount: (fn) => liveBuilder(path, { mount: fn }),
+    setup: (fn) => liveBuilder(path, { setup: fn }),
   } as LiveStart<Path>;
 }
 

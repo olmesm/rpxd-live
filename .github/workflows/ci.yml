@@ -42,6 +42,47 @@ jobs:
       - name: Bun-runtime tests (adapters + conformance)
         run: bun test packages/rsc/test-bun packages/server-bun/test-bun packages/storage-sqlite/test-bun examples/kitchen-sink/test-bun packages/cli/test-bun
 
+  node-runtime:
+    name: Node runtime (Node 24 — node:http + better-sqlite3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # bun install builds the workspace node_modules that Node resolves
+      # (per-package symlinks into the store) — npm/pnpm can't, the packages
+      # use the `workspace:*` protocol. Node 24 is in PATH first, so the
+      # better-sqlite3 node-gyp build targets it.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prisma generate + db (todos example)
+        run: bun run setup
+        working-directory: examples/kitchen-sink
+
+      # better-sqlite3 is a V8-ABI native addon; rebuild it against the pinned
+      # Node so vitest's Node workers load a matching binary (belt-and-braces:
+      # the install above already targets Node 24).
+      - name: Rebuild better-sqlite3 for Node 24
+        run: |
+          set -euxo pipefail
+          DIR=$(find node_modules/.bun -maxdepth 4 -type d -path '*better-sqlite3@*/node_modules/better-sqlite3' | head -1)
+          test -n "$DIR"
+          ( cd "$DIR" && npx --yes node-gyp rebuild )
+
+      # The whole Vitest suite under the real Node binary (not Bun): proves the
+      # node:http adapter, sqliteNode (better-sqlite3), and the library run on
+      # Node 24 — the supported runtime floor.
+      - name: Unit tests (real Node)
+        run: node node_modules/vitest/vitest.mjs run
+
   generators:
     name: Generators (init + scaffold + run)
     runs-on: ubuntu-latest

@@ -8,7 +8,7 @@ import { type LiveDefinition, route } from "@rpxd/core";
 import { createRpxdHandler } from "../src/handler.ts";
 
 const liveDef: LiveDefinition<{ n: number }, "/", Record<string, unknown>> = {
-  mount: async () => ({ n: 1 }),
+  setup: () => ({ n: 1 }),
 };
 
 const webhook = route("/api/webhooks/stripe").post(

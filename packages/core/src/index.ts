@@ -10,13 +10,16 @@ export { type CreateInstanceOptions, LiveInstance, SESSION_PREFIX } from "./inst
 export {
   type BroadcastOptions,
   type EventHandler,
+  type Guard,
+  type GuardCtx,
   type Handler,
   type HandlerCtx,
   isLongForm,
   type LiveDefinition,
   type LiveRoute,
+  type Loader,
+  type LoaderOptions,
   live,
-  type MountCtx,
   type Mutator,
   type PathParams,
   type RpcChain,
@@ -26,6 +29,8 @@ export {
   type RpcDef,
   type RpcLongForm,
   type SearchParams,
+  type SetupCtx,
+  type Url,
 } from "./live.ts";
 export { matchHttpPath, matchHttpRoute, matchPath, matchRoute, type RouteMatch } from "./match.ts";
 export { isRedirect, RedirectError, redirect } from "./redirect.ts";

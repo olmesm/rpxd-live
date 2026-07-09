@@ -5,9 +5,9 @@ sidebar:
   order: 5
 ---
 
-rpxd's `routes/` is your web edge — one live object per page,
-`mount` / handlers / `render`. It says nothing about where your business logic
-and data access live. This is the convention we recommend for that other half: a
+rpxd's `routes/` is your web edge — one live object per page, `setup` / `load` /
+handlers / `render`. It says nothing about where your business logic and data
+access live. This is the convention we recommend for that other half: a
 **service layer** of bounded modules that own all real work.
 
 It is a **convention only** — no runtime, no codegen, no framework awareness.
@@ -65,11 +65,17 @@ layer off the database directly buys you:
 
 ```tsx
 // routes/index.tsx — the edge
-import { addTodo, listTodos } from "../domain/todos";
+import { addTodo, listTodos, type TodoRow } from "../domain/todos";
 import { scopeFrom } from "../domain/scope";
 
 export default live("/")
-  .mount(async (_params, ctx) => ({ todos: await listTodos(scopeFrom(ctx.session)) }))
+  .setup(() => ({ todos: [] as TodoRow[] })) // sync skeleton, no IO
+  .load(async (_url, ctx) => {
+    const todos = await listTodos(scopeFrom(ctx.session)); // the loader fetches
+    ctx.patchState((s) => {
+      s.todos = todos;
+    });
+  })
   .rpc("add", (r) =>
     r.handler(async ({ text }, ctx) => {
       const todo = await addTodo(scopeFrom(ctx.session), text); // logic lives in domain/
@@ -116,7 +122,7 @@ two sessions never see each other's todos from one shared database.
 ## Naming
 
 Don't call the directory `contexts/` — rpxd already uses "context" for the
-handler `ctx` (`MountCtx`, `RpcCtx`, `HandlerCtx`), and `lib/` is conventionally
+handler `ctx` (`SetupCtx`, `RpcCtx`, `HandlerCtx`), and `lib/` is conventionally
 shared UI. `domain/` is collision-free and names the thing honestly; `app/` is
 the other reasonable choice.
 

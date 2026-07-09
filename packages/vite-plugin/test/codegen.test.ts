@@ -57,9 +57,9 @@ describe("fileToRoute (§7)", () => {
 
 describe("ensurePathLiteral (§7: filename is truth)", () => {
   it("corrects a hand-edited literal", () => {
-    const src = 'export default live("/wrong/path")({ mount: async () => ({}) })(App);';
+    const src = 'export default live("/wrong/path")({ setup: () => ({}) })(App);';
     expect(ensurePathLiteral(src, "/org/$orgId/board")).toBe(
-      'export default live("/org/$orgId/board")({ mount: async () => ({}) })(App);',
+      'export default live("/org/$orgId/board")({ setup: () => ({}) })(App);',
     );
   });
 

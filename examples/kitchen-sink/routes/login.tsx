@@ -8,7 +8,7 @@ import { authClient } from "../adapters/auth-client";
  * session — see the routes & auth guide.
  */
 export default live("/login")
-  .mount(async () => ({ error: "" as string }))
+  .setup(() => ({ error: "" as string }))
   .rpc("setError", (r) =>
     r.handler(async ({ message }: { message: string }, ctx) => {
       ctx.patchState((s) => {

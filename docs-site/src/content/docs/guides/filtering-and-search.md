@@ -1,20 +1,20 @@
 ---
 title: Filtering & search
-description: Filters, sort, and debounced text search as URL search params on the params loader — resetting the cursor on filter change, and why latest-wins makes typeahead clean.
+description: Filters, sort, and debounced text search as URL search params on the `load` loader — resetting the cursor on filter change, and why latest-wins makes typeahead clean.
 sidebar:
   order: 11
 ---
 
 Filters, sort, and a search box are all just search params read by the
-[params loader](/rpxd-live/guides/loading-data/). Each is a `nav.patch`; the URL
+[loader (`load`)](/rpxd-live/guides/loading-data/). Each is a `nav.patch`; the URL
 stays the source of truth, so the view is shareable and back-button-correct.
 
 ```tsx
 export default live("/issues")
-  .mount(async () => ({ items: [] as Issue[], filter: "open", sort: "newest", loading: true }))
-  .params(async ({ filter, sort }, ctx) => {
-    const f = filter ?? "open";
-    const s = sort ?? "newest";
+  .setup(() => ({ items: [] as Issue[], filter: "open", sort: "newest", loading: true }))
+  .load(async ({ search }, ctx) => {
+    const f = search.filter ?? "open";
+    const s = search.sort ?? "newest";
     ctx.patchState((st) => { st.filter = f; st.sort = s; st.loading = true; });
     const items = await listIssues(scopeFrom(ctx.session), { filter: f, sort: s, signal: ctx.signal });
     ctx.patchState((st) => { st.items = items; st.loading = false; });
@@ -66,9 +66,9 @@ threads `ctx.signal` into the query, superseded searches stop early instead of
 racing:
 
 ```tsx
-.params(async ({ q }, ctx) => {
-  ctx.patchState((s) => { s.query = q ?? ""; s.loading = true; });
-  const items = await searchIssues(scopeFrom(ctx.session), { q: q ?? "", signal: ctx.signal });
+.load(async ({ search }, ctx) => {
+  ctx.patchState((s) => { s.query = search.q ?? ""; s.loading = true; });
+  const items = await searchIssues(scopeFrom(ctx.session), { q: search.q ?? "", signal: ctx.signal });
   ctx.patchState((s) => { s.items = items; s.loading = false; });
 })
 ```

@@ -1,6 +1,6 @@
 ---
 title: Pubsub & multiplayer
-description: Per-session instances coordinated by broadcast — subscribe in mount, broadcast in rpcs, mutate in on handlers. Exclude-self by default.
+description: Per-session instances coordinated by broadcast — subscribe in setup, broadcast in rpcs, mutate in on handlers. Exclude-self by default.
 sidebar:
   order: 3
 ---
@@ -12,7 +12,7 @@ carries.
 
 ## The three calls
 
-- **`ctx.subscribe(topic)`** — called in `mount` to join a topic.
+- **`ctx.subscribe(topic)`** — called in `setup` to join a topic.
 - **`ctx.broadcast(topic, event, payload)`** — called in an rpc handler to
   publish an event to a topic.
 - **`.on(event, (state, payload) => void)`** — a sync mutator run when a
@@ -20,9 +20,13 @@ carries.
 
 ```tsx
 export default live("/org/$orgId/board")
-  .mount(async ({ orgId }, ctx) => {
-    ctx.subscribe(`org:${orgId}`);
-    return { projects: await listProjects(orgId) };
+  .setup((ctx) => {
+    ctx.subscribe(`org:${ctx.params.orgId}`);
+    return { projects: [] as Project[] };
+  })
+  .load(async (_url, ctx) => {
+    const projects = await listProjects(ctx.params.orgId);
+    ctx.patchState((s) => { s.projects = projects; });
   })
   .rpc("create", (r) =>
     r.input(z.object({ name: z.string() })).handler(async ({ name }, ctx) => {

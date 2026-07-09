@@ -13,10 +13,10 @@ interface S {
   filter?: string;
 }
 const def: LiveDefinition<S, "/", { filter?: string }> = {
-  mount: async () => ({ items: ["first"] }),
-  params: async ({ filter }, ctx) => {
+  setup: () => ({ items: ["first"] }),
+  load: async ({ search }, ctx) => {
     ctx.patchState((s) => {
-      s.filter = filter ?? "all";
+      s.filter = search.filter ?? "all";
     });
   },
   rpc: {
@@ -111,9 +111,9 @@ describe("ws transport (§11)", () => {
     expect(ack.rpcId).toBe("ws-1");
     expect(ack.patches?.[0]?.value).toBe("over-ws");
 
-    // control messages ride the socket too — the params loader writes page
+    // control messages ride the socket too — the `load` loader writes page
     // state (§7), so the patch lands on the page, not the $session slice
-    socket.send(JSON.stringify({ type: "params", instance, search: { filter: "done" } }));
+    socket.send(JSON.stringify({ type: "url", instance, search: { filter: "done" } }));
     const paramsEnv = await next();
     expect(paramsEnv.patches?.[0]?.path).toEqual(["filter"]);
     expect(paramsEnv.patches?.[0]?.value).toBe("done");

@@ -91,10 +91,11 @@ type RpcBatch = {
 
 ```ts
 type Control =
-  | { v: 1; type: "attach"; instance: string; token: string; seq: number } // SSR adoption (§12)
-  | { v: 1; type: "resync"; instance: string; seq: number }                // gap recovery
-  | { v: 1; type: "mount"; path: string; search: Record<string, string> }  // cold mount
-  | { v: 1; type: "params"; instance: string; search: Record<string, string> }; // nav.patch
+  | { v: 1; type: "attach"; instance: string; token: string; seq: number }      // SSR adoption (§12)
+  | { v: 1; type: "resync"; instance: string; seq: number }                     // gap recovery
+  | { v: 1; type: "mount"; path: string; search: Record<string, string>; stream?: string } // cold / tier-2 mount
+  | { v: 1; type: "url"; instance: string; search: Record<string, string> }     // nav.patch → guard + load
+  | { v: 1; type: "release"; instance: string; stream: string };                // tier-2 abandons an instance
 ```
 
 - `attach` within the pending-attach TTL (~10s) adopts the SSR-warmed instance
@@ -103,6 +104,11 @@ type Control =
 - `resync` → the server pushes `full` with the current `seq`. Also the reconnect
   path: `EventSource` reconnects, the client re-attaches with its last seen
   `seq`, the server compares and pushes `full` if behind.
+- `url` reconciles the instance to a new URL — `guard` then `load` (§7); a deny
+  comes back as `{ redirect }` (SSE control response) or a `redirect` envelope (WS).
+- `mount`'s optional `stream` id and `release` drive a **tier-2 soft reload**: a
+  same-route path change joins a fresh instance to the open stream and releases
+  the old one, so the transport survives.
 
 ## Connection lifecycle (§11)
 

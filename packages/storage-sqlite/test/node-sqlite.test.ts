@@ -1,12 +1,16 @@
-/** Runs under `bun test` — bun:sqlite is a Bun-runtime API. */
-import { describe, expect, it } from "bun:test";
+/**
+ * Node SQLite adapter (`better-sqlite3`) — the Node-runtime counterpart to the
+ * `bun:sqlite` adapter (test-bun/sqlite.test.ts). Runs on the Vitest (Node)
+ * lane; `better-sqlite3` is a native module, no Bun runtime required.
+ */
 import type { LiveDefinition } from "@rpxd/core";
 import { LiveInstance } from "@rpxd/core";
-import { sqlite } from "../src/index.ts";
+import { describe, expect, it } from "vitest";
+import { sqliteNode } from "../src/node.ts";
 
-describe("sqlite storage adapter", () => {
+describe("sqliteNode storage adapter", () => {
   it("round-trips snapshots", () => {
-    const storage = sqlite(":memory:");
+    const storage = sqliteNode(":memory:");
     const snap = { state: { a: [1, 2] }, session: { filter: "x" }, seq: 7, version: "v1" };
     storage.set("k1", snap);
     expect(storage.get("k1")).toEqual(snap);
@@ -19,10 +23,7 @@ describe("sqlite storage adapter", () => {
   });
 
   it("backs a LiveInstance write-through + session continuity (§9)", async () => {
-    const storage = sqlite(":memory:");
-    // Filter is view state → the `load` loader writes page state (§7). Page
-    // state is rebuilt from the URL on cold wake; the session slice + seq are
-    // what sqlite carries across for continuity.
+    const storage = sqliteNode(":memory:");
     const def: LiveDefinition<{ n: number }, "/", { userId?: string }> = {
       setup: () => ({ n: 0 }),
       load: async ({ search }, ctx) => {
@@ -40,21 +41,20 @@ describe("sqlite storage adapter", () => {
       storageKey: "sess:/",
     });
     await first.load({ filter: "done" });
-    expect(first.state.n).toBe(1); // loader wrote page state
+    expect(first.state.n).toBe(1);
     await first.dispose();
 
     const second = await LiveInstance.create({
       id: "b",
       def,
       params: {},
-      session: {},
+      session: {} as { userId?: string },
       storage,
       storageKey: "sess:/",
     });
     expect(second.session.userId).toBe("u1"); // session survived through sqlite
     expect(second.seq).toBeGreaterThan(1); // seq continued
-    // Cold wake re-mounts (n back to 0); re-presenting the URL rebuilds it.
-    expect(second.state.n).toBe(0);
+    expect(second.state.n).toBe(0); // cold wake re-mounts
     await second.load({ filter: "done" });
     expect(second.state.n).toBe(1);
   });
