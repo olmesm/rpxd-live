@@ -1,7 +1,7 @@
 /**
  * Routing surface (§7): typed `Link` and `nav` — wouter under the hood,
- * unexported. Path params are identity (navigate = remount); search params
- * are view state (`nav.patch` → `params` reducer, no remount).
+ * unexported. Path params are identity (navigate = soft reload via `setup`);
+ * search params are view state (`nav.patch` reruns `guard`+`load`, no `setup`).
  */
 import type { NavProp, PathParams, RegisteredPath } from "@rpxd/core";
 import { createContext, type MouseEvent, type ReactNode, useContext } from "react";
@@ -116,7 +116,7 @@ export function useNav(): Nav {
         for (const [k, v] of Object.entries(search)) url.searchParams.set(k, v);
         window.history.replaceState(null, "", url);
       }
-      connection?.patchParams(search);
+      connection?.patchSearch(search);
     },
   };
 }

@@ -1,8 +1,11 @@
 /**
  * SPA navigation runtime (§7): renders the current route and swaps route +
- * connection on location changes — soft navigation, no page load. Path
- * params are identity, so every path change is a fresh server mount; the
- * previous page stays interactive until the next one's state arrives.
+ * connection on location changes — soft navigation, no page load. Path params
+ * are identity; a path change is a soft reload. When the new path matches the
+ * *same* route pattern (tier 2), the connection is reused — a fresh instance is
+ * mounted over the live stream and the store rebinds to it; the SSE transport
+ * and app shell survive. A *different* pattern (tier 3) swaps the connection and
+ * component. The previous page stays interactive until the next state arrives.
  */
 import { isRedirect, type LiveRoute, matchRoute } from "@rpxd/core";
 import {
@@ -80,6 +83,13 @@ export function LiveApp(props: LiveAppProps): ReactElement {
   const ticket = useRef(0);
   const [location] = useLocation();
 
+  // Runtime redirects (§10) — a `guard`/`load` deny during `nav.patch` or a
+  // tier-2 remount — soft-nav via the router. The SSR connection is built by
+  // generated code without this sink, so install it here.
+  useEffect(() => {
+    current.conn.setRedirectSink((loc) => navigate(loc));
+  }, [current.conn]);
+
   useEffect(() => {
     const pathname = location.split("?")[0] ?? location;
     if (pathname === current.pathname) return;
@@ -91,28 +101,39 @@ export function LiveApp(props: LiveAppProps): ReactElement {
     void (async () => {
       const match = matchRoute(Object.keys(props.routeModules), pathname);
       const load = match && props.routeModules[match.path];
-      if (!load) {
+      if (!load || !match) {
         window.location.assign(location); // server renders __404
         return;
       }
       try {
         const mod = await load();
-        const conn = await LiveConnection.mount(pathname, search, {
-          meta: rpcMetaFromDef(mod.default.def),
-          transport: props.transport,
-        });
-        await stateReady(conn);
-        if (ticket.current !== my) {
-          conn.close(); // superseded by a later navigation
-          return;
+        // Tier 2 vs 3 (§7): same route pattern reuses the connection (soft
+        // reload over the live stream); a different pattern swaps it.
+        if (match.path === current.route.path) {
+          const conn = current.conn;
+          await conn.remount(pathname, search);
+          await stateReady(conn);
+          if (ticket.current !== my) return; // superseded — the next remount wins
+          setCurrent({ pathname, route: mod.default, conn });
+        } else {
+          const conn = await LiveConnection.mount(pathname, search, {
+            meta: rpcMetaFromDef(mod.default.def),
+            transport: props.transport,
+            onRedirect: (loc) => navigate(loc),
+          });
+          await stateReady(conn);
+          if (ticket.current !== my) {
+            conn.close(); // superseded by a later navigation
+            return;
+          }
+          setCurrent((prev) => {
+            prev.conn.close();
+            return { pathname, route: mod.default, conn };
+          });
         }
-        setCurrent((prev) => {
-          prev.conn.close();
-          return { pathname, route: mod.default, conn };
-        });
       } catch (e) {
-        // `mount` threw redirect() (§10) — soft-navigate to the target instead
-        // of hard-loading the original path.
+        // `mount`/`remount` threw redirect() (§10) — soft-navigate to the target
+        // instead of hard-loading the original path.
         if (isRedirect(e)) {
           if (ticket.current === my) navigate(e.location);
           return;
@@ -121,11 +142,23 @@ export function LiveApp(props: LiveAppProps): ReactElement {
         window.location.assign(location);
       }
     })();
-  }, [location, current.pathname, props.routeModules, props.transport]);
+  }, [
+    location,
+    current.pathname,
+    current.conn,
+    current.route.path,
+    props.routeModules,
+    props.transport,
+  ]);
 
   return (
     <RpxdProvider connection={current.conn}>
-      <LivePage route={current.route} conn={current.conn} transformState={props.transformState} />
+      <LivePage
+        key={current.pathname}
+        route={current.route}
+        conn={current.conn}
+        transformState={props.transformState}
+      />
     </RpxdProvider>
   );
 }

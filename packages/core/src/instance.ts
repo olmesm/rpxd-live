@@ -21,8 +21,8 @@ import {
 } from "./live.ts";
 import type { Envelope, Patch, RpcBatch, RpcCall } from "./protocol.ts";
 import { SerialQueue } from "./queue.ts";
-import { isRedirect } from "./redirect.ts";
 import { type RateLimit, RateLimitError, TokenBucket } from "./rate-limit.ts";
+import { isRedirect } from "./redirect.ts";
 import { validateInput } from "./standard-schema.ts";
 import type { StorageAdapter } from "./storage.ts";
 

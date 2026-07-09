@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LiveInstance } from "../src/instance.ts";
-import { redirect } from "../src/redirect.ts";
 import type { LiveDefinition, Mutator, SearchParams } from "../src/live.ts";
 import { type Envelope, PROTOCOL_VERSION, type RpcBatch } from "../src/protocol.ts";
+import { redirect } from "../src/redirect.ts";
 import { memory, type StorageAdapter } from "../src/storage.ts";
 
 interface TodoState {

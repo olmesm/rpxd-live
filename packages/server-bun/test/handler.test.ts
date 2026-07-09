@@ -382,3 +382,66 @@ describe("eviction (§11)", () => {
     await handler.dispose();
   });
 });
+
+describe("tier-2 soft reload — late mount over the live stream (§7)", () => {
+  const stream = (id: string) =>
+    new Request(`${base}/__rpxd/stream?stream=${id}`, { headers: COOKIE });
+  const control = (body: unknown, signal?: AbortSignal) =>
+    new Request(`${base}/__rpxd/control`, {
+      method: "POST",
+      headers: COOKIE,
+      body: JSON.stringify(body),
+      signal,
+    });
+
+  it("subscribes a newly-mounted instance to the open stream via its stream id", async () => {
+    const handler = makeHandler();
+    // Stream opens first (session empty), then a same-route path mount joins it.
+    const sse = new SseReader(await handler.fetch(stream("s1")));
+    const mountRes = await handler.fetch(
+      control({ type: "mount", path: "/org/7/board", stream: "s1" }),
+    );
+    const { instance } = await mountRes.json();
+    // The new instance's snapshot arrives on the already-open stream — no reconnect.
+    const full = await sse.next();
+    expect(full?.instance).toBe(instance);
+    expect(full?.full).toBeDefined();
+    expect((full?.full?.state as BoardState).orgId).toBe("7");
+    await handler.dispose();
+  });
+
+  it("release unsubscribes the abandoned instance so it evicts; the live one stays", async () => {
+    const handler = makeHandler({ warmTtlMs: 15, attachTtlMs: 5 });
+    const abort = new AbortController();
+    const sse = new SseReader(await handler.fetch(stream("s1")));
+
+    const m1 = await handler.fetch(control({ type: "mount", path: "/org/1/board", stream: "s1" }));
+    const { instance: first } = await m1.json();
+    await sse.next(); // first full
+    await handler.fetch(control({ type: "mount", path: "/org/2/board", stream: "s1" }));
+    await sse.next(); // second full
+    expect(handler.instanceCount).toBe(2);
+
+    // Abandon the first (tier-2 forward nav): release it from this stream.
+    const rel = await handler.fetch(control({ type: "release", instance: first, stream: "s1" }));
+    expect(rel.status).toBe(204);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(handler.instanceCount).toBe(1); // released one evicted, the live one held
+
+    abort.abort();
+    await handler.dispose();
+  });
+
+  it("late-mount subscription is idempotent (a warm re-join does not double-send)", async () => {
+    const handler = makeHandler();
+    const sse = new SseReader(await handler.fetch(stream("s1")));
+    await handler.fetch(control({ type: "mount", path: "/org/4/board", stream: "s1" }));
+    await sse.next(); // full from the first join
+    // A second mount of the same path (warm reuse) must not re-subscribe.
+    await handler.fetch(control({ type: "mount", path: "/org/4/board", stream: "s1" }));
+    // No second full for the same instance on this stream.
+    expect(await sse.next(120)).toBeNull();
+    expect(handler.instanceCount).toBe(1);
+    await handler.dispose();
+  });
+});

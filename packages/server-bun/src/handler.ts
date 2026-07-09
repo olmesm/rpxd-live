@@ -70,10 +70,24 @@ export interface RpxdHandlerOptions {
 interface InstanceEntry {
   // biome-ignore lint/suspicious/noExplicitAny: registry spans routes of any state shape
   instance: LiveInstance<any, any, any>;
+  /** The pathname this entry is keyed under in its session map (for eviction). */
+  key: string;
   path: string;
   params: Record<string, string>;
   attach?: { token: string; expires: number };
   evictTimer?: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * A live downstream subscriber (one SSE stream or WS socket, §11). Exposes
+ * late-mount fan-out so a tier-2 soft reload (§7) can join a fresh instance to
+ * an already-open transport, and `releaseInstance` so an abandoned instance is
+ * unsubscribed and left to evict.
+ */
+interface StreamHandle {
+  subscribeInstance: (entry: InstanceEntry) => void;
+  releaseInstance: (instanceId: string) => void;
+  cleanup: () => void;
 }
 
 const SID_COOKIE = "rpxd_sid";
@@ -97,7 +111,7 @@ export function encodeSse(env: Envelope): string {
  * Endpoints:
  * - `GET /__rpxd/stream` — SSE envelope stream (all session instances)
  * - `POST /__rpxd/rpc` — rpc batch upstream
- * - `POST /__rpxd/control` — `mount` / `resync` / `url`
+ * - `POST /__rpxd/control` — `mount` / `resync` / `url` / `release`
  * - any other GET matching a route — SSR mount (§12)
  *
  * @example
@@ -113,7 +127,25 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   /** sessionId → instanceKey → entry */
   const sessions = new Map<string, Map<string, InstanceEntry>>();
   const byInstanceId = new Map<string, InstanceEntry>();
+  /** sessionId → client stream id → live SSE subscriber (§7 tier-2 late mount). */
+  const streamRegistry = new Map<string, Map<string, StreamHandle>>();
   let disposed = false;
+
+  function registerStream(sid: string, streamId: string, handle: StreamHandle): void {
+    let m = streamRegistry.get(sid);
+    if (!m) {
+      m = new Map();
+      streamRegistry.set(sid, m);
+    }
+    m.set(streamId, handle);
+  }
+
+  function unregisterStream(sid: string, streamId: string): void {
+    const m = streamRegistry.get(sid);
+    if (!m) return;
+    m.delete(streamId);
+    if (m.size === 0) streamRegistry.delete(sid);
+  }
 
   function sessionOf(req: Request): { sid: string; isNew: boolean } {
     const cookie = req.headers.get("cookie") ?? "";
@@ -158,7 +190,8 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     if (def.guard) await instance.authorize(search); // deny → throw redirect → 302
     if (!def.load) return;
     const run = instance.load(search);
-    if (def.loadOptions?.blockSsr) await run; // loader redirect → propagates → 302
+    if (def.loadOptions?.blockSsr)
+      await run; // loader redirect → propagates → 302
     else {
       void run.catch(() => {}); // stream: a loader redirect is swallowed — use guard
       await instance.flushStaged();
@@ -217,6 +250,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
 
     const entry: InstanceEntry = {
       instance,
+      key: pathname,
       path: match.path,
       params: match.params,
       attach: { token: crypto.randomUUID(), expires: Date.now() + attachTtlMs },
@@ -248,16 +282,20 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     sid: string,
     send: (env: Envelope) => void,
     attach?: { token: string | null; seq: number },
-  ): { subscribeInstance: (entry: InstanceEntry) => void; cleanup: () => void } {
+  ): StreamHandle {
     const entries = entriesFor(sid);
-    const unsubs: (() => void)[] = [];
+    /** instanceId → this subscriber's unsub, so a single instance is joined once. */
+    const unsubs = new Map<string, () => void>();
 
     const subscribeInstance = (entry: InstanceEntry, initial = false) => {
+      // Idempotent: a warm instance already on this stream must not double-join
+      // (tier-2 re-mount of a still-live path, §7).
+      if (unsubs.has(entry.instance.id)) return;
       if (entry.evictTimer) {
         clearTimeout(entry.evictTimer);
         entry.evictTimer = undefined;
       }
-      unsubs.push(entry.instance.addListener(send));
+      unsubs.set(entry.instance.id, entry.instance.addListener(send));
       const adopted =
         initial &&
         attach?.token != null &&
@@ -273,12 +311,24 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       }
     };
 
+    const releaseInstance = (instanceId: string) => {
+      // Tier-2 soft reload (§7): the client abandoned this instance. Drop this
+      // stream's listener and let the warm timer evict it if nothing else holds it.
+      const unsub = unsubs.get(instanceId);
+      if (!unsub) return;
+      unsub();
+      unsubs.delete(instanceId);
+      const entry = byInstanceId.get(instanceId);
+      if (entry) scheduleEvictionIfIdle(sid, entry.key, entry);
+    };
+
     for (const entry of entries.values()) subscribeInstance(entry, true);
 
     return {
       subscribeInstance: (entry) => subscribeInstance(entry, false),
+      releaseInstance,
       cleanup: () => {
-        for (const unsub of unsubs) unsub();
+        for (const unsub of unsubs.values()) unsub();
         for (const [key, entry] of entries) scheduleEvictionIfIdle(sid, key, entry);
       },
     };
@@ -288,12 +338,16 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     const url = new URL(req.url);
     const attachToken = url.searchParams.get("attach");
     const attachSeq = Number(url.searchParams.get("seq") ?? "-1");
+    // Client-owned stream id (§7): control `mount`/`release` name it to join or
+    // drop instances on this exact stream (multi-tab safe). Absent for legacy /
+    // one-shot streams — a random id keeps the registry keyed uniformly.
+    const streamId = url.searchParams.get("stream") ?? crypto.randomUUID();
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         const encoder = new TextEncoder();
         controller.enqueue(encoder.encode("retry: 1000\n\n"));
-        const { cleanup } = subscribeSession(
+        const handle = subscribeSession(
           sid,
           (env) => {
             try {
@@ -304,8 +358,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           },
           { token: attachToken, seq: attachSeq },
         );
+        registerStream(sid, streamId, handle);
         req.signal.addEventListener("abort", () => {
-          cleanup();
+          unregisterStream(sid, streamId);
+          handle.cleanup();
           try {
             controller.close();
           } catch {
@@ -326,8 +382,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
 
   async function handleControl(req: Request, sid: string, sessionData: unknown) {
     const msg = (await req.json()) as
-      | { type: "mount"; path: string; search?: Record<string, string> }
+      | { type: "mount"; path: string; search?: Record<string, string>; stream?: string }
       | { type: "resync"; instance: string }
+      | { type: "release"; instance: string; stream: string }
       | { type: "url"; instance: string; search: Record<string, string> };
 
     if (msg.type === "mount") {
@@ -340,12 +397,21 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         if (isRedirect(e)) return Response.json({ redirect: e.location });
         throw e;
       }
+      // Tier-2 soft reload (§7): a `stream` id joins the fresh instance to that
+      // already-open SSE stream so its snapshot flows without a reconnect.
+      if (msg.stream) streamRegistry.get(sid)?.get(msg.stream)?.subscribeInstance(entry);
       return Response.json({
         instance: entry.instance.id,
         seq: entry.instance.seq,
         path: entry.path,
         params: entry.params,
       });
+    }
+    if (msg.type === "release") {
+      // Abandoned by a tier-2 forward nav (§7): drop it from that stream so it
+      // evicts. Idempotent — an unknown instance/stream is a no-op.
+      streamRegistry.get(sid)?.get(msg.stream)?.releaseInstance(msg.instance);
+      return new Response(null, { status: 204 });
     }
     const entry = byInstanceId.get(msg.instance);
     if (!entry) return new Response("unknown instance", { status: 404 });
@@ -502,13 +568,13 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       send: (env: Envelope) => void,
       attach?: { token: string | null; seq: number },
     ): { message(raw: string): Promise<void>; close(): void } {
-      const { subscribeInstance, cleanup } = subscribeSession(sid, send, attach);
+      const { subscribeInstance, releaseInstance, cleanup } = subscribeSession(sid, send, attach);
       return {
         async message(raw: string): Promise<void> {
           const msg = JSON.parse(raw) as
             | RpcBatch
             | {
-                type: "resync" | "url" | "mount";
+                type: "resync" | "url" | "mount" | "release";
                 instance?: string;
                 path?: string;
                 search?: Record<string, string>;
@@ -519,9 +585,14 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
             return;
           }
           if (msg.type === "mount" && msg.path) {
-            const known = entriesFor(sid).get(msg.path);
+            // The socket *is* the stream (§11): join the mount to it directly.
+            // `subscribeInstance` is idempotent, so a warm re-mount is a no-op.
             const entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
-            if (!known) subscribeInstance(entry); // late mounts join this socket
+            subscribeInstance(entry);
+            return;
+          }
+          if (msg.type === "release" && msg.instance) {
+            releaseInstance(msg.instance); // tier-2 forward nav (§7)
             return;
           }
           const entry = msg.instance ? byInstanceId.get(msg.instance) : undefined;
@@ -535,7 +606,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
               if (route) await reconcileUrl(route.def, entry.instance, msg.search);
             } catch (e) {
               if (isRedirect(e)) {
-                send({ seq: entry.instance.seq, instance: entry.instance.id, redirect: e.location });
+                send({
+                  seq: entry.instance.seq,
+                  instance: entry.instance.id,
+                  redirect: e.location,
+                });
               } else throw e;
             }
           }

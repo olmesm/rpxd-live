@@ -302,7 +302,7 @@ describe("server ↔ client integration", () => {
   it("runs the full loop: optimistic create → server ack → id link → keyOf stability", async () => {
     let n = 0;
     const def: LiveDefinition<SrvState, "/todos", Sess> = {
-      mount: async () => ({ todos: [] }),
+      setup: () => ({ todos: [] }),
       rpc: {
         create: {
           optimistic: (state: SrvState, { text }: { text: string }, ctx) => {
