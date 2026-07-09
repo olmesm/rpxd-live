@@ -551,6 +551,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       const all = [...sessions.values()].flatMap((m) => [...m.values()]);
       sessions.clear();
       byInstanceId.clear();
+      streamRegistry.clear();
       for (const entry of all) {
         if (entry.evictTimer) clearTimeout(entry.evictTimer);
       }

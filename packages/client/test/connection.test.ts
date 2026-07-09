@@ -169,6 +169,54 @@ describe("LiveConnection (§11, §12)", () => {
     expect(conn.store.snapshot().state).toEqual({ items: ["z"] });
   });
 
+  it("latest-wins: a superseded remount (resolving late) does not rebind the store (§7)", async () => {
+    const control: { body: Record<string, unknown> | null }[] = [];
+    let resolveOld: (r: Response) => void = () => {};
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      control.push({ body });
+      // Older remount (→/t/2) resolves LATE; newer (→/t/3) resolves immediately.
+      if (body?.type === "mount" && body.path === "/t/2") {
+        return new Promise<Response>((res) => {
+          resolveOld = res;
+        });
+      }
+      if (body?.type === "mount") return Response.json({ instance: "i3", seq: 1 });
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      fetchImpl,
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.connect();
+
+    const older = conn.remount("/t/2", {}); // runId 1 — mount pending
+    const newer = conn.remount("/t/3", {}); // runId 2 — wins
+    await newer;
+    resolveOld(Response.json({ instance: "i2", seq: 1 })); // older resolves out of order
+    await older;
+
+    const bodies = control.map((c) => c.body);
+    // The winner (i3) rebound + resynced; the superseded run never resyncs i2.
+    expect(bodies).toContainEqual({ type: "resync", instance: "i3" });
+    expect(bodies).not.toContainEqual({ type: "resync", instance: "i2" });
+    // The superseded run releases the instance it mounted so it doesn't leak.
+    expect(bodies).toContainEqual(expect.objectContaining({ type: "release", instance: "i2" }));
+
+    // The store is bound to i3: an i2 snapshot is ignored, an i3 one applies.
+    const es = FakeEventSource.instances.at(-1) as FakeEventSource;
+    es.emit(
+      "env",
+      JSON.stringify({ seq: 1, instance: "i2", full: { state: { items: ["old"] }, session: {} } }),
+    );
+    es.emit(
+      "env",
+      JSON.stringify({ seq: 1, instance: "i3", full: { state: { items: ["new"] }, session: {} } }),
+    );
+    expect(conn.store.snapshot().state).toEqual({ items: ["new"] });
+  });
+
   it("remount rethrows a setup/guard redirect for the router to soft-nav (§10)", async () => {
     const fetchImpl = (async () =>
       Response.json({ redirect: "/login" })) as unknown as typeof fetch;

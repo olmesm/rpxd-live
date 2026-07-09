@@ -80,6 +80,8 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   #instance: string;
   /** Client-owned stream id: names this connection's stream for late-mount/release (§7). */
   readonly #streamId = randomId();
+  /** Monotonic remount tag — a superseded tier-2 remount must not rebind the store (§7). */
+  #remountRunId = 0;
   #store: LiveStore<S, Session>;
   /** Runtime-redirect sink (§10) — seeded from opts, settable for SSR connections. */
   #onRedirect: ((location: string) => void) | undefined;
@@ -243,10 +245,27 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    * join it to this live stream, swap the store to it, and release the old one —
    * the transport and app shell survive; only page state resets. A `setup`/
    * `guard` deny throws `redirect()` for the caller to soft-nav (§10).
+   *
+   * **Latest-wins**: two overlapping remounts share this one connection, so a
+   * run tag (claimed synchronously, before the mount await) gates the store
+   * swap — a remount whose `mountRequest` resolves after a newer one started
+   * neither rebinds the store nor fires its redirect; it just releases the
+   * instance it mounted so the loser doesn't leak.
    */
   async remount(path: string, search: Record<string, string>): Promise<void> {
+    const runId = ++this.#remountRunId;
     const parsed = await this.#mountRequest(path, search);
-    if ("redirect" in parsed) throw redirect(parsed.redirect);
+    const superseded = runId !== this.#remountRunId;
+    if ("redirect" in parsed) {
+      if (superseded) return; // a newer remount owns the outcome
+      throw redirect(parsed.redirect);
+    }
+    if (superseded) {
+      // A newer remount already (or will) bind the store; drop the instance we
+      // mounted so it evicts instead of lingering subscribed to the stream.
+      void this.#control({ type: "release", instance: parsed.instance, stream: this.#streamId });
+      return;
+    }
     const previous = this.#instance;
     this.#instance = parsed.instance;
     this.#store = this.#makeStore(parsed.instance);
