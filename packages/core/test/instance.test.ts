@@ -129,6 +129,74 @@ describe("LiveInstance basics", () => {
   });
 });
 
+describe("batch-size cap (§11 DoS guard)", () => {
+  const addCalls = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ rpc: "add", payload: { text: `t${i}` } }));
+
+  it("error-acks an over-cap batch and runs none of its calls", async () => {
+    const inst = await LiveInstance.create({
+      id: "i",
+      def: baseDef,
+      params: { id: "42" },
+      session: {},
+      storage: memory(),
+      storageKey: uid("key"),
+      maxBatchCalls: 2,
+    });
+    const envelopes: Envelope[] = [];
+    inst.addListener((env) => envelopes.push(env));
+
+    await inst.handleBatch({
+      v: PROTOCOL_VERSION,
+      instance: "i",
+      rpcId: "big",
+      calls: addCalls(3),
+    });
+
+    expect(inst.state.todos).toHaveLength(0); // rejected before any handler ran
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0]?.rpcId).toBe("big");
+    expect(envelopes[0]?.error?.message).toMatch(/batch/i);
+    expect(envelopes[0]?.patches).toEqual([]);
+  });
+
+  it("runs a batch exactly at the cap", async () => {
+    const inst = await LiveInstance.create({
+      id: "i",
+      def: baseDef,
+      params: { id: "42" },
+      session: {},
+      storage: memory(),
+      storageKey: uid("key"),
+      maxBatchCalls: 2,
+    });
+    const envelopes: Envelope[] = [];
+    inst.addListener((env) => envelopes.push(env));
+
+    await inst.handleBatch({
+      v: PROTOCOL_VERSION,
+      instance: "i",
+      rpcId: "ok",
+      calls: addCalls(2),
+    });
+
+    expect(inst.state.todos).toHaveLength(2);
+    expect(envelopes[0]?.error).toBeUndefined();
+  });
+
+  it("defaults to a finite cap (256) when none is configured", async () => {
+    const { inst, envelopes } = await make(baseDef);
+    await inst.handleBatch({
+      v: PROTOCOL_VERSION,
+      instance: "i",
+      rpcId: "flood",
+      calls: addCalls(257),
+    });
+    expect(inst.state.todos).toHaveLength(0);
+    expect(envelopes[0]?.error?.message).toMatch(/batch/i);
+  });
+});
+
 describe("concurrency (§3): handlers never block the instance", () => {
   it("runs a fast rpc while a slow handler awaits", async () => {
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {

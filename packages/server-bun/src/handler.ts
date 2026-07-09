@@ -165,6 +165,75 @@ export interface RpxdHandlerOptions {
    */
   onSecurityEvent?: (event: SecurityEvent) => void;
   defaultRateLimit?: RateLimit;
+  /**
+   * Max bytes an rpc/control request body (or WS frame) may carry before it's
+   * rejected — `413` over HTTP, silent drop over WS (§11 ingress DoS guard).
+   * Enforced in the handler so Bun and Node behave identically. Default
+   * {@link DEFAULT_MAX_BODY_BYTES} (1 MiB).
+   */
+  maxBodyBytes?: number;
+  /**
+   * Max calls a single rpc batch may carry before it's error-acked without
+   * running any call (§11 ingress DoS guard). Default 256 (see
+   * `DEFAULT_MAX_BATCH_CALLS`). Passed through to every instance.
+   */
+  maxBatchCalls?: number;
+}
+
+/** Default rpc/control body + WS frame cap (§11 ingress DoS guard): 1 MiB. */
+export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+
+/**
+ * Thrown by {@link readJsonCapped} when a body exceeds the configured cap. The
+ * top-level `fetch` maps it to a `413`.
+ */
+class PayloadTooLargeError extends Error {
+  constructor(limit: number) {
+    super(`request body exceeds maxBodyBytes (${limit})`);
+    this.name = "PayloadTooLargeError";
+  }
+}
+
+/**
+ * Read + JSON-parse a request body, capped at `maxBytes`. `Content-Length` is
+ * only a hint (chunked encoding, lying clients), so the real guard streams the
+ * body and counts bytes, aborting the read the moment it overflows — the header
+ * check is just a cheap fast-path reject. Throws {@link PayloadTooLargeError}
+ * on overflow; the caller answers `413`.
+ */
+async function readJsonCapped(req: Request, maxBytes: number): Promise<unknown> {
+  const declared = Number(req.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > maxBytes) throw new PayloadTooLargeError(maxBytes);
+
+  const body = req.body;
+  if (!body) {
+    const text = await req.text();
+    if (text.length === 0) return {};
+    if (new TextEncoder().encode(text).byteLength > maxBytes)
+      throw new PayloadTooLargeError(maxBytes);
+    return JSON.parse(text);
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new PayloadTooLargeError(maxBytes);
+    }
+    chunks.push(value);
+  }
+  const buf = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buf.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(buf));
 }
 
 interface InstanceEntry {
@@ -250,6 +319,8 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     opts.maxUnattachedInstances === undefined ? 1024 : opts.maxUnattachedInstances;
   const maxInstancesPerSession =
     opts.maxInstancesPerSession === undefined ? 32 : opts.maxInstancesPerSession;
+  // Ingress body/frame cap (§11 DoS guard): rpc/control 413s, WS frame drops.
+  const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   /** sessionId → instanceKey → entry */
   const sessions = new Map<string, Map<string, InstanceEntry>>();
   const byInstanceId = new Map<string, InstanceEntry>();
@@ -410,6 +481,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       storage,
       storageKey: `${sid}:${pathname}`,
       defaultRateLimit: opts.defaultRateLimit,
+      maxBatchCalls: opts.maxBatchCalls,
     });
     try {
       if (route.def.load) await instance.loadForRender(search);
@@ -731,7 +803,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   }
 
   async function handleControl(req: Request, sid: string, sessionData: unknown) {
-    const msg = (await req.json()) as
+    const msg = (await readJsonCapped(req, maxBodyBytes)) as
       | { type: "mount"; path: string; search?: Record<string, string>; stream?: string }
       | { type: "resync"; instance: string }
       | { type: "release"; instance: string; stream: string }
@@ -782,7 +854,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   }
 
   async function handleRpc(req: Request, sid: string): Promise<Response> {
-    const batch = (await req.json()) as RpcBatch;
+    const batch = (await readJsonCapped(req, maxBodyBytes)) as RpcBatch;
     const entry = ownedInstance(batch.instance, sid);
     if (!entry) return new Response("unknown instance", { status: 404 });
     // Fire-and-forget: the ack rides the SSE stream, not this response.
@@ -914,6 +986,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         }
         return new Response("not found", { status: 404 });
       } catch (e) {
+        // Oversized rpc/control body (§11 ingress DoS guard): reject before it
+        // reaches a handler.
+        if (e instanceof PayloadTooLargeError) {
+          return withSession(new Response(e.message, { status: 413 }), sid, isNew);
+        }
         // `setup`/`guard`/`load` threw redirect() (§10): a full page load follows a real 302.
         if (isRedirect(e)) {
           return withSession(
@@ -973,6 +1050,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       const { subscribeInstance, releaseInstance, cleanup } = subscribeSession(sid, send, attach);
       return {
         async message(raw: string): Promise<void> {
+          // Ingress DoS guard (§11): a WS frame carries no Content-Length, so
+          // cap the raw string before JSON.parse amplifies it. Drop silently —
+          // there's no rpcId to ack until it parses, and no legit client sends
+          // an over-cap frame.
+          if (raw.length > maxBodyBytes) return;
           const msg = JSON.parse(raw) as
             | RpcBatch
             | {

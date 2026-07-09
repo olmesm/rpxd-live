@@ -415,6 +415,148 @@ describe("origin policy — cross-site control-plane defense (#52)", () => {
   });
 });
 
+describe("ingress limits (§11 DoS guard)", () => {
+  async function mount(handler: ReturnType<typeof makeHandler>, path = "/org/9/board") {
+    const res = await handler.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({ type: "mount", path }),
+      }),
+    );
+    const { instance } = await res.json();
+    return instance as string;
+  }
+
+  it("413s an oversized rpc body before parsing it", async () => {
+    const handler = makeHandler({ maxBodyBytes: 512 });
+    const instance = await mount(handler);
+    const big = "x".repeat(2000);
+    const res = await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({
+          v: V,
+          instance,
+          rpcId: "r1",
+          calls: [{ rpc: "add", payload: { item: big } }],
+        }),
+      }),
+    );
+    expect(res.status).toBe(413);
+    await handler.dispose();
+  });
+
+  it("413s an oversized control body", async () => {
+    const handler = makeHandler({ maxBodyBytes: 512 });
+    const res = await handler.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({ type: "mount", path: `/org/${"9".repeat(2000)}/board` }),
+      }),
+    );
+    expect(res.status).toBe(413);
+    await handler.dispose();
+  });
+
+  it("still accepts a body within the limit", async () => {
+    const handler = makeHandler({ maxBodyBytes: 512 });
+    const instance = await mount(handler);
+    const res = await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({
+          v: V,
+          instance,
+          rpcId: "r1",
+          calls: [{ rpc: "add", payload: { item: "small" } }],
+        }),
+      }),
+    );
+    expect(res.status).toBe(202);
+    await handler.dispose();
+  });
+
+  it("error-acks an rpc batch that exceeds maxBatchCalls, running none of it", async () => {
+    const handler = makeHandler({ maxBatchCalls: 2 });
+    const instance = await mount(handler);
+    const streamRes = await handler.fetch(
+      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+    );
+    const sse = new SseReader(streamRes);
+    await sse.next(); // full snapshot
+
+    const calls = Array.from({ length: 5 }, (_, i) => ({
+      rpc: "add",
+      payload: { item: `x${i}` },
+    }));
+    const rpcRes = await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({ v: V, instance, rpcId: "flood", calls }),
+      }),
+    );
+    expect(rpcRes.status).toBe(202); // ack rides the stream
+    const ack = await sse.next();
+    expect(ack?.rpcId).toBe("flood");
+    expect(ack?.error?.message).toMatch(/batch/i);
+    expect(ack?.patches).toEqual([]);
+    await handler.dispose();
+  });
+
+  it("lets a raised maxBatchCalls through", async () => {
+    const handler = makeHandler({ maxBatchCalls: 8 });
+    const instance = await mount(handler);
+    const streamRes = await handler.fetch(
+      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+    );
+    const sse = new SseReader(streamRes);
+    await sse.next(); // full snapshot
+
+    const calls = Array.from({ length: 5 }, (_, i) => ({
+      rpc: "add",
+      payload: { item: `x${i}` },
+    }));
+    await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({ v: V, instance, rpcId: "ok", calls }),
+      }),
+    );
+    const ack = await sse.next();
+    expect(ack?.rpcId).toBe("ok");
+    expect(ack?.error).toBeUndefined();
+    expect(ack?.patches).toHaveLength(5);
+    await handler.dispose();
+  });
+
+  it("drops an oversized WS frame instead of parsing it", async () => {
+    const handler = makeHandler({ maxBodyBytes: 512 });
+    const instance = await mount(handler);
+    const envelopes: Envelope[] = [];
+    const sock = handler.socket("session-a", {}, (env) => envelopes.push(env));
+    envelopes.length = 0; // discard the mount's full snapshot
+
+    const big = "x".repeat(2000);
+    await sock.message(
+      JSON.stringify({
+        v: V,
+        instance,
+        rpcId: "ws-big",
+        calls: [{ rpc: "add", payload: { item: big } }],
+      }),
+    );
+    expect(envelopes).toHaveLength(0); // frame dropped, no ack
+    sock.close();
+    await handler.dispose();
+  });
+});
+
 describe("SSR attach adoption (§12)", () => {
   async function ssrBoot(handler: ReturnType<typeof makeHandler>) {
     const res = await handler.fetch(new Request(`${base}/org/5/board`, { headers: COOKIE }));

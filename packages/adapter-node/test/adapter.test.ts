@@ -290,6 +290,39 @@ describe("nodeAdapter", () => {
     expect(released).toBe(true);
   });
 
+  it("enforces the body cap on the node stream path (413)", async () => {
+    // The node adapter converts the raw request stream straight to a web
+    // Request, so without the handler-level cap this path was fully unbounded
+    // (issue #51). The cap lives in the shared handler, so Bun and Node behave
+    // identically.
+    const handler = createRpxdHandler({
+      routes: [{ path: "/", def }],
+      warmTtlMs: 10,
+      maxBodyBytes: 512,
+    });
+    const handle = nodeAdapter().serve({ port: 0, fetch: handler.fetch });
+    cleanups.push(
+      () => handler.dispose(),
+      () => handle.stop(),
+    );
+    await handle.ready;
+
+    const oversized = await fetch(`http://localhost:${handle.port}/__rpxd/control`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "mount", path: `/${"x".repeat(2000)}` }),
+    });
+    expect(oversized.status).toBe(413);
+
+    // A request within the limit still works.
+    const ok = await fetch(`http://localhost:${handle.port}/__rpxd/control`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "mount", path: "/" }),
+    });
+    expect(ok.status).toBe(200);
+  });
+
   it("reads env through the seam", () => {
     process.env.RPXD_NODE_TEST_ENV = "yes";
     expect(nodeAdapter().env("RPXD_NODE_TEST_ENV")).toBe("yes");
