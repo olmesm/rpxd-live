@@ -92,8 +92,8 @@ function readOnlyView<T extends object>(target: T, cache: WeakMap<object, unknow
 }
 
 /**
- * A mounted live object. Create via {@link LiveInstance.create} — mount runs
- * exactly once per page load (§12); cold wake always re-mounts (§9).
+ * A live object instance. Create via {@link LiveInstance.create} — `setup` runs
+ * once per identity (§12); cold wake always re-runs `setup`+`load` (§9).
  *
  * @example
  * ```ts
@@ -149,10 +149,10 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
-   * Mount a new instance. Restores the session slice and seq base from a
+   * Create an instance. Restores the session slice and seq base from a
    * version-matching snapshot (session continuity), then always re-runs
-   * `mount` for page state (§9). Rejection propagates — the transport maps it
-   * to the error route (§10).
+   * `setup` for page state (§9). Rejection propagates — the transport maps a
+   * thrown `redirect` to a 302 and any other throw to the error route (§10).
    */
   static async create<S, Path extends string, Session>(
     opts: CreateInstanceOptions<S, Path, Session>,
@@ -308,12 +308,13 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       await loader({ params: this.#params, search }, ctx);
       if (runId === this.#loadRunId) await this.#flushChunk();
     } catch (e) {
-      // A redirect is control-flow (§10): re-throw so the caller maps it to a
-      // 302 (SSR) / soft-nav (runtime). A data throw is reported server-side.
+      // Only the current run reacts — a superseded run (newer URL claimed the
+      // tag) neither redirects nor logs. A redirect is control-flow (§10):
+      // re-throw so the caller maps it to a 302 (SSR) / soft-nav (runtime). A
+      // data throw is reported server-side.
+      if (runId !== this.#loadRunId) return;
       if (isRedirect(e)) throw e;
-      if (runId === this.#loadRunId && !controller.signal.aborted) {
-        console.error("[rpxd] load failed:", e);
-      }
+      if (!controller.signal.aborted) console.error("[rpxd] load failed:", e);
     } finally {
       this.#untrackAbort(LOAD_KEY, controller);
     }

@@ -30,7 +30,7 @@ export class RedirectError extends Error {
 }
 
 /**
- * Build a {@link RedirectError} to throw from `mount` (§10).
+ * Build a {@link RedirectError} to throw from `setup`/`guard`/`load` (§10).
  *
  * @example
  * ```ts
@@ -50,7 +50,7 @@ export function redirect(to: string, status = 302): RedirectError {
  *
  * @example
  * ```ts
- * try { await mount(); } catch (e) { if (isRedirect(e)) return location(e.location); }
+ * try { await load(); } catch (e) { if (isRedirect(e)) return location(e.location); }
  * ```
  */
 export function isRedirect(value: unknown): value is RedirectError {

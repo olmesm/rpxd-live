@@ -33,16 +33,20 @@ export type RpcFacade<R> = Pretty<{
 }>;
 
 /**
- * Navigation (§7): path params are identity (navigate = remount); search
- * params are view state (`patch` → `params` reducer, no remount). `navigate`
- * autocompletes registered routes via the generated `Register` merge — the
- * same typing `Link`/`useNav` get in `@rpxd/client`.
+ * Navigation (§7): search params are view state — `patch` reruns `guard`+`load`
+ * with no `setup` (tier 1, state preserved); `navigate` changes the path, which
+ * reruns `setup`+`guard`+`load` (a soft reload over the live connection for the
+ * same route pattern, a component swap for a different one). `navigate`
+ * autocompletes registered routes via the generated `Register` merge — the same
+ * typing `Link`/`useNav` get in `@rpxd/client`.
  */
 export interface NavProp {
+  /** Change the path (§7): reruns `setup`+`guard`+`load`. Tiers 2/3 by matched pattern. */
   navigate<P extends RegisteredPath>(
     to: P,
     opts?: { params?: PathParams<P>; search?: Record<string, string> },
   ): void;
+  /** Change search params only (§7): reruns `guard`+`load`, no `setup`, state preserved. */
   patch(search: Record<string, string>): void;
 }
 

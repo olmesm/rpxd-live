@@ -579,6 +579,27 @@ describe("URL loader (§7)", () => {
     });
   });
 
+  it("a superseded run's redirect does not fire — only the current run redirects (§10)", async () => {
+    let release: () => void = () => {};
+    const gated: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async ({ search }) => {
+        if (search.filter === "stale") {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+          throw redirect("/should-not-happen");
+        }
+      },
+    };
+    const { inst } = await make(gated);
+    const stale = inst.load({ filter: "stale" }); // will be superseded mid-flight
+    await tick();
+    await inst.load({ filter: "fresh" }); // claims the run tag
+    release(); // the stale run now throws redirect — but it's no longer current
+    await expect(stale).resolves.toBeUndefined();
+  });
+
   it("receives typed path params alongside search in the url arg", async () => {
     let seen: { params: { id: string }; search: Record<string, string | undefined> } | undefined;
     const spy: LiveDefinition<TodoState, "/t/$id", Session> = {
