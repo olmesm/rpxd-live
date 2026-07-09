@@ -1,13 +1,14 @@
 /**
- * Server-side navigation from `mount` (§10, docs/routes-and-auth.md). Throwing
- * `redirect("/login")` sends the visitor elsewhere *before* the page renders:
- * the server turns it into a `302` on a full page load and a client navigation
- * during SPA nav. This is the login-bounce primitive — enforcement (checking
- * `scope.user`) stays userland; the redirect mechanism is the framework's.
+ * Server-side navigation from `setup`/`guard`/`load` (§10,
+ * docs/routes-and-auth.md). Throwing `redirect("/login")` sends the visitor
+ * elsewhere *before* the page renders: the server turns it into a `302` on a
+ * full page load and a client navigation during SPA nav. This is the
+ * login-bounce primitive — enforcement (checking `scope.user`) stays userland;
+ * the redirect mechanism is the framework's. `guard` is auth's home (§7).
  */
 
 /**
- * The signal a rejected `mount` throws to redirect. Carries the target
+ * The signal a rejected hook throws to redirect. Carries the target
  * `location` and HTTP `status` (302 by default). Branded so `isRedirect`
  * works even across module realms. Prefer the {@link redirect} helper.
  *
@@ -33,10 +34,9 @@ export class RedirectError extends Error {
  *
  * @example
  * ```ts
- * .mount(async (_params, ctx) => {
+ * .guard((_url, ctx) => {
  *   const scope = scopeFrom(ctx.session);
  *   if (!scope.user) throw redirect("/login");
- *   return { widgets: await listWidgets(scope) };
  * })
  * ```
  */

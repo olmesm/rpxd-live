@@ -55,7 +55,7 @@ export interface NavProp {
  * @example
  * ```tsx
  * live("/")
- *   .mount(async () => ({ todos: [] as Todo[] }))
+ *   .setup(() => ({ todos: [] as Todo[] }))
  *   .rpc("add", (r) => r.input(schema).handler(async (s, p) => { s.todos.push(p); }))
  *   .render(({ state, rpc, keyOf }) => (
  *     <ul>{state.todos.map((t) => <li key={keyOf(t.id)}>{t.text}</li>)}</ul>

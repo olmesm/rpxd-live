@@ -16,7 +16,8 @@ export {
   type LiveDefinition,
   type LiveRoute,
   live,
-  type MountCtx,
+  type Loader,
+  type LoaderOptions,
   type Mutator,
   type PathParams,
   type RpcChain,
@@ -26,6 +27,8 @@ export {
   type RpcDef,
   type RpcLongForm,
   type SearchParams,
+  type SetupCtx,
+  type Url,
 } from "./live.ts";
 export { matchHttpPath, matchHttpRoute, matchPath, matchRoute, type RouteMatch } from "./match.ts";
 export { isRedirect, RedirectError, redirect } from "./redirect.ts";
