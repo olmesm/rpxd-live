@@ -511,5 +511,3 @@ export function resourceFiles(spec: ResourceSpec): FileWrite[] {
       : { path: `routes/${spec.plural}.tsx`, contents: pageRoute(spec, n) };
   return [routeFile, { path: `domain/${n.domainFile}.ts`, contents: domain }, testFile];
 }
-
-export { httpRoute, namesOf, pageRoute };
