@@ -15,11 +15,24 @@ import { fileToRoute, pathToPattern, type RouteEntry, sortRoutes } from "./route
  */
 export function scanRoutes(routesDir: string): RouteEntry[] {
   const entries: RouteEntry[] = [];
-  for (const file of readdirSync(routesDir)) {
-    const entry = fileToRoute(file);
+  // `withFileTypes` so a *directory* named like a route file (`weird.tsx/`)
+  // isn't mistaken for a route.
+  for (const dirent of readdirSync(routesDir, { withFileTypes: true })) {
+    if (!dirent.isFile()) continue;
+    const entry = fileToRoute(dirent.name);
     if (entry) entries.push(entry);
   }
   return sortRoutes(entries);
+}
+
+/**
+ * A generated TS string literal, safely escaped. Route paths and filenames are
+ * untrusted (the filename is whatever is on disk), so they must never be
+ * spliced raw into generated source — a `"` would close the literal and inject
+ * arbitrary code / break the build.
+ */
+function lit(value: string): string {
+  return JSON.stringify(value);
 }
 
 /** Wrap map entries in braces, or `{}` when empty (a `{\n\n}` block is a format error). */
@@ -44,7 +57,9 @@ export function generateHandlersModule(
 ): string {
   const httpEntries = entries
     .filter((e) => e.kind === "http" && e.path !== null)
-    .map((e) => `  "${e.path}": () => import("${routesImportPrefix}/${e.file}"),`)
+    .map(
+      (e) => `  ${lit(e.path as string)}: () => import(${lit(`${routesImportPrefix}/${e.file}`)}),`,
+    )
     .join("\n");
   return `/**
  * Auto-generated server-only HTTP route map — do not edit; maintained by \`rpxd dev\`.
@@ -74,12 +89,14 @@ export function generateRoutesModule(
   const treeEntries = pages
     .map((e) => {
       const pattern = pathToPattern(e.path as string);
-      return `  "${e.path}": {\n    file: "${routesImportPrefix}/${e.file}",\n    pattern: "${pattern}",\n  },`;
+      return `  ${lit(e.path as string)}: {\n    file: ${lit(`${routesImportPrefix}/${e.file}`)},\n    pattern: ${lit(pattern)},\n  },`;
     })
     .join("\n");
 
   const moduleEntries = pages
-    .map((e) => `  "${e.path}": () => import("${routesImportPrefix}/${e.file}"),`)
+    .map(
+      (e) => `  ${lit(e.path as string)}: () => import(${lit(`${routesImportPrefix}/${e.file}`)}),`,
+    )
     .join("\n");
 
   const treeBlock = mapBlock(treeEntries);
@@ -88,7 +105,7 @@ export function generateRoutesModule(
   const shellEntry = (kind: RouteEntry["kind"], name: string) => {
     const e = shell(kind);
     return e
-      ? `export const ${name} = () => import("${routesImportPrefix}/${e.file}");`
+      ? `export const ${name} = () => import(${lit(`${routesImportPrefix}/${e.file}`)});`
       : `export const ${name} = undefined;`;
   };
 

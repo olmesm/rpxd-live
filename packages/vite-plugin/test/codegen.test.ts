@@ -8,7 +8,7 @@ import {
   generateRoutesModule,
   scanRoutes,
 } from "../src/codegen.ts";
-import { runCodegen } from "../src/index.ts";
+import { isRouteFilePath, runCodegen } from "../src/index.ts";
 import { fileToRoute, pathToPattern, type RouteEntry } from "../src/routes.ts";
 
 describe("fileToRoute (§7)", () => {
@@ -157,5 +157,44 @@ describe("codegen end-to-end", () => {
   it("generateHandlersModule renders {} when there are no HTTP routes", () => {
     const handlers = generateHandlersModule([{ file: "index.tsx", path: "/", kind: "page" }]);
     expect(handlers).toContain("export const routeHandlers = {} as const;");
+  });
+
+  it("escapes route paths/files so a crafted filename can't inject code", () => {
+    // A filename containing a double-quote would otherwise close the string
+    // literal and splice arbitrary text into the generated module.
+    const entries: RouteEntry[] = [{ file: 'ev"il.tsx', path: '/ev"il', kind: "page" }];
+    const routes = generateRoutesModule(entries);
+    // The raw, unescaped literal must not appear...
+    expect(routes).not.toContain('"/ev"il"');
+    // ...it must be JSON-escaped instead.
+    expect(routes).toContain(JSON.stringify('/ev"il'));
+    expect(routes).toContain(JSON.stringify('../routes/ev"il.tsx'));
+
+    const httpEntries: RouteEntry[] = [{ file: 'ev"il.ts', path: '/ev"il', kind: "http" }];
+    const handlers = generateHandlersModule(httpEntries);
+    expect(handlers).not.toContain('"/ev"il"');
+    expect(handlers).toContain(JSON.stringify('/ev"il'));
+  });
+
+  it("scanRoutes ignores directories that look like route files", () => {
+    const root = makeProject();
+    const routes = join(root, "routes");
+    mkdirSync(routes);
+    writeFileSync(join(routes, "index.tsx"), "export default 1;");
+    mkdirSync(join(routes, "weird.tsx")); // a *directory* named like a route file
+    expect(scanRoutes(routes).map((e) => e.path)).toEqual(["/"]);
+  });
+});
+
+describe("isRouteFilePath (watcher predicate, §7)", () => {
+  it("matches only files under the routes dir, with a separator boundary", () => {
+    const routes = join(tmpdir(), "app", "routes");
+    expect(isRouteFilePath(join(routes, "index.tsx"), routes)).toBe(true);
+    // a sibling dir sharing the string prefix must NOT match
+    expect(isRouteFilePath(join(tmpdir(), "app", "routes-backup", "index.tsx"), routes)).toBe(
+      false,
+    );
+    // non-route extension inside the dir
+    expect(isRouteFilePath(join(routes, "styles.css"), routes)).toBe(false);
   });
 });
