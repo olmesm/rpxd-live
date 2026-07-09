@@ -41,7 +41,14 @@ class RedisBus implements PubSubBus {
   }
 
   publish(msg: BroadcastMessage): void {
-    void this.client.publish(`${this.prefix}bus:${msg.topic}`, JSON.stringify(msg));
+    // Surface (rather than drop) a publish failure: a bare `void` on a
+    // rejecting promise is an unhandled rejection, which crashes Node under the
+    // default --unhandled-rejections=throw.
+    Promise.resolve(
+      this.client.publish(`${this.prefix}bus:${msg.topic}`, JSON.stringify(msg)),
+    ).catch((err) => {
+      console.error(`[rpxd] redis publish to "${msg.topic}" failed:`, err);
+    });
   }
 
   subscribe(topic: string, subscriberId: string, fn: (msg: BroadcastMessage) => void): () => void {
@@ -49,7 +56,16 @@ class RedisBus implements PubSubBus {
     let cancelled = false;
     void Promise.resolve(
       this.client.subscribe(`${this.prefix}bus:${topic}`, (raw) => {
-        const msg = JSON.parse(raw) as BroadcastMessage;
+        // The channel carries untrusted bytes (another service sharing the
+        // prefix, a truncated frame). A parse failure must not throw inside the
+        // client library's message-listener callback.
+        let msg: BroadcastMessage;
+        try {
+          msg = JSON.parse(raw) as BroadcastMessage;
+        } catch (err) {
+          console.error(`[rpxd] redis: dropped malformed message on "${topic}":`, err);
+          return;
+        }
         if (!msg.self && msg.senderId === subscriberId) return; // exclude-self (§8)
         fn(msg);
       }),
