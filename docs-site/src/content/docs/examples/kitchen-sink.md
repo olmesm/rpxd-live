@@ -28,9 +28,10 @@ bun run dev                          # http://localhost:3000
 
 :::note[On the StackBlitz link]
 StackBlitz opens the example in an in-browser editor to **read and fork** the
-source. rpxd's runtime needs **Bun** (`Bun.serve`, `bun:sqlite`), which
-StackBlitz's Node-based WebContainers don't provide, so run the dev server
-locally with `bun run dev`.
+source. rpxd's dev server runs on **Bun** (`bun run dev` → Vite-on-Bun +
+`bun:sqlite`), which StackBlitz's Node-based WebContainers don't provide, so run
+it locally with `bun run dev`. (The production runtime also has a Node ≥ 24
+adapter, but dev tooling is Bun-only.)
 :::
 
 ## The pages

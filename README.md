@@ -53,9 +53,9 @@ Each package has its own README.
 | [`@rpxd/vite-plugin`](./packages/vite-plugin) | route codegen (`.rpxd/routes.gen.ts`), path-literal maintenance |
 | [`@rpxd/cli`](./packages/cli) | `rpxd dev/build/start`, `defineConfig`, zero-config app shell |
 | [`@rpxd/testing`](./packages/testing) | `testLive(route)` harness: typed `t.rpc.*` against the real runtime |
-| [`@rpxd/storage-*`](./packages/storage-memory) | memory / session / sqlite (`bun:sqlite`) / redis adapters |
+| [`@rpxd/storage-*`](./packages/storage-memory) | memory / session / sqlite (`bun:sqlite`, or `better-sqlite3` via `@rpxd/storage-sqlite/node`) / redis adapters |
 | [`@rpxd/rsc`](./packages/rsc) | RSC fields (§16, `rsc: true`): Flight-serialized subtrees with `'use client'` islands |
-| [`@rpxd/adapter-node`](./packages/adapter-node) | `ServerAdapter` seam placeholder — no implementation; rpxd runs on Bun |
+| [`@rpxd/adapter-node`](./packages/adapter-node) | Node `ServerAdapter` (`node:http` + `ws`) — the Node ≥ 24 runtime; `rpxd start` selects it automatically off-Bun |
 
 ## Development
 

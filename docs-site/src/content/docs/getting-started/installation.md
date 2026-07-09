@@ -5,8 +5,17 @@ sidebar:
   order: 2
 ---
 
-rpxd runs on [Bun](https://bun.sh). The runtime uses `Bun.serve` (HTTP + WS on
-one port) and `bun:sqlite`; Vite runs on Bun for dev and build.
+rpxd develops and runs primarily on [Bun](https://bun.sh): `rpxd dev` and
+`rpxd build` run Vite on Bun, and the default runtime is `Bun.serve` (HTTP + WS
+on one port) with `bun:sqlite`.
+
+A **Node ≥ 24** runtime is also shipping. `@rpxd/adapter-node` mirrors the Bun
+adapter over `node:http` + `ws`, `@rpxd/storage-sqlite/node` swaps `bun:sqlite`
+for `better-sqlite3`, and `rpxd start` selects the Node adapter automatically
+when it isn't running under Bun. One caveat before it's turnkey: Node's ESM
+resolver needs explicit file extensions, so an app deployed on Node must use
+extensionful relative imports (`./adapters/auth.ts`) in `rpxd.config.ts` and
+anything it pulls in — Bun resolves those without extensions, Node does not.
 
 ## Try the example
 
@@ -33,7 +42,7 @@ markdown page (`/doc`) — it doubles as the acceptance suite.
 | --- | --- |
 | `rpxd dev` | One Bun process: Vite in middleware mode (HMR, codegen watcher) + the rpxd runtime, on one port. |
 | `rpxd build` | Production client + server bundles (`vite build`), plus the RSC bundle when enabled. |
-| `rpxd start` | Pure Bun runtime over the build — no Vite at runtime. |
+| `rpxd start` | Runtime over the build — no Vite. Bun by default; the `node:http` adapter (Node ≥ 24) when run off-Bun. |
 
 All three accept flags that override `rpxd.config.ts`, handy for exercising one
 app across transports and render modes without editing the config:

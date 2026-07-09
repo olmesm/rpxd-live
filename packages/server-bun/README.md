@@ -17,7 +17,8 @@ import it directly to embed rpxd in your own Bun server.
   SSR/`404` fallthrough — that's how webhooks and `/api/auth/*` are served.
 - **`bunAdapter`** — the `ServerAdapter` implementation over `Bun.serve`.
   The handler itself has no Bun types past this boundary, which is what
-  keeps a future Node adapter small.
+  kept the Node adapter ([`@rpxd/adapter-node`](../adapter-node), `node:http` +
+  `ws`) small.
 - **`wsTransport`** — the optional single-duplex-socket transport (§11):
   same envelopes, different framing.
 
