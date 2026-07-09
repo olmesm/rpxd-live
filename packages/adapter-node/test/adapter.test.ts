@@ -5,12 +5,47 @@
  * serves here through `node:http` bytes.
  */
 
+import { EventEmitter } from "node:events";
+import type { ServerResponse } from "node:http";
 import net from "node:net";
 import type { LiveDefinition } from "@rpxd/core";
 import { createRpxdHandler, wsTransport } from "@rpxd/server-bun";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { nodeAdapter } from "../src/index.ts";
+import { nodeAdapter, writeChunk } from "../src/index.ts";
+
+describe("writeChunk backpressure", () => {
+  it("resolves immediately when the socket accepts the write", async () => {
+    const res = Object.assign(new EventEmitter(), {
+      write: () => true,
+    }) as unknown as ServerResponse;
+    await writeChunk(res, new Uint8Array([1])); // must not hang
+  });
+
+  it("waits for 'drain' when the socket signals backpressure", async () => {
+    const res = Object.assign(new EventEmitter(), {
+      write: () => false,
+    }) as unknown as ServerResponse;
+    let resolved = false;
+    const p = writeChunk(res, new Uint8Array([1])).then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false); // parked on backpressure, not spinning
+    res.emit("drain");
+    await p;
+    expect(resolved).toBe(true);
+  });
+
+  it("stops waiting if the client goes away ('close')", async () => {
+    const res = Object.assign(new EventEmitter(), {
+      write: () => false,
+    }) as unknown as ServerResponse;
+    const p = writeChunk(res, new Uint8Array([1]));
+    res.emit("close");
+    await p; // resolves instead of leaking forever
+  });
+});
 
 /** Speak one raw HTTP request over a socket (fetch() forbids invalid Host headers). */
 function rawRequest(port: number, lines: string[]): Promise<string> {

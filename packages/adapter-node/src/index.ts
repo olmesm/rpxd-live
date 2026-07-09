@@ -59,6 +59,31 @@ function toWebRequest(req: IncomingMessage, res: ServerResponse): Request | null
   }
 }
 
+/**
+ * Write one chunk to the node response, awaiting `drain` when the socket
+ * signals backpressure (`write` returns `false`). Without this, a slow SSE/
+ * download client can't slow the producer and the stream buffers unboundedly
+ * in server memory. Resolves early on `close` so a departed client can't leak
+ * the wait forever.
+ *
+ * @example
+ * ```ts
+ * for await (const chunk of stream) await writeChunk(res, chunk);
+ * ```
+ */
+export function writeChunk(res: ServerResponse, value: Uint8Array): Promise<void> {
+  if (res.write(value)) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      res.off("drain", done);
+      res.off("close", done);
+      resolve();
+    };
+    res.once("drain", done);
+    res.once("close", done);
+  });
+}
+
 /** Stream a web `Response` back through the node response. */
 async function writeWebResponse(res: ServerResponse, webRes: Response): Promise<void> {
   res.statusCode = webRes.status;
@@ -77,7 +102,7 @@ async function writeWebResponse(res: ServerResponse, webRes: Response): Promise<
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      res.write(value);
+      await writeChunk(res, value);
     }
   } catch {
     // client went away mid-stream (SSE disconnects land here)
