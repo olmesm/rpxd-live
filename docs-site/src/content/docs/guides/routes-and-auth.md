@@ -155,10 +155,11 @@ export default live("/todos")
   .render(({ state }) => <ul>{/* … */}</ul>);
 ```
 
-**When the page's state *is* the user, the check can live in `setup`.** `setup`
-runs before `guard`, so a page whose skeleton depends on the identity (e.g.
-`{ email: user.email }`) may fail fast there instead — a coarse first gate,
-documented as allowed:
+**When the page's state *is* the user, the check can live in `setup`.** A route
+with no `.guard()` can fail fast right in `setup` — a page whose skeleton depends
+on the identity (e.g. `{ email: user.email }`) throws `redirect()` there instead
+of adding a separate gate. (If you *do* add a `.guard()`, it runs first, before
+`setup`, so a denied request never runs `setup` at all.)
 
 ```tsx
 // routes/account.tsx

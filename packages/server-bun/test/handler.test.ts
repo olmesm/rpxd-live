@@ -1,4 +1,10 @@
-import { type Envelope, type LiveDefinition, memory, type PROTOCOL_VERSION } from "@rpxd/core";
+import {
+  type Envelope,
+  type LiveDefinition,
+  memory,
+  type PROTOCOL_VERSION,
+  redirect,
+} from "@rpxd/core";
 import { describe, expect, it } from "vitest";
 import { createRpxdHandler } from "../src/handler.ts";
 import { matchPath, matchRoute } from "../src/match.ts";
@@ -690,6 +696,62 @@ describe("un-attached instance cleanup — no residual growth (#61 follow-up)", 
     await new Promise((r) => setTimeout(r, 80)); // past warmTtlMs
     expect(handler.instanceCount).toBe(0);
     expect(await storage.get("keep-x:/org/2/board")).toBeDefined(); // adopted → snapshot kept
+    await handler.dispose();
+  });
+});
+
+describe("guard runs before setup — denied requests allocate nothing (#8)", () => {
+  it("does not run setup when the guard denies", async () => {
+    let setupRuns = 0;
+    const guardedDef: LiveDefinition<{ ok: boolean }, "/guarded", Record<string, unknown>> = {
+      setup: () => {
+        setupRuns++;
+        return { ok: true };
+      },
+      guard: () => {
+        throw redirect("/login");
+      },
+    };
+    const handler = createRpxdHandler({ routes: [{ path: "/guarded", def: guardedDef }] });
+    const res = await handler.fetch(new Request(`${base}/guarded`, { headers: COOKIE }));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/login");
+    expect(setupRuns).toBe(0); // guard-first: a denied principal never triggers setup/subscriptions
+    expect(handler.instanceCount).toBe(0);
+    await handler.dispose();
+  });
+
+  it("disposes a half-built instance when the loader redirects (no orphaned subscription)", async () => {
+    let ghostReactions = 0;
+    const storage = memory();
+    const boomDef: LiveDefinition<{ n: number }, "/boom", Record<string, unknown>> = {
+      setup: (ctx) => {
+        ctx.subscribe("leak-topic"); // setup wires a subscription…
+        return { n: 0 };
+      },
+      load: () => {
+        throw redirect("/elsewhere"); // …then the loader bails out mid-mount
+      },
+      on: {
+        ping: (state) => {
+          ghostReactions++;
+          state.n++;
+        },
+      },
+    };
+    const handler = createRpxdHandler({ routes: [{ path: "/boom", def: boomDef }], storage });
+    const res = await handler.fetch(new Request(`${base}/boom`, { headers: COOKIE }));
+    expect(res.status).toBe(302); // the loader redirect propagates
+    // An orphaned (undisposed) instance would still be subscribed; a disposed one isn't.
+    storage.bus.publish({
+      topic: "leak-topic",
+      event: "ping",
+      payload: {},
+      senderId: "other",
+      self: false,
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(ghostReactions).toBe(0); // disposed on throw → unsubscribed → no ghost reaction
     await handler.dispose();
   });
 });

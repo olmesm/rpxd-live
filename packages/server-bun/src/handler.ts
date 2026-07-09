@@ -249,6 +249,65 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     await instance.loadForRender(search);
   }
 
+  /**
+   * Run `guard` for a not-yet-created instance (#8) — the mount stage that gates
+   * access *before* `setup`, so a denied principal never triggers `setup` (which
+   * wires pubsub subscriptions) or any allocation. Mirrors
+   * {@link LiveInstance.authorize}'s invocation against the request's freshly
+   * authenticated `session`; a deny (`throw redirect`) propagates. New mounts
+   * only — a live instance re-guards on URL change via `authorize` (latest-wins).
+   */
+  async function runGuard(
+    def: RouteRegistration["def"],
+    params: Record<string, string>,
+    session: unknown,
+    search: Record<string, string | undefined>,
+  ): Promise<void> {
+    const guard = def.guard;
+    if (!guard) return;
+    await guard({ params, search }, { params, session, signal: new AbortController().signal });
+  }
+
+  /**
+   * The mount-stage runner (#8): build a fresh instance through its ordered
+   * lifecycle stages — `guard → setup → load`. Guard runs first so a denied
+   * request allocates nothing; a throw from `load` after `setup` disposes the
+   * half-built instance (without a snapshot) so it can't orphan the pubsub
+   * subscriptions `setup` wired. Redirects and errors propagate to the caller.
+   */
+  async function buildInstance(
+    sid: string,
+    pathname: string,
+    sessionData: unknown,
+    route: RouteRegistration,
+    match: { path: string; params: Record<string, string> },
+    search: Record<string, string | undefined>,
+  ): Promise<InstanceEntry["instance"]> {
+    if (route.def.guard) {
+      await runGuard(route.def, match.params, sessionData, search); // deny → throw, nothing built
+    }
+    const instance = await LiveInstance.create({
+      id: crypto.randomUUID(),
+      def: route.def,
+      params: match.params,
+      session: (sessionData as Record<string, unknown>) ?? {},
+      storage,
+      storageKey: `${sid}:${pathname}`,
+      defaultRateLimit: opts.defaultRateLimit,
+    });
+    try {
+      if (route.def.load) await instance.loadForRender(search);
+    } catch (e) {
+      // Load bailed out (e.g. a loader redirect) → tear down so we don't orphan
+      // the subscriptions `setup` wired. `dispose(false)` skips the final
+      // snapshot; the one `create` wrote at this key stays (bounded to one, and
+      // overwritten by the next successful mount) — session continuity, not a leak.
+      await instance.dispose(false);
+      throw e;
+    }
+    return instance;
+  }
+
   async function mountInstance(
     sid: string,
     sessionData: unknown,
@@ -292,16 +351,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     if (!match) throw new NotFoundError(pathname);
     const route = opts.routes.find((r) => r.path === match.path) as RouteRegistration;
 
-    const instance = await LiveInstance.create({
-      id: crypto.randomUUID(),
-      def: route.def,
-      params: match.params,
-      session: (sessionData as Record<string, unknown>) ?? {},
-      storage,
-      storageKey: `${sid}:${pathname}`,
-      defaultRateLimit: opts.defaultRateLimit,
-    });
-    await reconcileUrl(route.def, instance, search);
+    // Guard → setup → load, with cleanup on throw (#8). A deny or loader redirect
+    // throws out before the instance is registered below.
+    const instance = await buildInstance(sid, pathname, sessionData, route, match, search);
 
     const entry: InstanceEntry = {
       instance,

@@ -98,11 +98,11 @@ const accountRoute = (): string => `import { live, redirect } from "@rpxd/core";
 import { scopeFrom } from "../domain/scope";
 
 /**
- * A protected page whose state *is* the user, so the check lives in \`setup\`
- * (which runs before \`guard\`): reading the scope and — when there's no user —
- * throwing \`redirect("/login")\` (§10, the routes & auth guide) is the coarse
- * fail-fast. A full load gets a 302, a soft \`Link\` navigation is bounced
- * client-side.
+ * A protected page whose state *is* the user, so the check lives in \`setup\`:
+ * reading the scope and — when there's no user — throwing \`redirect("/login")\`
+ * (§10, the routes & auth guide) is the coarse fail-fast. A full load gets a
+ * 302, a soft \`Link\` navigation is bounced client-side. (A route with a
+ * \`.guard()\` gates even earlier — guard runs before \`setup\` on a fresh mount.)
  */
 export default live("/account")
   .setup((ctx) => {
