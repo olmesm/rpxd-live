@@ -71,9 +71,16 @@ export class LocalBus implements PubSubBus {
   publish(msg: BroadcastMessage): void {
     const subs = this.#topics.get(msg.topic);
     if (!subs) return;
-    for (const [id, fn] of subs) {
+    // Snapshot so an unsubscribe during delivery can't disturb iteration, and
+    // isolate each subscriber: one throwing handler must not halt fan-out to
+    // the rest, nor unwind into the broadcasting rpc handler.
+    for (const [id, fn] of [...subs]) {
       if (!msg.self && id === msg.senderId) continue;
-      fn(msg);
+      try {
+        fn(msg);
+      } catch (err) {
+        console.error(`[rpxd] broadcast subscriber "${id}" on "${msg.topic}" threw:`, err);
+      }
     }
   }
 
