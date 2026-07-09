@@ -8,7 +8,7 @@
  * (dev :3000, e2e :4517) without hardcoding a `baseURL`.
  */
 import { betterAuth } from "better-auth";
-import { authAdapter } from "./db";
+import { authAdapter } from "./db.ts";
 
 export const auth = betterAuth({
   database: authAdapter,

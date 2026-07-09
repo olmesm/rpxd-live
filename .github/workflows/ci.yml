@@ -83,6 +83,28 @@ jobs:
       - name: Unit tests (real Node)
         run: node node_modules/vitest/vitest.mjs run
 
+      # End-to-end deploy smoke: build the example (Bun/Vite), then serve it with
+      # `rpxd start` under the real Node binary and hit it over HTTP. Proves the
+      # whole production path — config load, nodeAdapter, SSR, static assets —
+      # runs on Node, not just the unit adapters. Bun equivalent:
+      # packages/cli/test-bun/build-start.test.ts.
+      - name: rpxd start deploy smoke (real Node)
+        working-directory: examples/kitchen-sink
+        run: |
+          set -euxo pipefail
+          bun run "$GITHUB_WORKSPACE/packages/cli/src/cli.ts" build
+          PORT=3799 node "$GITHUB_WORKSPACE/packages/cli/src/cli.ts" start &
+          SPID=$!
+          for _ in $(seq 1 30); do
+            curl -sf "http://localhost:3799/" >/dev/null && break || sleep 1
+          done
+          body=$(curl -sf "http://localhost:3799/")
+          echo "$body" | grep -q 'id="__rpxd"'
+          asset=$(printf '%s' "$body" | grep -oE '/assets/[^"]+\.js' | head -1)
+          test -n "$asset"
+          curl -sf -o /dev/null "http://localhost:3799${asset}"
+          kill "$SPID"
+
   generators:
     name: Generators (init + scaffold + run)
     runs-on: ubuntu-latest

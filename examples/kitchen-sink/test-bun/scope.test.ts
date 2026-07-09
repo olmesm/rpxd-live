@@ -5,7 +5,7 @@
  * end-to-end by the Playwright auth spec (they need a real DB + server).
  */
 import { describe, expect, it } from "bun:test";
-import { scopeFrom } from "../domain/scope";
+import { scopeFrom } from "../domain/scope.ts";
 
 describe("scopeFrom", () => {
   it("carries the authenticated user when present", () => {

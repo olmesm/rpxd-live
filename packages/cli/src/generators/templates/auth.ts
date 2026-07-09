@@ -14,7 +14,7 @@ const authAdapter = (): string => `/**
  * \`trustedOrigins\` echoes the request origin so it works on any port.
  */
 import { betterAuth } from "better-auth";
-import { authAdapter } from "./db";
+import { authAdapter } from "./db.ts";
 
 export const auth = betterAuth({
   database: authAdapter,
@@ -30,13 +30,13 @@ const apiAuthRoute = (): string => `/**
  * forwards every method — the library owns sign-up/in/out and session.
  */
 import { route } from "@rpxd/core";
-import { auth } from "../adapters/auth";
+import { auth } from "../adapters/auth.ts";
 
 export default route("/api/auth/$").all((req) => auth.handler(req));
 `;
 
 const loginRoute = (): string => `import { live } from "@rpxd/core";
-import { authClient } from "../adapters/auth-client";
+import { authClient } from "../adapters/auth-client.ts";
 
 /**
  * Login page. Issuance is HTTP, not an rpc (it must set a cookie), so it uses
@@ -95,7 +95,7 @@ export default live("/login")
 `;
 
 const accountRoute = (): string => `import { live, redirect } from "@rpxd/core";
-import { scopeFrom } from "../domain/scope";
+import { scopeFrom } from "../domain/scope.ts";
 
 /**
  * A protected page whose state *is* the user, so the check lives in \`setup\`

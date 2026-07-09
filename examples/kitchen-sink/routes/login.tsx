@@ -1,5 +1,5 @@
 import { live } from "@rpxd/core";
-import { authClient } from "../adapters/auth-client";
+import { authClient } from "../adapters/auth-client.ts";
 
 /**
  * Login page. Issuance is HTTP, not an rpc (it must set a cookie), so it uses
