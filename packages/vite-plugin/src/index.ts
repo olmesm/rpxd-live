@@ -1,6 +1,6 @@
 /**
  * rpxd Vite plugin (§14): route codegen + path-literal maintenance.
- * (Reducer HMR and RSC wiring arrive with the dev server / RSC steps.)
+ * (Reducer HMR and RSC wiring live in the CLI dev server, not this plugin.)
  *
  * @packageDocumentation
  */

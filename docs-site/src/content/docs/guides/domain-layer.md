@@ -57,6 +57,8 @@ layer off the database directly buys you:
   `examples/kitchen-sink/test-bun/scope.test.ts`); the DB-backed queries are
   integration-tested end to end by the Playwright suite. Mock at the domain
   boundary — coarse and stable — instead of reaching for a db handle on `ctx`.
+  ([Testing](/rpxd-live/guides/testing/) covers the `testLive` harness and the
+  test tiers.)
 - **Transactions land where they belong.** A DB transaction opens and closes
   *inside* a domain function. Keeping the db off `ctx` (spec §10) follows from
   this: a transaction that lived on `ctx` would span a handler's awaits, and
