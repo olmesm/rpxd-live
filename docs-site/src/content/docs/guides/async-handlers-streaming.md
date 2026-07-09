@@ -74,3 +74,9 @@ rpc declared `.onError`, that sync mutator runs as a queued flush and its
 repairs ride the error ack. `sync.errors` is populated on the client. **Database
 atomicity stays your responsibility** — wrap writes in a transaction inside your
 `domain/` function; `onError` repairs *state*, not the database.
+
+## Testing
+
+Drive a streaming handler with [`testLive`](/rpxd-live/guides/testing/), await
+`t.settled()`, then assert both the final `t.state` and the mid-handler chunk
+envelopes (`t.envelopes` entries with `patches` and no `rpcId`).

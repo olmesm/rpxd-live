@@ -62,3 +62,10 @@ want the row to remount and lose focus/animation. rpxd handles this:
 
 For shapes the position-matcher can't infer, `ctx.resolveId()` is the escape
 hatch. Id linking is entirely client-side; the wire is never rewritten.
+
+## Testing
+
+Optimistic replay is client-side, so exercise the full round trip
+(instant render → server id without remount) end to end with Playwright. Use the
+[`testLive`](/rpxd-live/guides/testing/) harness to pin the **server contract**
+the optimism mirrors — the handler's patches and the id the ack resolves.

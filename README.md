@@ -55,7 +55,7 @@ Each package has its own README.
 | [`@rpxd/testing`](./packages/testing) | `testLive(route)` harness: typed `t.rpc.*` against the real runtime |
 | [`@rpxd/storage-*`](./packages/storage-memory) | memory / session / sqlite (`bun:sqlite`) / redis adapters |
 | [`@rpxd/rsc`](./packages/rsc) | RSC fields (§16, `rsc: true`): Flight-serialized subtrees with `'use client'` islands |
-| [`@rpxd/adapter-node`](./packages/adapter-node) | `ServerAdapter` seam placeholder — no implementation; rpxd runs on Bun |
+| [`@rpxd/adapter-node`](./packages/adapter-node) | Node `ServerAdapter` (`node:http` + `ws`), Node ≥ 24 — mirrors `bunAdapter` |
 
 ## Development
 

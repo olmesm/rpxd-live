@@ -194,7 +194,6 @@ Deliberately not covered by this spec; the seams below keep each addable later w
 - Presence recipe (userland, ~20 lines)
 - CRDT field type for collaborative text
 - Per-rpc `concurrent` flag
-- ~~Node server adapter~~ — **shipped**: `@rpxd/adapter-node` (`node:http` + `ws`, §14), Node ≥ 24
 
 ## 14. Zero-Config App Shell, Runtime & Tooling
 Userland = config file + `routes/`. Framework owns server, client entry, hydration, bundling.

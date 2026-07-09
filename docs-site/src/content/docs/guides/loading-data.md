@@ -106,8 +106,8 @@ never a timer.
 `load` writes **page state** through `ctx.patchState` (typed from `setup`, same
 as an rpc handler); `ctx.state` is a read-only view. Its **first argument is the
 whole URL** — `{ params, search }`. `search` is untyped view state
-(`Record<string, string | undefined>`); typed per-route search params are a v2
-item, so narrow and default it yourself (`search.filter ?? "open"`). `params`
+(`Record<string, string | undefined>`), so narrow and default it yourself
+(`search.filter ?? "open"`). `params`
 (from `/org/$orgId`) are typed, like everywhere else. And there's no built-in
 `paginated()` helper: the patterns that follow are ~15-line loaders, because the
 loader already is the abstraction.
