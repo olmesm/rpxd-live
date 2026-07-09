@@ -5,7 +5,7 @@
  * @packageDocumentation
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import type { Plugin } from "vite";
 import {
   ensurePathLiteral,
@@ -22,6 +22,23 @@ export {
   scanRoutes,
 } from "./codegen.ts";
 export { fileToRoute, pathToPattern, type RouteEntry, sortRoutes } from "./routes.ts";
+
+/**
+ * Whether a watcher file event refers to a route file inside `routesDir`. The
+ * containment check uses a path-separator boundary so a sibling directory that
+ * merely shares the prefix (`routes-backup/`) does not match `routes/`.
+ *
+ * @example
+ * ```ts
+ * isRouteFilePath("/app/routes/index.tsx", "/app/routes"); // true
+ * isRouteFilePath("/app/routes-backup/index.tsx", "/app/routes"); // false
+ * ```
+ */
+export function isRouteFilePath(file: string, routesDir: string): boolean {
+  const abs = resolve(file);
+  const within = abs === routesDir || abs.startsWith(routesDir + sep);
+  return within && fileToRoute(basename(file)) !== null;
+}
 
 /** Options for {@link rpxd} and {@link runCodegen}. */
 export interface RpxdPluginOptions {
@@ -102,11 +119,8 @@ export function rpxd(options: RpxdPluginOptions = {}): Plugin {
       runCodegen(root, options);
       server.watcher.add(routesDir);
 
-      const isRouteFile = (file: string) =>
-        resolve(file).startsWith(routesDir) && fileToRoute(basename(file)) !== null;
-
       const onFileEvent = (file: string) => {
-        if (isRouteFile(file)) runCodegen(root, options);
+        if (isRouteFilePath(file, routesDir)) runCodegen(root, options);
       };
       server.watcher.on("add", onFileEvent);
       server.watcher.on("unlink", onFileEvent);
