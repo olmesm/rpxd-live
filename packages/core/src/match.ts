@@ -6,6 +6,20 @@ export interface RouteMatch {
 }
 
 /**
+ * Decode a param segment, or `null` on malformed percent-encoding (`%zz`, a
+ * lone `%`, a truncated multibyte). A bad-encoding segment is treated as a
+ * non-match so the router returns a clean 404 rather than letting a `URIError`
+ * bubble up as a 500.
+ */
+function safeDecode(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Match a concrete pathname against a route path with `$param` segments.
  * Returns the captured params, or `null` when it doesn't match.
  *
@@ -22,8 +36,11 @@ export function matchPath(routePath: string, pathname: string): Record<string, s
   for (let i = 0; i < routeSegs.length; i++) {
     const route = routeSegs[i] as string;
     const actual = pathSegs[i] as string;
-    if (route.startsWith("$")) params[route.slice(1)] = decodeURIComponent(actual);
-    else if (route !== actual) return null;
+    if (route.startsWith("$")) {
+      const decoded = safeDecode(actual);
+      if (decoded === null) return null;
+      params[route.slice(1)] = decoded;
+    } else if (route !== actual) return null;
   }
   return params;
 }
@@ -73,11 +90,20 @@ export function matchHttpPath(routePath: string, pathname: string): Record<strin
   for (let i = 0; i < fixed.length; i++) {
     const route = fixed[i] as string;
     const actual = pathSegs[i] as string;
-    if (route.startsWith("$")) params[route.slice(1)] = decodeURIComponent(actual);
-    else if (route !== actual) return null;
+    if (route.startsWith("$")) {
+      const decoded = safeDecode(actual);
+      if (decoded === null) return null;
+      params[route.slice(1)] = decoded;
+    } else if (route !== actual) return null;
   }
   if (catchAll) {
-    params.$ = pathSegs.slice(fixed.length).map(decodeURIComponent).join("/");
+    const tail: string[] = [];
+    for (const seg of pathSegs.slice(fixed.length)) {
+      const decoded = safeDecode(seg);
+      if (decoded === null) return null;
+      tail.push(decoded);
+    }
+    params.$ = tail.join("/");
   }
   return params;
 }
