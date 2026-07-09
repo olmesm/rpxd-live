@@ -237,6 +237,46 @@ describe("stream + rpc + control (§11)", () => {
     await handler.dispose();
   });
 
+  it("refuses rpc/control against another session's instance id (IDOR)", async () => {
+    const handler = makeHandler();
+    const owner = { cookie: "rpxd_sid=owner" };
+    const attacker = { cookie: "rpxd_sid=attacker" };
+
+    const mountRes = await handler.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers: owner,
+        body: JSON.stringify({ type: "mount", path: "/org/9/board" }),
+      }),
+    );
+    const { instance } = await mountRes.json();
+
+    // A different session must not be able to drive the owner's instance.
+    const rpcRes = await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: attacker,
+        body: JSON.stringify({
+          v: V,
+          instance,
+          rpcId: "x",
+          calls: [{ rpc: "add", payload: { item: "pwned" } }],
+        }),
+      }),
+    );
+    expect(rpcRes.status).toBe(404);
+
+    const ctlRes = await handler.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers: attacker,
+        body: JSON.stringify({ type: "resync", instance }),
+      }),
+    );
+    expect(ctlRes.status).toBe(404);
+    await handler.dispose();
+  });
+
   it("routes params control to the session slice", async () => {
     const handler = makeHandler();
     const mountRes = await handler.fetch(
