@@ -26,7 +26,7 @@ describe("dev error page (§14)", () => {
     expect(res.status).toBe(500);
     const html = await res.text();
     expect(html).toContain("rpxd-dev-error"); // framework overlay, not the app __error page
-    expect(html).toContain("mount exploded"); // real message, dev only
+    expect(html).toContain("setup exploded"); // real message, dev only
     expect(html).toContain("boom.tsx"); // sourcemapped frame pointing at the route file
   });
 });

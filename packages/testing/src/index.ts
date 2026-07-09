@@ -74,8 +74,12 @@ export interface TestLive<S, Session, Rpc> {
    * semantics behave exactly as in production.
    */
   broadcast(topic: string, event: string, payload: unknown): void;
-  /** Run the route's `params` reducer against the session slice (§7). */
-  setSearch(search: SearchParams): Promise<void>;
+  /**
+   * Reconcile the instance to a new URL (§7), exactly as a `nav.patch` /
+   * page load does: run `guard` (throws `redirect` on a deny) then `load`,
+   * awaiting the stream to settle. Assert on `state`/`envelopes` afterwards.
+   */
+  navigate(search: SearchParams): Promise<void>;
   /**
    * Resolve once everything in flight has landed: pending rpcs (including
    * their streaming flushes), scheduled patch flushes, and the mutation
@@ -181,7 +185,10 @@ export async function testLive<S, Path extends string, Session, Component>(
         self: false,
       });
     },
-    setSearch: (search) => instance.setSearch(search),
+    async navigate(search) {
+      await instance.authorize(search);
+      await instance.load(search);
+    },
     async settled() {
       while (inflight.size > 0) {
         await Promise.all([...inflight]);

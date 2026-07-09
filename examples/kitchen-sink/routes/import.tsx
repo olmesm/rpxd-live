@@ -6,7 +6,7 @@ import { live } from "@rpxd/core";
  * import runs. The `finally` flush rides the ack.
  */
 export default live("/import")
-  .mount(async () => ({ items: [] as string[], importing: false }))
+  .setup(() => ({ items: [] as string[], importing: false }))
   .rpc("importDemo", (r) =>
     r.handler(async (_payload, ctx) => {
       ctx.patchState((s) => {

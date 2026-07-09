@@ -52,7 +52,7 @@ describe("redis storage adapter", () => {
       log: string[];
     }
     const defFor = (): LiveDefinition<S, "/room", Record<string, unknown>> => ({
-      mount: async (_p, ctx) => {
+      setup: (ctx) => {
         ctx.subscribe("room:1");
         return { log: [] };
       },

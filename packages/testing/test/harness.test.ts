@@ -13,7 +13,7 @@ const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 let counter = 0;
 
 const todosRoute = live("/todos")
-  .mount(async () => ({ todos: [] as Todo[], log: [] as string[] }))
+  .setup(() => ({ todos: [] as Todo[], log: [] as string[] }))
   .rpc("add", (r) =>
     r.input(z.object({ text: z.string().min(1) })).handler(async ({ text }, ctx) => {
       ctx.patchState((s) => {
@@ -73,7 +73,7 @@ describe("testLive: mount + typed rpc calls", () => {
 
 describe("testLive: streaming + settled", () => {
   const streamRoute = live("/stream")
-    .mount(async () => ({ items: [] as string[], running: false }))
+    .setup(() => ({ items: [] as string[], running: false }))
     .rpc("run", (r) =>
       r.handler(async (_p, ctx) => {
         ctx.patchState((s) => {
@@ -107,16 +107,16 @@ describe("testLive: streaming + settled", () => {
 
 describe("testLive: broadcast injection + search params", () => {
   const roomRoute = live("/room")
-    .mount(async (_p, ctx) => {
+    .setup((ctx) => {
       ctx.subscribe("room:1");
       return { log: [] as string[], filter: "all" };
     })
     .on("user.joined", (state, p: { name: string }) => {
       state.log.push(`joined:${p.name}`);
     })
-    .params(async ({ filter }, ctx) => {
+    .load(async ({ search }, ctx) => {
       ctx.patchState((s) => {
-        s.filter = filter ?? "all";
+        s.filter = search.filter ?? "all";
       });
     })
     .render(() => null);
@@ -129,9 +129,9 @@ describe("testLive: broadcast injection + search params", () => {
     await t.dispose();
   });
 
-  it("setSearch runs the params loader, writing page state (§7)", async () => {
+  it("navigate runs guard+load, writing page state (§7)", async () => {
     const t = await testLive(roomRoute);
-    await t.setSearch({ filter: "done" });
+    await t.navigate({ filter: "done" });
     expect(t.state.filter).toBe("done");
     expect(t.envelopes.at(-1)?.patches?.[0]?.path).toEqual(["filter"]);
     await t.dispose();
@@ -140,7 +140,7 @@ describe("testLive: broadcast injection + search params", () => {
   it("shares a storage adapter for multiplayer tests", async () => {
     const storage = memory();
     const chatRoute = live("/chat")
-      .mount(async (_p, ctx) => {
+      .setup((ctx) => {
         ctx.subscribe("chat");
         return { log: [] as string[] };
       })
@@ -167,9 +167,9 @@ describe("testLive: broadcast injection + search params", () => {
 });
 
 describe("testLive: path params + dispose", () => {
-  it("passes typed path params through to mount", async () => {
+  it("passes typed path params through to setup", async () => {
     const route = live("/org/$orgId")
-      .mount(async ({ orgId }) => ({ orgId }))
+      .setup((ctx) => ({ orgId: ctx.params.orgId }))
       .render(() => null);
     const t = await testLive(route, { params: { orgId: "acme" } });
     expect(t.state.orgId).toBe("acme");
@@ -183,7 +183,7 @@ describe("testLive: path params + dispose", () => {
       release = r;
     });
     const route = live("/watch")
-      .mount(async () => ({ n: 0 }))
+      .setup(() => ({ n: 0 }))
       .rpc("watch", (r) =>
         r.handler(async (_p, ctx) => {
           ctx.signal.addEventListener("abort", () => {

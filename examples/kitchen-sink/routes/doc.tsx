@@ -10,13 +10,22 @@ const INITIAL = "# rpxd doc\nrendered with a *server-only* markdown module";
  * renderer, and the 'use client' island inside it hydrates interactive.
  */
 export default live("/doc")
-  .mount(async () => {
-    const [{ rsc }, { DocBody }] = await Promise.all([
-      import("@rpxd/rsc"),
-      import("../lib/components/markdown.tsx"),
-    ]);
-    return { source: INITIAL, body: (await rsc(<DocBody source={INITIAL} />)) as unknown };
-  })
+  // `setup` is sync (§7) — it returns the skeleton; the server-only RSC render
+  // is IO, so it runs in `load`. `blockSsr` awaits it into the first document.
+  .setup(() => ({ source: INITIAL, body: null as unknown }))
+  .load(
+    async (_url, ctx) => {
+      const [{ rsc }, { DocBody }] = await Promise.all([
+        import("@rpxd/rsc"),
+        import("../lib/components/markdown.tsx"),
+      ]);
+      const body = (await rsc(<DocBody source={INITIAL} />)) as unknown;
+      ctx.patchState((s) => {
+        s.body = body;
+      });
+    },
+    { blockSsr: true },
+  )
   .rpc("append", (r) =>
     r.handler(async ({ text }: { text: string }, ctx) => {
       const [{ rsc }, { DocBody }] = await Promise.all([

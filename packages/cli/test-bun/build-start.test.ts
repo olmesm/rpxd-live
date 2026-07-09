@@ -116,7 +116,7 @@ describe("rpxd start (pure Bun, no Vite)", () => {
     expect(res.status).toBe(500);
     const html = await res.text();
     expect(html).toContain("error-page"); // the app's __error shell page
-    expect(html).not.toContain("mount exploded"); // details stay server-side
+    expect(html).not.toContain("setup exploded"); // details stay server-side
     expect(html).toMatch(/ref: [0-9a-f]{8}/); // correlate with the server log
   });
 });

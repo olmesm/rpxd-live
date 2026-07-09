@@ -45,7 +45,7 @@ import { authClient } from "../adapters/auth-client";
  * session (docs/routes-and-auth.md).
  */
 export default live("/login")
-  .mount(async () => ({ error: "" as string }))
+  .setup(() => ({ error: "" as string }))
   .rpc("setError", (r) =>
     r.handler(async ({ message }: { message: string }, ctx) => {
       ctx.patchState((s) => {
@@ -98,12 +98,14 @@ const accountRoute = (): string => `import { live, redirect } from "@rpxd/core";
 import { scopeFrom } from "../domain/scope";
 
 /**
- * A protected page. \`mount\` reads the scope and — when there's no user —
- * throws \`redirect("/login")\` (§10, docs/routes-and-auth.md): a full load gets
- * a 302, a soft \`Link\` navigation is bounced client-side.
+ * A protected page whose state *is* the user, so the check lives in \`setup\`
+ * (which runs before \`guard\`): reading the scope and — when there's no user —
+ * throwing \`redirect("/login")\` (§10, docs/routes-and-auth.md) is the coarse
+ * fail-fast. A full load gets a 302, a soft \`Link\` navigation is bounced
+ * client-side.
  */
 export default live("/account")
-  .mount(async (_params, ctx) => {
+  .setup((ctx) => {
     const scope = scopeFrom(ctx.session);
     if (!scope.user) throw redirect("/login");
     return { email: scope.user.email };

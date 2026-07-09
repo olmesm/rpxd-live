@@ -11,14 +11,14 @@ const asFilter = (v: string | undefined): TodoFilter =>
 // docs/domain-layer.md). Handlers stay thin: derive the scope from
 // ctx.session, call the domain fn, then patchState.
 //
-// `mount` sets up the URL-invariant shell; `params` is the loader (§7) — the
-// single place the (filtered) list is fetched, on first paint and on every
-// `nav.patch`. `blockSsr` keeps the first document crawlable/data-complete.
+// `setup` (sync) returns the URL-invariant skeleton; `load` is the loader (§7)
+// — the single place the (filtered) list is fetched, on first paint and on
+// every `nav.patch`. `blockSsr` keeps the first document crawlable/data-complete.
 export default live("/")
-  .mount(async () => ({ todos: [] as TodoRow[], filter: "all" as TodoFilter, loading: true }))
-  .params(
-    async ({ filter }, ctx) => {
-      const next = asFilter(filter);
+  .setup(() => ({ todos: [] as TodoRow[], filter: "all" as TodoFilter, loading: true }))
+  .load(
+    async ({ search }, ctx) => {
+      const next = asFilter(search.filter);
       // Synchronous projection: the tab flips instantly and the previous
       // window stays visible (keepPreviousData) while the query runs.
       ctx.patchState((s) => {

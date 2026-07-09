@@ -8,7 +8,7 @@ import { z } from "zod";
 import { testLive } from "../src/index.ts";
 
 const route = live("/org/$orgId")
-  .mount(async ({ orgId }) => ({ orgId, todos: [] as { id: string; text: string }[] }))
+  .setup((ctx) => ({ orgId: ctx.params.orgId, todos: [] as { id: string; text: string }[] }))
   .rpc("add", (r) =>
     r.input(z.object({ text: z.string() })).handler(async ({ text }, ctx) => {
       ctx.patchState((s) => {

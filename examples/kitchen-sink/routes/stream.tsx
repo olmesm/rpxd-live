@@ -11,7 +11,7 @@ const TOKENS = "the quick brown fox jumps over the lazy dog".split(" ");
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export default live("/stream")
-  .mount(async () => ({ answer: "", streaming: false }))
+  .setup(() => ({ answer: "", streaming: false }))
   .rpc("generate", (r) =>
     r.handler(async (_payload, ctx) => {
       ctx.patchState((s) => {
