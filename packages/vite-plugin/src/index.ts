@@ -27,6 +27,12 @@ export { fileToRoute, pathToPattern, type RouteEntry, sortRoutes } from "./route
  * Whether a watcher file event refers to a route file inside `routesDir`. The
  * containment check uses a path-separator boundary so a sibling directory that
  * merely shares the prefix (`routes-backup/`) does not match `routes/`.
+ *
+ * @example
+ * ```ts
+ * isRouteFilePath("/app/routes/index.tsx", "/app/routes"); // true
+ * isRouteFilePath("/app/routes-backup/index.tsx", "/app/routes"); // false
+ * ```
  */
 export function isRouteFilePath(file: string, routesDir: string): boolean {
   const abs = resolve(file);
