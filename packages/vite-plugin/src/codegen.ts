@@ -31,7 +31,7 @@ function mapBlock(entriesStr: string): string {
  * Render the server-only `handlers.gen.ts` module: lazy importers for HTTP
  * `route()` files. Kept in a **separate** file the client entry never imports —
  * co-locating these dynamic imports with `routeModules` would drag every HTTP
- * route (and its server-only deps) into the client bundle (docs/routes-and-auth.md).
+ * route (and its server-only deps) into the client bundle (the routes & auth guide).
  *
  * @example
  * ```ts

@@ -38,7 +38,7 @@ Immer patches over a push stream with seq numbers; full snapshot as recovery.
 
 - Every `patchState`/handler flush wrapped in `produceWithPatches`; patches pushed to subscriber
 - String-suffix growth (`s.text += delta`) compiles to an **`append` patch op** carrying only the delta — LLM/token streams are O(delta) on the wire, not O(total)
-- Envelope: `{ seq, patches | full, rpcId?, idMap?, error? }` — **transport-agnostic**; written as one-page protocol doc first
+- Envelope: `{ seq, patches | full, rpcId?, idMap?, error? }` — **transport-agnostic** (full envelope + framing in the wire-protocol doc)
 - Session-slice patches share the stream, namespaced paths (`["$session", ...]`)
 - Seq gap detected client-side → request full snapshot
 - Batched rpcs (§6) emit one combined patch + one ack
@@ -176,7 +176,9 @@ Mount runs during SSR; connection adopts the warm instance.
 - Mount runs **once** per page load; no connect-spinner; crawlable
 - **Params-loader SSR sequencing** — the loader runs synchronously up to its first `await`, so its *projection* (filter/loading chrome) is staged the instant `mount`+loader hand back control. Default **stream**: flush that staged projection, serialize it, let the awaited data stream in over the push stream after hydration (fast TTFB; a crawler/no-JS client sees the chrome, not the rows). Opt into **`blockSsr`** to await the full load before serializing — first paint carries data (crawlable, no spinner) at the cost of TTFB. Deterministic either way: capture is keyed to *what is staged*, never a timer
 
-## 13. Deferred (v2+)
+## 13. Out of Scope
+Deliberately not covered by this spec; the seams below keep each addable later without a rewrite.
+
 - Nested/sibling live objects + layouts (requires nested live semantics)
 - Typed search params (per-route schema into `Register`, `nav.patch`, `Link`)
 - Transparent id aliasing (wire rewriting) if `keyOf` proves insufficient
@@ -213,14 +215,13 @@ rpxd.config.ts
 - **`ServerAdapter` seam from day one**: `serve` / `stream` (SSE) / `ws?` / `env` — web-standard `Request`/`Response`/`ReadableStream` internally, no Bun types past the boundary → Node adapter later is ~100 lines
 - **Vite = dev server + bundler, running on Bun**: `rpxd dev` = one Bun process, Vite in middleware mode (HMR, Fast Refresh, codegen watcher) + rpxd runtime, one port. `rpxd build` = `vite build` (client + SSR bundles); `rpxd start` = pure Bun, no Vite at runtime
 - rpxd Vite plugin owns: route codegen (§7), reducer HMR (§15), RSC wiring (§16)
-- ⚠️ **Early smoke test**: Vite-on-Bun middleware mode with SSR — least-trodden path, verify before committing dev-server architecture
 - DB is userland (`db.ts` import); framework never touches it
 
 ## 15. DX
 - Reducers unit-testable as plain fns with mock ctx
 - HMR preserves runtime state across reducer edits
 
-## 16. RSC Fields (experimental flag — **implemented and tested last**)
+## 16. RSC Fields (experimental flag)
 Server-rendered component subtrees as opaque state values; Flight is the serialization, patches the transport.
 
 - `rsc(<Component />)` in mount/reducers → Flight string → opaque state field; heavy deps (markdown, shiki) never ship to client
@@ -229,7 +230,7 @@ Server-rendered component subtrees as opaque state values; Flight is the seriali
 - Works through storage, SSR, reconnect unchanged — it's just a string in state
 - Built on `@vitejs/plugin-rsc` (TanStack's approach — integrate, don't own the bundler layer)
 - Constraints: RSC fields never optimistic; not for keystroke-frequency updates; `'use client'` islands hydrate via plugin manifest
-- **Ordering guarantee**: `rsc: false` default means v1 is complete and shippable without it; flag flips only after ①–⑤ are stable — bundler integration must not destabilize the core
+- **Isolation**: `rsc: false` is the default; RSC fields are strictly opt-in, so nothing in the core runtime depends on the bundler integration
 
 ```tsx
 mount: async ({ slug }) => ({
@@ -246,7 +247,7 @@ rpxd/
     core/            # runtime: queue, patches, protocol, live()
     client/          # useLive, optimistic replay, keyOf, Link/nav
     server-bun/      # Bun ServerAdapter (primary)
-    adapter-node/    # stub, v2 (seam proven by structure)
+    adapter-node/    # ServerAdapter seam placeholder (rpxd runs on Bun)
     storage-memory/
     storage-sqlite/  # bun:sqlite
     storage-redis/
@@ -258,7 +259,7 @@ rpxd/
   e2e/               # Playwright: SSR attach, reconnect, optimistic, multiplayer, streaming
 ```
 
-- **Bun workspaces** (no turborepo/nx in v1 — `bun run --filter` covers it)
+- **Bun workspaces** (no turborepo/nx — `bun run --filter` covers it)
 - **Biome** — lint + format, single root config; home for custom rules (§4 identity-based lookups)
 - **Vitest** — unit tests: reducers/queue/replay per package
 - **Playwright** — e2e against `examples/kitchen-sink`; the demo doubles as the acceptance suite for §1–§12
@@ -275,6 +276,3 @@ rpxd/
 export const routeTree = { ... };
 ```
 
----
-
-**Build order**: ⓪ Vite-on-Bun SSR smoke test → ① protocol doc (§2 + §11) → ② runtime core (queue, patches, storage, pubsub) → ③ client (`useLive`, optimistic replay, batching, `keyOf`) → ④ routing codegen + SSR → ⑤ CLI/shell → ⑥ RSC fields (final).

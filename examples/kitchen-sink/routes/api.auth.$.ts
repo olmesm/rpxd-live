@@ -1,5 +1,5 @@
 /**
- * Auth issuance route (docs/routes-and-auth.md): a `route()` whose body
+ * Auth issuance route (the routes & auth guide): a `route()` whose body
  * delegates the whole `/api/auth/*` subtree to the auth library. `.all`
  * forwards every method — the library owns sign-up/in/out and session.
  */

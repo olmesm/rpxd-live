@@ -11,8 +11,6 @@
     "examples/*/test-bun/**/*.ts",
     "examples/*/rpxd.config.ts",
     "examples/*/.rpxd/**/*.ts",
-    "spikes/*/**/*.ts",
-    "spikes/*/**/*.tsx",
     "vitest.config.ts"
   ]
 }

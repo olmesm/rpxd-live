@@ -1,5 +1,5 @@
 /**
- * Wire protocol types — the normative definition lives in `docs/protocol.md`.
+ * Wire protocol types — the normative definition lives in the wire protocol guide.
  * Everything here is transport-agnostic: SSE and WS carry the same shapes.
  *
  * @packageDocumentation
@@ -36,7 +36,7 @@ export interface Patch {
 
 /**
  * One downstream message. Exactly one of `patches` or `full` is present.
- * See `docs/protocol.md` for ordering and recovery rules.
+ * See the wire protocol guide for ordering and recovery rules.
  */
 export interface Envelope {
   /** Per-instance, monotonically increasing; +1 per envelope. */

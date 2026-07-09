@@ -39,8 +39,8 @@ jobs:
       - name: Unit tests
         run: bun run test
 
-      - name: Bun-runtime tests (smoke + adapters)
-        run: bun test spikes/vite-bun-ssr spikes/rsc-flight packages/server-bun/test-bun packages/storage-sqlite/test-bun examples/kitchen-sink/test-bun packages/cli/test-bun
+      - name: Bun-runtime tests (adapters + conformance)
+        run: bun test packages/rsc/test-bun packages/server-bun/test-bun packages/storage-sqlite/test-bun examples/kitchen-sink/test-bun packages/cli/test-bun
 
   generators:
     name: Generators (init + scaffold + run)

@@ -6,8 +6,8 @@ sidebar:
 ---
 
 :::caution[Experimental]
-RSC fields are behind the opt-in `rsc: true` flag. v1 is complete and shippable
-with `rsc: false` (the default); the flag flips only once the core is stable.
+RSC fields are behind the opt-in `rsc: true` flag and default to `rsc: false`.
+They are strictly opt-in, so nothing in the core runtime depends on them.
 :::
 
 RSC fields let a piece of state be a **server-rendered component subtree** — the

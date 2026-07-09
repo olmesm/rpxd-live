@@ -1,5 +1,5 @@
 /**
- * Todos domain module — the service-layer boundary (Phoenix "context").
+ * Todos domain module — the service-layer boundary.
  *
  * `routes/` calls these functions; only the domain layer touches the data
  * layer. Prisma is loaded **lazily and server-only**: `import.meta.env.SSR` is

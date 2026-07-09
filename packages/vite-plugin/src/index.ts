@@ -68,7 +68,7 @@ export function runCodegen(root: string, options: RpxdPluginOptions = {}): strin
   const generated = generateRoutesModule(entries);
   write("routes.gen.ts", generated);
   // Server-only HTTP route map — separate file so the client entry never
-  // imports it (§ docs/routes-and-auth.md).
+  // imports it (see the routes & auth guide).
   write("handlers.gen.ts", generateHandlersModule(entries));
   return generated;
 }

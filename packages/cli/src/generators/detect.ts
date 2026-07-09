@@ -15,7 +15,7 @@ export interface ProjectFeatures {
 }
 
 /**
- * Probe a project root for the db/auth seams (docs/routes-and-auth.md).
+ * Probe a project root for the db/auth seams (the routes & auth guide).
  *
  * @example
  * ```ts

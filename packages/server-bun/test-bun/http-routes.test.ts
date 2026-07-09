@@ -1,5 +1,5 @@
 /**
- * HTTP routes (`route()`, docs/routes-and-auth.md) dispatched by the handler
+ * HTTP routes (`route()`, the routes & auth guide) dispatched by the handler
  * before the SSR/404 block — method matching, catch-all, session/sid in ctx,
  * and fall-through to live pages for unmatched paths.
  */

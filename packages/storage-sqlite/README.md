@@ -16,5 +16,5 @@ database never serves stale multiplayer state.
 
 The pubsub bus stays in-process (`LocalBus`); use
 [`@rpxd/storage-redis`](../storage-redis) when fan-out must cross nodes.
-(The future Node adapter swaps `bun:sqlite` for `better-sqlite3` — same
-schema, same interface.)
+The store is written against `bun:sqlite`; a `better-sqlite3` backing behind
+the same schema and interface is a drop-in swap.

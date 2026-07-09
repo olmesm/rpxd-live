@@ -55,5 +55,5 @@ This distinction drives the whole navigation model:
   single place URL-dependent data (filters, pages) loads. The URL is the query
   key, so those views are shareable, bookmarkable, and rebuilt on cold wake.
 
-In v1, search params are untyped (`Record<string, string | undefined>`); typed
-per-route search schemas are a v2 item.
+Search params are untyped (`Record<string, string | undefined>`) — narrow and
+default them in the loader yourself.

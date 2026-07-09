@@ -8,7 +8,7 @@ const asFilter = (v: string | undefined): TodoFilter =>
   v === "active" || v === "done" ? v : "all";
 
 // Data access goes through the domain layer, never `db` directly (see
-// docs/domain-layer.md). Handlers stay thin: derive the scope from
+// the app-structure guide). Handlers stay thin: derive the scope from
 // ctx.session, call the domain fn, then patchState.
 //
 // `mount` sets up the URL-invariant shell; `params` is the loader (§7) — the

@@ -121,7 +121,7 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
   }
 
   // Server-only HTTP routes (`route()`) — from the ssr bundle; no component,
-  // never SSR'd (docs/routes-and-auth.md).
+  // never SSR'd (the routes & auth guide).
   const { routeHandlers } = serverEntryModule as unknown as {
     routeHandlers?: Record<string, () => Promise<{ default: { def: RouteDefinition } }>>;
   };

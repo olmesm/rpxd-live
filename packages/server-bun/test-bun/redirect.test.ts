@@ -1,5 +1,5 @@
 /**
- * `redirect()` from `mount` (§10, docs/routes-and-auth.md): a full page load
+ * `redirect()` from `mount` (§10, the routes & auth guide): a full page load
  * gets a real 302; a client control-mount (SPA nav) gets a `{ redirect }`
  * JSON signal the router acts on (a 302 would be auto-followed by fetch).
  */
