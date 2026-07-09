@@ -10,8 +10,37 @@ import { hydrateRscFields, isRscField } from "../src/client.ts";
 // The package's "." export is conditional (react-server → real impl);
 // every other graph — including this test — resolves the stub.
 import { rsc } from "../src/server-stub.ts";
+import { decodeStream } from "../src/shared.ts";
 
 const field = (payload: string) => ({ $rsc: payload });
+
+/** A ReadableStreamDefaultReader over a fixed list of byte chunks. */
+function chunkReader(chunks: Uint8Array[]): ReadableStreamDefaultReader<Uint8Array> {
+  let i = 0;
+  return {
+    read: async () =>
+      i < chunks.length
+        ? { value: chunks[i++] as Uint8Array, done: false }
+        : { value: undefined, done: true },
+  } as ReadableStreamDefaultReader<Uint8Array>;
+}
+
+describe("decodeStream (Flight byte assembly, §16)", () => {
+  it("reassembles a multi-byte char split across chunk boundaries", async () => {
+    // "😀" = f0 9f 98 80, split across two chunks.
+    const out = await decodeStream(
+      chunkReader([new Uint8Array([0xf0, 0x9f]), new Uint8Array([0x98, 0x80])]),
+    );
+    expect(out).toBe("😀");
+  });
+
+  it("does not silently drop bytes buffered at stream end (final flush)", async () => {
+    // Stream ends mid-character (3 of the 4 bytes). Without the final
+    // decoder.decode() flush the buffered bytes vanish → silent truncation.
+    const out = await decodeStream(chunkReader([new Uint8Array([0xf0, 0x9f, 0x98])]));
+    expect(out).not.toBe("");
+  });
+});
 
 describe("rsc() server serialization (§16)", () => {
   it("throws a pointer at rsc: true outside the react-server graph", async () => {

@@ -14,7 +14,7 @@
  * patches replace the whole field (no diffing) and React reconciles.
  */
 import type { ReactElement } from "react";
-import type { RscField } from "./shared.ts";
+import { decodeStream, type RscField } from "./shared.ts";
 
 export { isRscField, type RscField } from "./shared.ts";
 
@@ -35,13 +35,6 @@ export async function rsc(element: ReactElement): Promise<RscField> {
   // package's conditional exports) — every other graph gets server-stub.ts,
   // so the Flight runtime and its build virtuals stay out of their bundles.
   const { renderToReadableStream } = await import("@vitejs/plugin-rsc/rsc");
-  const reader = renderToReadableStream(element).getReader();
-  const decoder = new TextDecoder();
-  let payload = "";
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    payload += decoder.decode(value, { stream: true });
-  }
+  const payload = await decodeStream(renderToReadableStream(element).getReader());
   return { $rsc: payload };
 }
