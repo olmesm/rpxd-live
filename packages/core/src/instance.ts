@@ -279,7 +279,9 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * separate from `load` so the server can 302 *before* streaming/serving a
    * guarded page. A deny (`throw redirect`) — or any throw — propagates to the
    * caller. No-op when no `guard` is declared. A newer call aborts the prior
-   * guard's `signal` (latest-wins for slow async auth lookups).
+   * guard's `signal` (latest-wins for slow async auth lookups); a throw from a
+   * run that a newer call already superseded is swallowed, so a signal-respecting
+   * guard's `AbortError` never reaches the transport as a spurious 500.
    */
   async authorize(search: Record<string, string | undefined>): Promise<void> {
     const guard = this.#def.guard;
@@ -287,10 +289,18 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     this.#authController?.abort();
     const controller = new AbortController();
     this.#authController = controller;
-    await guard(
-      { params: this.#params, search },
-      { params: this.#params, session: this.#session, signal: controller.signal },
-    );
+    try {
+      await guard(
+        { params: this.#params, search },
+        { params: this.#params, session: this.#session, signal: controller.signal },
+      );
+    } catch (e) {
+      // A newer URL claimed the guard (this controller was aborted): its result
+      // is stale, so drop any throw — including a signal-respecting guard's
+      // `AbortError`. The live run propagates its redirect/auth error normally.
+      if (controller.signal.aborted) return;
+      throw e;
+    }
   }
 
   /**

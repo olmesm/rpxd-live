@@ -24,10 +24,10 @@ describe("sqlite storage adapter", () => {
     // state is rebuilt from the URL on cold wake; the session slice + seq are
     // what sqlite carries across for continuity.
     const def: LiveDefinition<{ n: number }, "/", { userId?: string }> = {
-      mount: async () => ({ n: 0 }),
-      params: async ({ filter }, ctx) => {
+      setup: () => ({ n: 0 }),
+      load: async ({ search }, ctx) => {
         ctx.patchState((s) => {
-          s.n = filter === "done" ? 1 : 0;
+          s.n = search.filter === "done" ? 1 : 0;
         });
       },
     };
@@ -39,7 +39,7 @@ describe("sqlite storage adapter", () => {
       storage,
       storageKey: "sess:/",
     });
-    await first.setSearch({ filter: "done" });
+    await first.load({ filter: "done" });
     expect(first.state.n).toBe(1); // loader wrote page state
     await first.dispose();
 
@@ -55,7 +55,7 @@ describe("sqlite storage adapter", () => {
     expect(second.seq).toBeGreaterThan(1); // seq continued
     // Cold wake re-mounts (n back to 0); re-presenting the URL rebuilds it.
     expect(second.state.n).toBe(0);
-    await second.setSearch({ filter: "done" });
+    await second.load({ filter: "done" });
     expect(second.state.n).toBe(1);
   });
 });

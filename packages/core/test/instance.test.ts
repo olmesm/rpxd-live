@@ -700,6 +700,29 @@ describe("guard / authorize (§10)", () => {
     await slow.catch(() => {});
     expect(seen).toEqual({ params: { id: "42" }, search: { q: "x" }, signal: true });
   });
+
+  it("swallows a superseded guard's throw (a signal-respecting AbortError never propagates)", async () => {
+    let release: () => void = () => {};
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      guard: async (url, ctx) => {
+        if (url.search.slow) {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+          // A guard that respects the signal throws once aborted.
+          if (ctx.signal.aborted) throw new DOMException("aborted", "AbortError");
+        }
+      },
+    };
+    const { inst } = await make(def);
+    const slow = inst.authorize({ slow: "1" });
+    await tick();
+    await inst.authorize({ q: "x" }); // newer call aborts the slow guard
+    release();
+    // The superseded run's AbortError must be swallowed, not propagated.
+    await expect(slow).resolves.toBeUndefined();
+  });
 });
 
 describe("id linking escape hatch (§4)", () => {
