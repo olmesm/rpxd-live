@@ -1,6 +1,6 @@
 import type { BroadcastMessage, LiveDefinition } from "@rpxd/core";
 import { LiveInstance } from "@rpxd/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { type RedisLikeClient, redis } from "../src/index.ts";
 
 /** In-memory fake standing in for a shared redis server. */
@@ -98,6 +98,53 @@ describe("redis storage adapter", () => {
     await b.idle();
     expect(a.state.log).toEqual(["sent"]); // exclude-self holds across the wire
     expect(b.state.log).toEqual(["recv:A"]); // delivered on the other node
+  });
+
+  it("drops a malformed (non-JSON) channel message instead of throwing", () => {
+    // Capture the raw on-message callback the bus registers with the client.
+    let deliver: ((raw: string) => void) | undefined;
+    const client: RedisLikeClient = {
+      get: () => null,
+      set: () => {},
+      del: () => {},
+      publish: () => {},
+      subscribe: (_ch, onMessage) => {
+        deliver = onMessage;
+        return () => {};
+      },
+    };
+    const storage = redis(client);
+    const seen: BroadcastMessage[] = [];
+    storage.bus.subscribe("t", "me", (m: BroadcastMessage) => seen.push(m));
+
+    // A truncated / foreign frame (e.g. another service sharing the rpxd: prefix)
+    // must not throw inside the client's message-listener callback.
+    expect(() => deliver?.("not json{")).not.toThrow();
+    expect(seen).toEqual([]);
+
+    // Valid frames still deliver afterwards.
+    deliver?.(
+      JSON.stringify({ topic: "t", event: "e", payload: 1, senderId: "other", self: false }),
+    );
+    expect(seen).toHaveLength(1);
+  });
+
+  it("handles a failed publish() instead of leaking an unhandled rejection", async () => {
+    const client: RedisLikeClient = {
+      get: () => null,
+      set: () => {},
+      del: () => {},
+      publish: () => Promise.reject(new Error("redis down")),
+      subscribe: () => () => {},
+    };
+    const storage = redis(client);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    storage.bus.publish({ topic: "t", event: "e", payload: null, senderId: "s", self: true });
+    // Let the rejected publish promise settle.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(spy).toHaveBeenCalled(); // the failure was caught + reported, not left dangling
+    spy.mockRestore();
   });
 
   it("filters self-delivery in the bus layer", () => {
