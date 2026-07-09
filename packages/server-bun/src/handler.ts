@@ -312,7 +312,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       attach: { token: crypto.randomUUID(), expires: Date.now() + attachTtlMs },
       everAttached: false,
     };
-    entries.set(pathname, entry);
+    // Re-resolve the session slice rather than reusing `entries` captured at the
+    // top: an eviction timer that fired during the awaits above may have pruned
+    // an empty slice out of `sessions` (#61), orphaning the captured reference.
+    // `entriesFor` re-attaches (or recreates) the canonical slice.
+    entriesFor(sid).set(pathname, entry);
     byInstanceId.set(instance.id, entry);
     unattached.add(entry);
     enforceUnattachedCap(entry);
@@ -337,7 +341,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         entry.evictTimer = undefined;
       }
       unattached.delete(entry);
-      sessions.get(entry.sid)?.delete(entry.key);
+      const m = sessions.get(entry.sid);
+      m?.delete(entry.key);
+      if (m && m.size === 0) sessions.delete(entry.sid); // prune the empty slice (#61)
       byInstanceId.delete(entry.instance.id);
       void entry.instance
         .dispose(false)
@@ -364,10 +370,21 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     const graceMs = Math.max(baseTtl, (entry.attach?.expires ?? 0) - Date.now());
     entry.evictTimer = setTimeout(() => {
       if (entry.instance.subscriberCount > 0) return;
-      sessions.get(sid)?.delete(key);
+      const m = sessions.get(sid);
+      m?.delete(key);
+      if (m && m.size === 0) sessions.delete(sid); // prune the empty slice (#61)
       byInstanceId.delete(entry.instance.id);
       unattached.delete(entry);
-      void entry.instance.dispose(); // final write-through snapshot (§11)
+      if (entry.everAttached) {
+        void entry.instance.dispose(); // adopted → final write-through snapshot (§11)
+      } else {
+        // Never adopted (cookieless scan, #61): the snapshot is pure waste —
+        // drop it and delete the row a warm mount persisted during setup/load.
+        void entry.instance
+          .dispose(false)
+          .then(() => storage.delete(`${sid}:${key}`))
+          .catch(() => {});
+      }
     }, graceMs);
   }
 
@@ -756,6 +773,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     /** Test/introspection hook: number of live instances across sessions. */
     get instanceCount(): number {
       return byInstanceId.size;
+    },
+
+    /** Test/introspection hook: number of session slices held (#61 — should not grow unboundedly). */
+    get sessionCount(): number {
+      return sessions.size;
     },
   };
 }
