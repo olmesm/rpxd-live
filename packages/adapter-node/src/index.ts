@@ -30,24 +30,33 @@ function headersOf(req: IncomingMessage): Headers {
   return headers;
 }
 
-/** Convert a node request into a web `Request`, wiring abort on close. */
-function toWebRequest(req: IncomingMessage, res: ServerResponse): Request {
+/**
+ * Convert a node request into a web `Request`, wiring abort on close. Returns
+ * `null` when the request line/`Host` header is malformed enough that `new
+ * Request()` (i.e. URL parsing) throws — the caller answers 400 rather than
+ * letting the `TypeError` escape the event handler and crash the process.
+ */
+function toWebRequest(req: IncomingMessage, res: ServerResponse): Request | null {
   const url = `http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`;
   const abort = new AbortController();
   res.on("close", () => abort.abort());
   const method = req.method ?? "GET";
   const hasBody = method !== "GET" && method !== "HEAD";
-  return new Request(url, {
-    method,
-    headers: headersOf(req),
-    signal: abort.signal,
-    ...(hasBody
-      ? {
-          body: Readable.toWeb(req) as unknown as ReadableStream<Uint8Array>,
-          duplex: "half",
-        }
-      : {}),
-  });
+  try {
+    return new Request(url, {
+      method,
+      headers: headersOf(req),
+      signal: abort.signal,
+      ...(hasBody
+        ? {
+            body: Readable.toWeb(req) as unknown as ReadableStream<Uint8Array>,
+            duplex: "half",
+          }
+        : {}),
+    });
+  } catch {
+    return null;
+  }
 }
 
 /** Stream a web `Response` back through the node response. */
@@ -90,7 +99,13 @@ export function nodeAdapter(): ServerAdapter {
   return {
     serve({ port = 3000, hostname, fetch, websocket }: ServeOptions): ServeHandle {
       const server = createServer((req, res) => {
-        void Promise.resolve(fetch(toWebRequest(req, res), undefined))
+        const webReq = toWebRequest(req, res);
+        if (!webReq) {
+          res.statusCode = 400;
+          res.end("bad request");
+          return;
+        }
+        void Promise.resolve(fetch(webReq, undefined))
           .then(async (webRes) => {
             if (webRes) await writeWebResponse(res, webRes);
             else res.end();
@@ -110,9 +125,19 @@ export function nodeAdapter(): ServerAdapter {
       if (websocket) {
         wss = new WebSocketServer({ noServer: true });
         server.on("upgrade", (req, socket, head) => {
-          const webReq = new Request(`http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`, {
-            headers: headersOf(req),
-          });
+          let webReq: Request;
+          try {
+            webReq = new Request(`http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`, {
+              headers: headersOf(req),
+            });
+          } catch {
+            // Malformed request line/Host — reject the handshake instead of
+            // letting the TypeError escape and crash the process (leaking the
+            // socket in the bargain).
+            socket.write("HTTP/1.1 400 Bad Request\r\nconnection: close\r\n\r\n");
+            socket.destroy();
+            return;
+          }
           let upgraded = false;
           const upgrade = (data: unknown): boolean => {
             upgraded = true;
