@@ -72,7 +72,10 @@ function parseReference(rawName: string, target: string | undefined, spec: strin
     type: "references",
     tsType: "string",
     prismaType: "String",
-    reference: { model, relationName: assertIdentifier(relationName, "relation") },
+    // The relation object field lands on the model alongside the generated
+    // columns, so it must clear the same reserved-name check as any field —
+    // `owner_id:references:User` would otherwise emit a second `owner`.
+    reference: { model, relationName: assertFieldName(relationName) },
   };
 }
 
@@ -90,16 +93,34 @@ function parseReference(rawName: string, target: string | undefined, spec: strin
  * ```
  */
 export function parseFields(specs: string[]): Field[] {
+  const seen = new Set<string>();
   return specs.map((spec) => {
-    const [rawName = "", rawType = "string", target] = spec.split(":");
-    if (!rawName.trim()) throw new Error(`empty field name in "${spec}"`);
-    if (rawType === "references") return parseReference(rawName, target, spec);
-    const mapping = SCALARS[rawType as Exclude<FieldType, "references">];
-    if (!mapping) {
-      throw new Error(
-        `unknown field type "${rawType}" for "${rawName}" — use one of ${Object.keys(SCALARS).join(", ")}, references`,
-      );
+    const field = parseField(spec);
+    // Names are compared post-normalization, so `full_name` and `fullName`
+    // collide. Two same-named fields would emit duplicate TS interface members
+    // (TS2300) and duplicate Prisma columns.
+    if (seen.has(field.name)) {
+      throw new Error(`duplicate field "${field.name}" — field names must be unique`);
     }
-    return { name: assertFieldName(camelCase(rawName)), type: rawType as FieldType, ...mapping };
+    seen.add(field.name);
+    return field;
   });
+}
+
+function parseField(spec: string): Field {
+  const [rawName = "", rawType = "string", target] = spec.split(":");
+  if (!rawName.trim()) throw new Error(`empty field name in "${spec}"`);
+  if (rawType === "references") return parseReference(rawName, target, spec);
+  // `Object.hasOwn` — a bare object lookup would resolve `toString`,
+  // `constructor`, `__proto__`, etc. to inherited members and slip past this
+  // guard, spreading a prototype function into the field.
+  const mapping = Object.hasOwn(SCALARS, rawType)
+    ? SCALARS[rawType as Exclude<FieldType, "references">]
+    : undefined;
+  if (!mapping) {
+    throw new Error(
+      `unknown field type "${rawType}" for "${rawName}" — use one of ${Object.keys(SCALARS).join(", ")}, references`,
+    );
+  }
+  return { name: assertFieldName(camelCase(rawName)), type: rawType as FieldType, ...mapping };
 }

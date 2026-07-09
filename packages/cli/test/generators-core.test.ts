@@ -91,6 +91,27 @@ describe("parseFields (field:type)", () => {
     expect(() => parseFields(["2fa:string"])).toThrow(/not a valid identifier/);
     expect(() => parseFields(["_:string"])).toThrow(/not a valid identifier/);
   });
+
+  it("rejects duplicate field names (post-normalization)", () => {
+    // Two `title`s would emit `title: string; title: boolean;` (TS2300) and a
+    // Prisma model with two `title` columns.
+    expect(() => parseFields(["title:string", "title:boolean"])).toThrow(/duplicate field/i);
+    // camelCase normalization means these collide too.
+    expect(() => parseFields(["full_name:string", "fullName:string"])).toThrow(/duplicate field/i);
+  });
+
+  it("rejects a references relation name that collides with a generated column", () => {
+    // owner_id -> fk `ownerId` (fine) but relation `owner`, which collides with
+    // the always-present `owner` column.
+    expect(() => parseFields(["owner_id:references:User"])).toThrow(/generated column/);
+  });
+
+  it("rejects a field type that shadows an Object.prototype member", () => {
+    // SCALARS is a plain object, so `SCALARS["toString"]`/`["constructor"]` used
+    // to resolve to inherited functions and slip past the unknown-type guard.
+    expect(() => parseFields(["x:toString"])).toThrow(/unknown field type/);
+    expect(() => parseFields(["x:constructor"])).toThrow(/unknown field type/);
+  });
 });
 
 describe("name helpers", () => {
