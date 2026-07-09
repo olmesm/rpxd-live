@@ -400,8 +400,13 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * mutation queue, unsubscribe from all topics, write a final snapshot
    * (§11 eviction). Parked handlers resume against a disposed instance —
    * their late flushes are dropped.
+   *
+   * `persist` defaults to `true` (the write-through snapshot). Pass `false` to
+   * drop the instance without persisting — used when an un-attached instance is
+   * shed under memory pressure (a never-adopted scanner mount, #61), where the
+   * snapshot is pure waste.
    */
-  async dispose(): Promise<void> {
+  async dispose(persist = true): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
     for (const controllers of this.#aborts.values()) {
@@ -412,7 +417,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     for (const unsub of this.#unsubs.values()) unsub();
     this.#unsubs.clear();
     this.#listeners.clear();
-    await this.#writeThrough();
+    if (persist) await this.#writeThrough();
   }
 
   // ---- internals ----------------------------------------------------------
