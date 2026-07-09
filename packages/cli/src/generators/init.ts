@@ -1,6 +1,6 @@
 /**
  * `rpxd init` — scaffold a new app to the documented userland tree
- * (docs/routes-and-auth.md). Auth + db are on by default; `--no-auth` keeps db
+ * (the routes & auth guide). Auth + db are on by default; `--no-auth` keeps db
  * (anonymous `sid` scoping), `--no-db` strips both (memory storage). Never
  * edits files it didn't create; anything hand-owned (running `bun install`,
  * `prisma db push`) is printed, not applied.

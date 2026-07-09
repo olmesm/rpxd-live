@@ -2,7 +2,7 @@
  * Better Auth wiring templates: the `auth.ts` adapter, the login + protected
  * account pages, and the `/api/auth/*` delegation route. This is a file
  * scaffolder — it does NOT wrap Better Auth's config in an rpxd-flavored fluent
- * (docs/routes-and-auth.md forbids that leaky mirror); `auth.ts` is the real
+ * (the routes & auth guide forbids that leaky mirror); `auth.ts` is the real
  * library, yours to edit.
  */
 import type { FileWrite } from "../types.ts";
@@ -25,7 +25,7 @@ export const auth = betterAuth({
 `;
 
 const apiAuthRoute = (): string => `/**
- * Auth issuance route (docs/routes-and-auth.md): a \`route()\` whose body
+ * Auth issuance route (the routes & auth guide): a \`route()\` whose body
  * delegates the whole \`/api/auth/*\` subtree to the auth library. \`.all\`
  * forwards every method — the library owns sign-up/in/out and session.
  */
@@ -42,7 +42,7 @@ import { authClient } from "../adapters/auth-client";
  * Login page. Issuance is HTTP, not an rpc (it must set a cookie), so it uses
  * Better Auth's own client (\`authClient.signIn/signUp\`, which posts to
  * \`/api/auth/*\`); then a full navigation re-runs \`authenticate\` with the new
- * session (docs/routes-and-auth.md).
+ * session (the routes & auth guide).
  */
 export default live("/login")
   .mount(async () => ({ error: "" as string }))
@@ -99,7 +99,7 @@ import { scopeFrom } from "../domain/scope";
 
 /**
  * A protected page. \`mount\` reads the scope and — when there's no user —
- * throws \`redirect("/login")\` (§10, docs/routes-and-auth.md): a full load gets
+ * throws \`redirect("/login")\` (§10, the routes & auth guide): a full load gets
  * a 302, a soft \`Link\` navigation is bounced client-side.
  */
 export default live("/account")

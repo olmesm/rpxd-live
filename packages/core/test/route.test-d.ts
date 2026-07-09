@@ -1,5 +1,5 @@
 /**
- * Type tests for the fluent route() API (docs/routes-and-auth.md).
+ * Type tests for the fluent route() API (the routes & auth guide).
  *
  * Contract: path params are typed from the literal; handlers get
  * `(req, ctx)` with a `Response`-returning shape; each method returns the

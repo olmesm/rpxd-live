@@ -4,7 +4,7 @@ Live objects for React: server-side stateful objects with reducers; the
 client is plain React receiving state. Immer patches stream over SSE;
 optimistic updates replay client-side; multiplayer rides pubsub.
 
-**Docs:** [olmesm.github.io/rpxd-live](https://olmesm.github.io/rpxd-live/) · **Spec:** [`spec.md`](./spec.md) · **Wire protocol:** [`docs/protocol.md`](./docs/protocol.md) · **App structure:** [`docs/domain-layer.md`](./docs/domain-layer.md) · **Routes & auth:** [`docs/routes-and-auth.md`](./docs/routes-and-auth.md)
+**Docs:** [olmesm.github.io/rpxd-live](https://olmesm.github.io/rpxd-live/) · **Spec:** [`spec.md`](./spec.md) · **Wire protocol:** [Wire protocol](https://olmesm.github.io/rpxd-live/concepts/wire-protocol/) · **App structure:** [App structure](https://olmesm.github.io/rpxd-live/guides/domain-layer/) · **Routes & auth:** [Routes & auth](https://olmesm.github.io/rpxd-live/guides/routes-and-auth/)
 
 The user-facing documentation site (guides, concepts, auto-generated API
 reference) is built with [Astro Starlight](https://starlight.astro.build/) from
@@ -51,7 +51,7 @@ Each package has its own README.
 | [`@rpxd/testing`](./packages/testing) | `testLive(route)` harness: typed `t.rpc.*` against the real runtime |
 | [`@rpxd/storage-*`](./packages/storage-memory) | memory / session / sqlite (`bun:sqlite`) / redis adapters |
 | [`@rpxd/rsc`](./packages/rsc) | RSC fields (§16, `rsc: true`): Flight-serialized subtrees with `'use client'` islands |
-| [`@rpxd/adapter-node`](./packages/adapter-node) | v2 stub — seam proven by structure |
+| [`@rpxd/adapter-node`](./packages/adapter-node) | `ServerAdapter` seam placeholder — no implementation; rpxd runs on Bun |
 
 ## Development
 
@@ -61,6 +61,6 @@ TDD-first — see [`CLAUDE.md`](./CLAUDE.md) for conventions.
 bun run test        # Vitest unit + type tests
 bun run typecheck   # tsc
 bun run lint        # Biome
-bun test spikes packages/*/test-bun examples/kitchen-sink/test-bun   # Bun-runtime tests
+bun test packages/*/test-bun examples/kitchen-sink/test-bun   # Bun-runtime tests
 cd e2e && bunx playwright test                                # browser acceptance
 ```

@@ -1,8 +1,8 @@
 /**
- * Contract for RSC fields (§16 step 2): Flight-serialized subtrees as opaque
+ * Contract for RSC fields (§16): Flight-serialized subtrees as opaque
  * state values. Flight serialization/deserialization itself needs the plugin
- * environments and is covered by `spikes/rsc-flight` and the doc e2e; these
- * tests pin the marker shape, the traversal, and the caching semantics.
+ * environments and is covered by `test-bun/flight.test.ts` and the doc e2e;
+ * these tests pin the marker shape, the traversal, and the caching semantics.
  */
 import { isValidElement } from "react";
 import { describe, expect, it } from "vitest";

@@ -25,7 +25,7 @@ export interface RouteRegistration {
   def: LiveDefinition<any, any, any>;
 }
 
-/** One registered HTTP route (`route()`, docs/routes-and-auth.md): path + method handlers. */
+/** One registered HTTP route (`route()`, the routes & auth guide): path + method handlers. */
 export interface HttpRouteRegistration {
   path: string;
   def: RouteDefinition;
@@ -46,7 +46,7 @@ export interface RenderContext {
 /** Options for {@link createRpxdHandler}. */
 export interface RpxdHandlerOptions {
   routes: RouteRegistration[];
-  /** Server-only HTTP routes (`route()`, docs/routes-and-auth.md), matched before SSR. */
+  /** Server-only HTTP routes (`route()`, the routes & auth guide), matched before SSR. */
   httpRoutes?: HttpRouteRegistration[];
   storage?: StorageAdapter;
   /**
@@ -79,7 +79,7 @@ interface InstanceEntry {
 const SID_COOKIE = "rpxd_sid";
 
 /**
- * Encode one envelope as an SSE event (`docs/protocol.md` framing).
+ * Encode one envelope as an SSE event (the wire protocol guide framing).
  *
  * @example
  * ```ts

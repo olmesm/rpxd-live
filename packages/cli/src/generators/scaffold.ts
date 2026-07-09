@@ -1,11 +1,11 @@
 /**
- * `rpxd scaffold <Context> <Schema> <plural> [field:type…]` — a Phoenix-style
- * resource generator. Emits a route, a scoped domain module, and a test;
+ * `rpxd scaffold <Context> <Schema> <plural> [field:type…]` — a resource
+ * generator. Emits a route, a scoped domain module, and a test;
  * auth-aware (user-scoped, and pages are protected by default when the app has
  * auth — `--no-protected` opts out) and db-aware
  * (Prisma-backed vs. in-memory). For a db app the Prisma model is *appended* to
  * `prisma/schema.prisma` (append-only, never rewrites your models); everything
- * else that touches a hand-owned file is printed (docs/routes-and-auth.md).
+ * else that touches a hand-owned file is printed (the routes & auth guide).
  */
 import type { ProjectFeatures } from "./detect.ts";
 import { parseFields } from "./fields.ts";
@@ -15,7 +15,7 @@ import type { GeneratorPlan } from "./types.ts";
 
 /** Inputs for {@link planScaffold}. */
 export interface ScaffoldOptions {
-  /** Context (Phoenix module), e.g. `Todos`. */
+  /** Context — the domain module grouping, e.g. `Todos`. */
   context: string;
   /** Schema singular, e.g. `Todo`. */
   schema: string;

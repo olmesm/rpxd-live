@@ -1,6 +1,6 @@
 "use client";
 /**
- * The island (§16 step 2): an interactive client component referenced from
+ * The island (§16): an interactive client component referenced from
  * inside a server-rendered rsc field. Ships to the browser as its own chunk
  * via the plugin manifest — unlike the markdown renderer around it.
  */

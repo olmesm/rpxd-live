@@ -1,7 +1,7 @@
 /**
  * WS transport glue (§11 `transport: ws()`): one duplex socket carrying the
  * same envelopes/batches as SSE+POST — the protocol is transport-agnostic,
- * only framing differs (`docs/protocol.md`).
+ * only framing differs (the wire protocol guide).
  */
 import type { SocketLike, WebSocketHandlers } from "./adapter.ts";
 import type { createRpxdHandler } from "./handler.ts";

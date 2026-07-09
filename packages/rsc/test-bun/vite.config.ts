@@ -1,6 +1,6 @@
 /**
- * RSC Flight spike (§16 step 2): can `@vitejs/plugin-rsc` drive rpxd's
- * RSC-fields model under Vite-on-Bun?
+ * RSC Flight conformance fixture (§16): `@vitejs/plugin-rsc` driving rpxd's
+ * RSC-fields model under Vite-on-Bun.
  *
  * Shape under test: we keep our own server (serverHandler: false) and use
  * the plugin's environments the way rpxd would — the `rsc` environment

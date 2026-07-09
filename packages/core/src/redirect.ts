@@ -1,5 +1,5 @@
 /**
- * Server-side navigation from `mount` (§10, docs/routes-and-auth.md). Throwing
+ * Server-side navigation from `mount` (§10, the routes & auth guide). Throwing
  * `redirect("/login")` sends the visitor elsewhere *before* the page renders:
  * the server turns it into a `302` on a full page load and a client navigation
  * during SPA nav. This is the login-bounce primitive — enforcement (checking

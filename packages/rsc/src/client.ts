@@ -1,5 +1,5 @@
 /**
- * RSC fields — deserializing half (§16 step 2): swap marked state fields for
+ * RSC fields — deserializing half (§16): swap marked state fields for
  * renderable elements at snapshot time, so `{state.body}` renders the
  * Flight-serialized server subtree with its `'use client'` islands hydrated.
  *

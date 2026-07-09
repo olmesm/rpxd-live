@@ -14,7 +14,7 @@ import {
   singularize,
 } from "../src/generators/names.ts";
 
-describe("parseFields (Phoenix-style field:type)", () => {
+describe("parseFields (field:type)", () => {
   it("maps every supported type to prisma + ts", () => {
     const fields = parseFields([
       "title:string",
@@ -57,7 +57,7 @@ describe("parseFields (Phoenix-style field:type)", () => {
     expect(parseFields(["is_active:boolean"])[0]?.name).toBe("isActive");
   });
 
-  it("parses a references (belongs_to) field", () => {
+  it("parses a references (foreign-key) field", () => {
     const [f] = parseFields(["author_id:references:User"]);
     expect(f).toMatchObject({
       name: "authorId",

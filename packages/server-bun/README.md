@@ -38,4 +38,4 @@ bunAdapter().serve({
 ```
 
 Connection lifecycle, eviction, and recovery semantics are specified in
-[`docs/protocol.md`](../../docs/protocol.md).
+the [Wire protocol](https://olmesm.github.io/rpxd-live/concepts/wire-protocol/).

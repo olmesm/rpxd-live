@@ -77,7 +77,6 @@ export default live("/counter")
 :::note
 The normative specification lives in
 [`spec.md`](https://github.com/olmesm/rpxd-live/blob/main/spec.md) and the wire
-protocol in
-[`docs/protocol.md`](https://github.com/olmesm/rpxd-live/blob/main/docs/protocol.md).
+protocol in [Wire protocol](/rpxd-live/concepts/wire-protocol/).
 These docs are the friendly version; the spec is the source of truth.
 :::

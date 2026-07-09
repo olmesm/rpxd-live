@@ -7,7 +7,7 @@
  * environment-scoped modules.
  *
  * Rendering always streams (`react-dom/server.edge`): identical output for
- * non-suspending trees, and resolving Flight client references (§16 step 2)
+ * non-suspending trees, and resolving Flight client references (§16)
  * suspends — which `renderToString` cannot do.
  */
 import type { LiveRoute } from "@rpxd/core";
