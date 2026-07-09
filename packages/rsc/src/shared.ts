@@ -20,3 +20,28 @@ export function isRscField(value: unknown): value is RscField {
     typeof (value as { $rsc?: unknown }).$rsc === "string"
   );
 }
+
+/**
+ * Read a byte stream to a UTF-8 string, flushing the decoder at the end. The
+ * final `decoder.decode()` is required: bytes buffered from a multi-byte
+ * character that lands at the very end of the stream would otherwise be
+ * silently dropped, truncating the payload.
+ *
+ * @example
+ * ```ts
+ * const text = await decodeStream(renderToReadableStream(el).getReader());
+ * ```
+ */
+export async function decodeStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<string> {
+  const decoder = new TextDecoder();
+  let out = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    out += decoder.decode(value, { stream: true });
+  }
+  out += decoder.decode(); // flush trailing bytes buffered across a chunk boundary
+  return out;
+}
