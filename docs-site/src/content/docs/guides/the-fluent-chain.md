@@ -73,6 +73,11 @@ rebuilt from the URL on cold wake.
 document carries data (crawlable); the default streams the data in after
 hydration. Optional.
 
+See [Loading data](/rpxd-live/guides/loading-data/) for the full model and the
+[pagination](/rpxd-live/guides/pagination/),
+[infinite scroll](/rpxd-live/guides/infinite-scroll/), and
+[filtering & search](/rpxd-live/guides/filtering-and-search/) patterns built on it.
+
 ### `.rpc(name, r => r.input().optimistic().handler().onError())`
 
 Defines a reducer. The builder locks payloads and threads types:
