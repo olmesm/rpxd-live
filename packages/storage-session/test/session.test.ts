@@ -20,6 +20,19 @@ describe("session storage adapter", () => {
     }
   });
 
+  it("isolates stored snapshots from the caller, like the durable adapters (§9)", () => {
+    const storage = session();
+    const snap = { state: { n: 1 }, session: {}, seq: 1, version: "v1" };
+    storage.set("k", snap);
+    // Mutating the input after storing must not change the stored copy...
+    snap.state.n = 999;
+    expect((storage.get("k") as typeof snap).state.n).toBe(1);
+    // ...nor may mutating a returned snapshot bleed back into storage.
+    const got = storage.get("k") as typeof snap;
+    got.state.n = 42;
+    expect((storage.get("k") as typeof snap).state.n).toBe(1);
+  });
+
   it("refreshes the TTL on write", () => {
     vi.useFakeTimers();
     try {
