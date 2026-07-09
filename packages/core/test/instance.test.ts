@@ -302,6 +302,98 @@ describe("per-rpc write isolation on throw (§3)", () => {
   });
 });
 
+describe("loadForRender render gate (§12)", () => {
+  it("await-before-patch: render waits for the loader's first patch (crawlable)", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async (_url, ctx) => {
+        await tick();
+        ctx.patchState(((s) => {
+          s.log.push("data");
+        }) as Mut);
+      },
+    };
+    const { inst } = await make(def);
+    await inst.loadForRender({});
+    expect(inst.state.log).toEqual(["data"]); // data is present at render time
+  });
+
+  it("sync projection: render opens on the first patch, not the awaited data", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async (_url, ctx) => {
+        ctx.patchState(((s) => {
+          s.log.push("chrome");
+        }) as Mut);
+        await gate("load"); // held open past the render
+        ctx.patchState(((s) => {
+          s.log.push("data");
+        }) as Mut);
+      },
+    };
+    const { inst } = await make(def);
+    await inst.loadForRender({});
+    expect(inst.state.log).toEqual(["chrome"]); // rendered before the awaited data
+    gates.load?.();
+  });
+
+  it("does not hang when a second render reconcile supersedes an in-flight one", async () => {
+    let calls = 0;
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async (_url, ctx) => {
+        if (++calls === 1) await gate("first"); // first run blocks before any patch
+        ctx.patchState(((s) => {
+          s.log.push(`load${calls}`);
+        }) as Mut);
+      },
+    };
+    const { inst } = await make(def);
+    const first = inst.loadForRender({}); // starts run 1, awaits, no patch yet
+    const second = inst.loadForRender({}); // supersedes run 1
+    // The superseded first render must resolve rather than orphan its gate.
+    await expect(first).resolves.toBeUndefined();
+    await expect(second).resolves.toBeUndefined();
+    gates.first?.(); // let the superseded run drain
+  });
+
+  it("an unrelated flush during an await-first load does not open the render gate", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async (_url, ctx) => {
+        await gate("load"); // awaits before its first patch
+        ctx.patchState(((s) => {
+          s.log.push("data");
+        }) as Mut);
+      },
+      rpc: {
+        slow: {
+          async handler(_p, ctx) {
+            ctx.patchState(((s) => {
+              s.log.push("rpc");
+            }) as Mut); // schedules a coalescing #flushChunk
+            await gate("rpc"); // held across the tick so that flush fires mid-handler
+          },
+        },
+      },
+    };
+    const { inst } = await make(def);
+    let rendered = false;
+    const render = inst.loadForRender({}).then(() => {
+      rendered = true;
+    });
+    const rpc = inst.handleBatch(batch("slow"));
+    await tick(); // the rpc's mid-handler flush lands while the loader still awaits
+    expect(rendered).toBe(false); // the rpc flush must not open the render gate
+    gates.rpc?.();
+    await rpc;
+    gates.load?.();
+    await render;
+    expect(rendered).toBe(true);
+    expect(inst.state.log).toContain("data");
+  });
+});
+
 describe("broadcast on-handler isolation (§8)", () => {
   it("a throwing on-handler does not discard an unrelated rpc's pending writes", async () => {
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {

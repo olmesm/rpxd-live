@@ -129,6 +129,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * resolved when the run settles with no patch). `undefined` outside SSR.
    */
   #renderGate: { gate: Deferred<void>; runId: number } | undefined;
+  /** Whether the current load run's loader has produced a patch — gates the render open (§12). */
+  #loadWrote = false;
   /** Abort controller for the in-flight `authorize` guard — newer call cancels it (§10). */
   #authController: AbortController | undefined;
   /** rpcId → ack envelope, for at-least-once dedupe (§11). */
@@ -316,6 +318,10 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     if (!this.#def.load || this.#disposed) return;
     const gate = makeDeferred<void>();
     const runId = this.#loadRunId + 1; // #runLoad claims exactly this tag
+    // A newer render reconcile supersedes any pending one: resolve the outgoing
+    // gate so its awaiter renders current state instead of hanging on a slot
+    // this call is about to overwrite (concurrent reconciles share the instance).
+    this.#renderGate?.gate.resolve();
     this.#renderGate = { gate, runId };
     // The remainder streams after the gate opens; a late throw/redirect is
     // reported inside #runLoad, so swallow the background rejection here.
@@ -330,6 +336,10 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     // Latest-wins: cancel any in-flight run, then claim this run's tag.
     this.#abortRpc(LOAD_KEY);
     const runId = ++this.#loadRunId;
+    // A run claimed by anything other than this render's own gate supersedes it
+    // (e.g. a plain load() over an in-flight loadForRender): settle the orphan.
+    this.#supersedeRenderGate(runId);
+    this.#loadWrote = false;
     const controller = this.#trackAbort(LOAD_KEY);
 
     const idMap: Record<string, string> = {};
@@ -338,7 +348,9 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     // signal — the run tag is the authority, the signal is the courtesy.
     const queue = ctx.patchState;
     (ctx as { patchState: (mut: Mutator<S>) => void }).patchState = (mut) => {
-      if (runId === this.#loadRunId) queue(mut);
+      if (runId !== this.#loadRunId) return;
+      this.#loadWrote = true; // this run's loader has produced a patch (§12)
+      queue(mut);
     };
 
     try {
@@ -369,6 +381,18 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     this.#renderGate = undefined;
     if (redirect !== undefined) pending.gate.reject(redirect);
     else pending.gate.resolve();
+  }
+
+  /**
+   * Resolve a render gate left behind by an older run once `currentRunId` claims
+   * the tag (§12) — the superseded reconcile renders current state rather than
+   * hanging on a gate its run can no longer settle.
+   */
+  #supersedeRenderGate(currentRunId: number): void {
+    const pending = this.#renderGate;
+    if (!pending || pending.runId === currentRunId) return;
+    this.#renderGate = undefined;
+    pending.gate.resolve();
   }
 
   /**
@@ -461,8 +485,10 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
         if (patches.length > 0) {
           this.#emit({ patches });
           // The loader's first patch opens the SSR render gate (§12): the first
-          // document carries state through here, the rest streams.
-          this.#settleRenderGate(this.#loadRunId);
+          // document carries state through here, the rest streams. Gate only on
+          // the loader's own write — an unrelated rpc/broadcast flush landing
+          // during a warm reconcile must not open the paint before load's data.
+          if (this.#loadWrote) this.#settleRenderGate(this.#loadRunId);
         }
         await this.#writeThrough();
       })
