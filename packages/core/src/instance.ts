@@ -273,13 +273,14 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
-   * Run the URL loader for a set of search params (§7). Fires once after
-   * `setup` (initial load) and again on every URL change. The loader receives
-   * the whole URL (`{ params, search }`); writes page state through
-   * `ctx.patchState`; loading/errors are userland state, so there is no ack.
+   * Run the URL cycle for a set of search params (§7): `guard` then `load`.
+   * Fires once after `setup` (initial) and again on every URL change. `guard`
+   * (§10) authorizes first — a deny (`throw redirect`) skips the load. The
+   * loader receives the whole URL (`{ params, search }`), writes page state
+   * through `ctx.patchState`; loading/errors are userland state, no ack.
    * **Latest-wins**: a newer call aborts the prior run's `ctx.signal` and drops
-   * its late flushes, so the last URL always wins. A `redirect` thrown by the
-   * loader (§10) is re-thrown for an awaiting caller to map to a 302 / soft-nav.
+   * its late flushes. A `redirect` thrown by `guard`/`load` (§10) is re-thrown
+   * — only for the current run — for an awaiting caller to map to a 302 / soft-nav.
    *
    * The caller decides whether to await: the server streams (fire-and-forget)
    * by default and `await`s only when a route opts into blocking SSR (§12);
@@ -287,7 +288,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    */
   async load(search: Record<string, string | undefined>): Promise<void> {
     const loader = this.#def.load;
-    if (!loader || this.#disposed) return;
+    const guard = this.#def.guard;
+    if ((!loader && !guard) || this.#disposed) return;
 
     // Latest-wins: cancel any in-flight run, then claim this run's tag.
     this.#abortRpc(LOAD_KEY);
@@ -304,9 +306,20 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       if (runId === this.#loadRunId) queue(mut);
     };
 
+    const url = { params: this.#params, search };
     try {
-      await loader({ params: this.#params, search }, ctx);
-      if (runId === this.#loadRunId) await this.#flushChunk();
+      // Guard first (§10): auth runs on every URL change; a deny skips the load.
+      if (guard) {
+        await guard(url, {
+          params: this.#params,
+          session: this.#session,
+          signal: controller.signal,
+        });
+      }
+      if (loader) {
+        await loader(url, ctx);
+        if (runId === this.#loadRunId) await this.#flushChunk();
+      }
     } catch (e) {
       // Only the current run reacts — a superseded run (newer URL claimed the
       // tag) neither redirects nor logs. A redirect is control-flow (§10):
@@ -314,7 +327,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       // data throw is reported server-side.
       if (runId !== this.#loadRunId) return;
       if (isRedirect(e)) throw e;
-      if (!controller.signal.aborted) console.error("[rpxd] load failed:", e);
+      if (!controller.signal.aborted) console.error("[rpxd] guard/load failed:", e);
     } finally {
       this.#untrackAbort(LOAD_KEY, controller);
     }

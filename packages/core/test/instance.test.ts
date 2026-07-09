@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LiveInstance } from "../src/instance.ts";
 import { redirect } from "../src/redirect.ts";
-import type { LiveDefinition, Mutator } from "../src/live.ts";
+import type { LiveDefinition, Mutator, SearchParams } from "../src/live.ts";
 import { type Envelope, PROTOCOL_VERSION, type RpcBatch } from "../src/protocol.ts";
 import { memory, type StorageAdapter } from "../src/storage.ts";
 
@@ -636,6 +636,71 @@ describe("URL loader (§7)", () => {
     expect(second.inst.seq).toBeGreaterThan(seqBefore);
     await second.inst.load({ filter: "done" });
     expect(second.inst.state.todos).toEqual([{ id: "done-1", text: "done" }]);
+  });
+});
+
+describe("guard (§10)", () => {
+  it("runs before load; a deny (redirect) skips the load and re-throws", async () => {
+    const calls: string[] = [];
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      guard: async ({ search }) => {
+        calls.push("guard");
+        if (search.filter === "secret") throw redirect("/403");
+      },
+      load: async () => {
+        calls.push("load");
+      },
+    };
+    const { inst } = await make(def);
+    await inst.load({ filter: "ok" });
+    expect(calls).toEqual(["guard", "load"]); // guard runs first
+    await expect(inst.load({ filter: "secret" })).rejects.toMatchObject({ location: "/403" });
+    expect(calls).toEqual(["guard", "load", "guard"]); // denied load never ran
+  });
+
+  it("re-checks on every URL change (search too), catching a spoofed param", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      guard: async ({ search }) => {
+        if (search.userId && search.userId !== "me") throw redirect("/403");
+      },
+      load: async () => {},
+    };
+    const { inst } = await make(def);
+    await expect(inst.load({ userId: "me" })).resolves.toBeUndefined();
+    await expect(inst.load({ userId: "other" })).rejects.toMatchObject({ location: "/403" });
+  });
+
+  it("runs even with no load (auth-only route)", async () => {
+    let ran = false;
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      guard: async () => {
+        ran = true;
+        throw redirect("/login");
+      },
+    };
+    const { inst } = await make(def);
+    await expect(inst.load({})).rejects.toMatchObject({ location: "/login" });
+    expect(ran).toBe(true);
+  });
+
+  it("gets the typed url + a cancellation signal", async () => {
+    let seen: { params: { id: string }; search: SearchParams; signal: boolean } | undefined;
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      guard: async (url, ctx) => {
+        seen = {
+          params: url.params,
+          search: url.search,
+          signal: ctx.signal instanceof AbortSignal,
+        };
+      },
+    };
+    const { inst } = await make(def);
+    await inst.load({ q: "x" });
+    expect(seen).toEqual({ params: { id: "42" }, search: { q: "x" }, signal: true });
   });
 });
 

@@ -10,6 +10,8 @@ export { type CreateInstanceOptions, LiveInstance, SESSION_PREFIX } from "./inst
 export {
   type BroadcastOptions,
   type EventHandler,
+  type Guard,
+  type GuardCtx,
   type Handler,
   type HandlerCtx,
   isLongForm,

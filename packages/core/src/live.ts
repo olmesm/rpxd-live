@@ -152,6 +152,35 @@ export type Loader<S, Params, Session> = (
   ctx: HandlerCtx<S, Params, Session>,
 ) => void | Promise<void>;
 
+/** Context available to `guard` (§10): auth reads + cancellation. No state writes. */
+export interface GuardCtx<Params, Session> {
+  /** Typed path params from the route literal (§7). */
+  params: Params;
+  /** Authenticated session data — read it to authorize (§10). */
+  session: Session;
+  /** Aborted when a newer URL supersedes this run — pass to async auth checks. */
+  readonly signal: AbortSignal;
+}
+
+/**
+ * The auth guard (§7, §10) — runs before `load` on **every** URL change (path
+ * or search). `throw redirect(...)` to deny. Because it runs on search changes
+ * too, a spoofed/edited `?cursor=…`/`?userId=…` is re-checked. It's a gate, not
+ * a loader: no `patchState`. Pass `ctx.signal` to async auth lookups.
+ *
+ * @example
+ * ```ts
+ * .guard(async ({ params }, ctx) => {
+ *   if (!ctx.session.user) throw redirect("/login");
+ *   if (!(await canView(ctx.session, params.id))) throw redirect("/403");
+ * })
+ * ```
+ */
+export type Guard<Params, Session> = (
+  url: Url<Params>,
+  ctx: GuardCtx<Params, Session>,
+) => void | Promise<void>;
+
 /** Options for the URL-keyed loader (§7). */
 export interface LoaderOptions {
   /**
@@ -231,9 +260,11 @@ export interface LiveDefinition<S, Path extends string, Session> {
    * for a coarse fail-fast (§10).
    */
   setup: (ctx: SetupCtx<PathParams<Path>, Session>) => S;
+  /** Auth (§10): runs before `load` on every URL change, `throw redirect` to deny. See {@link Guard}. */
+  guard?: Guard<PathParams<Path>, Session>;
   /**
-   * URL-keyed loader (§7): runs after `setup` and on every URL change, writes
-   * page state, latest-wins. See {@link Loader}.
+   * URL-keyed loader (§7): runs after `setup`+`guard` and on every URL change,
+   * writes page state, latest-wins. See {@link Loader}.
    */
   load?: Loader<S, PathParams<Path>, Session>;
   /** SSR sequencing for {@link LiveDefinition.load} (§12); default stream. */
@@ -310,9 +341,14 @@ export interface LiveBuilder<S, Path extends string, Session, R> {
     handler: EventHandler<S, PathParams<Path>, Session>,
   ): LiveBuilder<S, Path, Session, R>;
   /**
-   * URL-keyed loader (§7): runs after `setup` and on every URL change, writes
-   * page state via `ctx.patchState`, latest-wins. First arg is `{ params, search }`.
-   * See {@link Loader}. Optionally block SSR on the initial load (§12).
+   * Auth guard (§10): runs before `load` on every URL change; `throw redirect`
+   * to deny. First arg is `{ params, search }`; no state writes. See {@link Guard}.
+   */
+  guard(guard: Guard<PathParams<Path>, Session>): LiveBuilder<S, Path, Session, R>;
+  /**
+   * URL-keyed loader (§7): runs after `setup`+`guard` and on every URL change,
+   * writes page state via `ctx.patchState`, latest-wins. First arg is
+   * `{ params, search }`. See {@link Loader}. Optionally block SSR (§12).
    */
   load(
     loader: Loader<S, PathParams<Path>, Session>,
@@ -359,6 +395,7 @@ function liveBuilder(path: string, def: Record<string, any>): any {
       liveBuilder(path, { ...def, rpc: { ...def.rpc, [name]: build(rpcChain({})).def } }),
     on: (event: string, handler: unknown) =>
       liveBuilder(path, { ...def, on: { ...def.on, [event]: handler } }),
+    guard: (guard: unknown) => liveBuilder(path, { ...def, guard }),
     load: (loader: unknown, opts?: unknown) =>
       liveBuilder(path, { ...def, load: loader, loadOptions: opts }),
     version: (tag: string) => liveBuilder(path, { ...def, version: tag }),
