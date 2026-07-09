@@ -70,6 +70,8 @@ export interface RpxdHandlerOptions {
 interface InstanceEntry {
   // biome-ignore lint/suspicious/noExplicitAny: registry spans routes of any state shape
   instance: LiveInstance<any, any, any>;
+  /** Owning session id — client lookups by instance id must match it (no cross-session access). */
+  sid: string;
   /** The pathname this entry is keyed under in its session map (for eviction). */
   key: string;
   path: string;
@@ -127,6 +129,17 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   /** sessionId → instanceKey → entry */
   const sessions = new Map<string, Map<string, InstanceEntry>>();
   const byInstanceId = new Map<string, InstanceEntry>();
+
+  /**
+   * Resolve an instance id for a client request, but only if it belongs to the
+   * requesting session. `byInstanceId` is a global registry, so an unchecked
+   * lookup would let any session drive any instance by id (IDOR).
+   */
+  function ownedInstance(instanceId: string | undefined, sid: string): InstanceEntry | undefined {
+    if (!instanceId) return undefined;
+    const entry = byInstanceId.get(instanceId);
+    return entry && entry.sid === sid ? entry : undefined;
+  }
   /** sessionId → client stream id → live SSE subscriber (§7 tier-2 late mount). */
   const streamRegistry = new Map<string, Map<string, StreamHandle>>();
   let disposed = false;
@@ -250,6 +263,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
 
     const entry: InstanceEntry = {
       instance,
+      sid,
       key: pathname,
       path: match.path,
       params: match.params,
@@ -413,7 +427,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       streamRegistry.get(sid)?.get(msg.stream)?.releaseInstance(msg.instance);
       return new Response(null, { status: 204 });
     }
-    const entry = byInstanceId.get(msg.instance);
+    const entry = ownedInstance(msg.instance, sid);
     if (!entry) return new Response("unknown instance", { status: 404 });
     if (msg.type === "resync") {
       entry.instance.resync();
@@ -431,9 +445,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     return new Response(null, { status: 204 });
   }
 
-  async function handleRpc(req: Request): Promise<Response> {
+  async function handleRpc(req: Request, sid: string): Promise<Response> {
     const batch = (await req.json()) as RpcBatch;
-    const entry = byInstanceId.get(batch.instance);
+    const entry = ownedInstance(batch.instance, sid);
     if (!entry) return new Response("unknown instance", { status: 404 });
     // Fire-and-forget: the ack rides the SSE stream, not this response.
     void entry.instance.handleBatch(batch);
@@ -476,7 +490,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           return withSession(await handleStream(req, sid), sid, isNew);
         }
         if (url.pathname === "/__rpxd/rpc" && req.method === "POST") {
-          return withSession(await handleRpc(req), sid, isNew);
+          return withSession(await handleRpc(req, sid), sid, isNew);
         }
         if (url.pathname === "/__rpxd/control" && req.method === "POST") {
           return withSession(await handleControl(req, sid, sessionData), sid, isNew);
@@ -581,7 +595,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                 search?: Record<string, string>;
               };
           if ("calls" in msg) {
-            const entry = byInstanceId.get(msg.instance);
+            const entry = ownedInstance(msg.instance, sid);
             if (entry) void entry.instance.handleBatch(msg);
             return;
           }
@@ -596,7 +610,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
             releaseInstance(msg.instance); // tier-2 forward nav (§7)
             return;
           }
-          const entry = msg.instance ? byInstanceId.get(msg.instance) : undefined;
+          const entry = ownedInstance(msg.instance, sid);
           if (!entry) return;
           if (msg.type === "resync") entry.instance.resync();
           if (msg.type === "url" && msg.search) {
