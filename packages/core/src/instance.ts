@@ -241,28 +241,28 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     }
 
     const idMap: Record<string, string> = {};
-    const bucket: FlushBucket<S> = {
-      muts: [],
-      atomic: batch.calls.some((c) => {
-        const def = this.#def.rpc?.[c.rpc];
-        return def !== undefined && isLongForm(def) && def.atomic === true;
-      }),
-    };
 
     let current: RpcCall | undefined;
     try {
       for (const call of batch.calls) {
         current = call;
-        const { handler, payload } = await this.#prepare(call);
+        const { handler, payload, atomic } = await this.#prepare(call);
+        // Atomicity is per-rpc (§3): each call gets its own buffer. A
+        // non-atomic call's writes stream to the instance-global pending list
+        // as they happen; an atomic call buffers here and is promoted (below)
+        // only if it completes — so a throw rolls back this call alone, never a
+        // sibling's committed writes.
+        const bucket: FlushBucket<S> = { muts: [], atomic };
         const controller = this.#trackAbort(call.rpc);
         const ctx = this.#makeHandlerCtx(idMap, bucket, controller.signal);
         try {
           await handler(payload, ctx);
+          if (atomic) this.#pendingMuts.push(...bucket.muts);
         } finally {
           this.#untrackAbort(call.rpc, controller);
         }
       }
-      await this.#flushFinal(bucket, batch.rpcId, idMap);
+      await this.#flushFinal(batch.rpcId, idMap);
     } catch (e) {
       const rpcName = current?.rpc ?? "?";
       const error = {
@@ -270,7 +270,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
         message: e instanceof Error ? e.message : String(e),
         rpc: rpcName,
       };
-      await this.#ackError(batch.rpcId, error, rpcName, current?.payload, idMap, bucket);
+      await this.#ackError(batch.rpcId, error, rpcName, current?.payload, idMap);
     }
   }
 
@@ -452,15 +452,14 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       });
   }
 
-  /** Completion flush: drains pending + atomic buffer, always emits the ack. */
-  async #flushFinal(
-    bucket: FlushBucket<S>,
-    rpcId: string,
-    idMap: Record<string, string>,
-  ): Promise<void> {
+  /**
+   * Completion flush: drains the pending list (which now includes any
+   * successful atomic call's promoted writes), always emits the ack.
+   */
+  async #flushFinal(rpcId: string, idMap: Record<string, string>): Promise<void> {
     await this.#queue.run(async () => {
       if (this.#disposed) return;
-      const patches = this.#applyMuts([...this.#pendingMuts.splice(0), ...bucket.muts.splice(0)]);
+      const patches = this.#applyMuts(this.#pendingMuts.splice(0));
       this.#emitAck({ patches, rpcId, ...this.#idMapField(idMap) });
       await this.#writeThrough();
     });
@@ -535,10 +534,16 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     payload: unknown,
   ): Promise<void> {
     const ctx = this.#makeCtx({});
-    const patches = this.#applyMuts([
-      ...this.#pendingMuts.splice(0),
-      (draft) => handler(draft, payload, ctx),
-    ]);
+    // Commit any unrelated pending writes on their own draft FIRST (still
+    // ordered before the reaction), so a throwing event handler discards only
+    // its own mutation — not another rpc's buffered patchState writes.
+    const pending = this.#pendingMuts.splice(0);
+    if (pending.length > 0) {
+      const pendingPatches = this.#applyMuts(pending);
+      if (pendingPatches.length > 0) this.#emit({ patches: pendingPatches });
+      await this.#writeThrough();
+    }
+    const patches = this.#applyMuts([(draft) => handler(draft, payload, ctx)]);
     if (patches.length > 0) this.#emit({ patches });
     await this.#writeThrough();
   }
@@ -547,6 +552,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   async #prepare(call: RpcCall): Promise<{
     handler: RpcLongForm<S, unknown, PathParams<Path>, Session>["handler"];
     payload: unknown;
+    atomic: boolean;
   }> {
     const def: RpcDef<S, PathParams<Path>, Session> | undefined = this.#def.rpc?.[call.rpc];
     if (!def) throw new Error(`Unknown rpc "${call.rpc}"`);
@@ -565,7 +571,11 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     if (isLongForm(def) && def.input) {
       payload = await validateInput(def.input, payload, call.rpc);
     }
-    return { handler: isLongForm(def) ? def.handler : def, payload };
+    return {
+      handler: isLongForm(def) ? def.handler : def,
+      payload,
+      atomic: isLongForm(def) && def.atomic === true,
+    };
   }
 
   /**
@@ -579,9 +589,10 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     rpcName: string,
     payload: unknown,
     idMap: Record<string, string>,
-    bucket: FlushBucket<S>,
   ): Promise<void> {
-    bucket.muts.length = 0; // atomic rollback — non-atomic muts live in the pending list
+    // The failing call's atomic buffer was never promoted (see handleBatch), so
+    // its writes are already rolled back. Sibling calls' committed writes live
+    // in the pending list and still flush with the error ack.
     const muts = this.#pendingMuts.splice(0);
 
     const def = this.#def.rpc?.[rpcName];

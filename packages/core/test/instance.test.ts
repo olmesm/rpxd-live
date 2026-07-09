@@ -300,6 +300,125 @@ describe("atomic rpcs (§3)", () => {
   });
 });
 
+describe("atomic scope is per-rpc, not per-batch (§3)", () => {
+  const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+    setup: () => initial(),
+    rpc: {
+      note: {
+        async handler(_p, ctx) {
+          ctx.patchState(((s) => {
+            s.log.push("note");
+          }) as Mut);
+        },
+      },
+      okAtomic: {
+        atomic: true,
+        async handler(_p, ctx) {
+          ctx.patchState(((s) => {
+            s.log.push("okAtomic");
+          }) as Mut);
+        },
+      },
+      boomAtomic: {
+        atomic: true,
+        async handler(_p, ctx) {
+          ctx.patchState(((s) => {
+            s.log.push("boom-write");
+          }) as Mut);
+          throw new Error("boom");
+        },
+      },
+      boomPlain: {
+        async handler() {
+          throw new Error("later-fail");
+        },
+      },
+    },
+  };
+
+  it("keeps a sibling non-atomic call's writes when a later atomic call throws", async () => {
+    const { inst, envelopes } = await make(def);
+    await inst.handleBatch({
+      v: PROTOCOL_VERSION,
+      instance: "i",
+      rpcId: "mix1",
+      calls: [
+        { rpc: "note", payload: {} },
+        { rpc: "boomAtomic", payload: {} },
+      ],
+    });
+    // Only the atomic rpc rolls back; the non-atomic sibling's write persists.
+    expect(inst.state.log).toEqual(["note"]);
+    expect(envelopes.at(-1)?.error?.message).toBe("boom");
+  });
+
+  it("keeps an earlier atomic call's committed writes when a later call throws", async () => {
+    const { inst, envelopes } = await make(def);
+    await inst.handleBatch({
+      v: PROTOCOL_VERSION,
+      instance: "i",
+      rpcId: "mix2",
+      calls: [
+        { rpc: "okAtomic", payload: {} },
+        { rpc: "boomPlain", payload: {} },
+      ],
+    });
+    // The atomic rpc already completed successfully — a later sibling throwing
+    // must not roll it back.
+    expect(inst.state.log).toEqual(["okAtomic"]);
+    expect(envelopes.at(-1)?.error?.message).toBe("later-fail");
+  });
+});
+
+describe("broadcast on-handler isolation (§8)", () => {
+  it("a throwing on-handler does not discard an unrelated rpc's pending writes", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: (ctx) => {
+        ctx.subscribe("room:1");
+        return initial();
+      },
+      rpc: {
+        slow: {
+          async handler(_p, ctx) {
+            ctx.patchState(((s) => {
+              s.log.push("slow-write");
+            }) as Mut);
+            gates.slowReady?.();
+            await gate("slowRelease");
+          },
+        },
+      },
+      on: {
+        boom: () => {
+          throw new Error("on-handler boom");
+        },
+      },
+    };
+    const ready = new Promise<void>((resolve) => {
+      gates.slowReady = resolve;
+    });
+    const { inst, storage } = await make(def);
+    const run = inst.handleBatch(batch("slow"));
+    // slow's patchState has run and is sitting in the pending list (its flush is
+    // a not-yet-fired macrotask); no macrotask boundary has been crossed.
+    await ready;
+    // A broadcast whose handler throws is delivered while that write is pending.
+    storage.bus.publish({
+      topic: "room:1",
+      event: "boom",
+      payload: null,
+      senderId: "other",
+      self: false,
+    });
+    await tick();
+    gates.slowRelease?.();
+    await run;
+    await inst.idle();
+    // The throwing on-handler must not have discarded slow's unrelated write.
+    expect(inst.state.log).toContain("slow-write");
+  });
+});
+
 describe("cancellation (§3)", () => {
   it("aborts ctx.signal on dispose", async () => {
     let aborted = false;
