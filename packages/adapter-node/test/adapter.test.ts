@@ -12,7 +12,7 @@ import { WebSocket } from "ws";
 import { nodeAdapter } from "../src/index.ts";
 
 const def: LiveDefinition<{ n: number }, "/", Record<string, unknown>> = {
-  mount: async () => ({ n: 1 }),
+  setup: () => ({ n: 1 }),
 };
 
 describe("nodeAdapter", () => {

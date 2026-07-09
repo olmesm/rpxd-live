@@ -25,10 +25,10 @@ describe("sqliteNode storage adapter", () => {
   it("backs a LiveInstance write-through + session continuity (§9)", async () => {
     const storage = sqliteNode(":memory:");
     const def: LiveDefinition<{ n: number }, "/", { userId?: string }> = {
-      mount: async () => ({ n: 0 }),
-      params: async ({ filter }, ctx) => {
+      setup: () => ({ n: 0 }),
+      load: async ({ search }, ctx) => {
         ctx.patchState((s) => {
-          s.n = filter === "done" ? 1 : 0;
+          s.n = search.filter === "done" ? 1 : 0;
         });
       },
     };
@@ -40,7 +40,7 @@ describe("sqliteNode storage adapter", () => {
       storage,
       storageKey: "sess:/",
     });
-    await first.setSearch({ filter: "done" });
+    await first.load({ filter: "done" });
     expect(first.state.n).toBe(1);
     await first.dispose();
 
@@ -55,7 +55,7 @@ describe("sqliteNode storage adapter", () => {
     expect(second.session.userId).toBe("u1"); // session survived through sqlite
     expect(second.seq).toBeGreaterThan(1); // seq continued
     expect(second.state.n).toBe(0); // cold wake re-mounts
-    await second.setSearch({ filter: "done" });
+    await second.load({ filter: "done" });
     expect(second.state.n).toBe(1);
   });
 });
