@@ -1,4 +1,4 @@
-import type { Envelope, LiveDefinition, PROTOCOL_VERSION } from "@rpxd/core";
+import { type Envelope, type LiveDefinition, memory, type PROTOCOL_VERSION } from "@rpxd/core";
 import { describe, expect, it } from "vitest";
 import { createRpxdHandler } from "../src/handler.ts";
 import { matchPath, matchRoute } from "../src/match.ts";
@@ -592,6 +592,104 @@ describe("un-attached instance bounds — cookieless GET flood (#61)", () => {
     await mount(handler, "off-b");
     await mount(handler, "off-c");
     expect(handler.instanceCount).toBe(3); // no bound
+    await handler.dispose();
+  });
+});
+
+describe("un-attached instance cleanup — no residual growth (#61 follow-up)", () => {
+  it("prunes the empty session slice after its last instance evicts", async () => {
+    // Each cookieless GET mints a fresh sid → a session slice. When its only
+    // instance evicts, the slice must be dropped too, or `sessions` grows an
+    // empty Map per minted sid forever under scan traffic.
+    const handler = makeHandler({ warmTtlMs: 500, attachTtlMs: 10 }); // unattachedTtlMs ← 10
+    for (let i = 0; i < 4; i++) {
+      await handler.fetch(new Request(`${base}/org/${i}/board`)); // no cookie → new sid each
+    }
+    expect(handler.instanceCount).toBe(4);
+    expect(handler.sessionCount).toBe(4);
+    await new Promise((r) => setTimeout(r, 80)); // past unattachedTtlMs
+    expect(handler.instanceCount).toBe(0);
+    expect(handler.sessionCount).toBe(0); // slices pruned, not just their instances
+    await handler.dispose();
+  });
+
+  it("drops a never-attached instance's snapshot on eviction (no persistent-storage leak)", async () => {
+    const storage = memory();
+    const handler = createRpxdHandler({
+      routes: [{ path: "/org/$orgId/board", def: boardDef }],
+      storage,
+      warmTtlMs: 500,
+      attachTtlMs: 10,
+    });
+    await handler.fetch(
+      new Request(`${base}/org/7/board`, { headers: { cookie: "rpxd_sid=leak-x" } }),
+    );
+    expect(await storage.get("leak-x:/org/7/board")).toBeDefined(); // warm → persisted
+    await new Promise((r) => setTimeout(r, 80));
+    expect(await storage.get("leak-x:/org/7/board")).toBeUndefined(); // never adopted → row dropped
+    await handler.dispose();
+  });
+
+  it("does not orphan a concurrent mount when a sibling slice is pruned mid-flight", async () => {
+    // Race: mount A is suspended in its (slow) loader while sibling B's eviction
+    // timer fires, empties the session slice, and prunes it from `sessions`. A
+    // must still register into the *canonical* slice, not a detached reference.
+    interface SlowState {
+      n: number;
+    }
+    const slowDef: LiveDefinition<SlowState, "/slow", Record<string, unknown>> = {
+      setup: () => ({ n: 0 }),
+      load: async (_url, ctx) => {
+        await new Promise((r) => setTimeout(r, 40)); // A stays mid-mount…
+        ctx.patchState((s) => {
+          s.n = 1;
+        });
+      },
+    };
+    const handler = createRpxdHandler({
+      routes: [
+        { path: "/org/$orgId/board", def: boardDef },
+        { path: "/slow", def: slowDef },
+      ],
+      warmTtlMs: 500,
+      attachTtlMs: 5, // unattachedTtlMs ← 5: B evicts ~5ms in, during A's 40ms load
+    });
+    const cookie = { cookie: "rpxd_sid=race" };
+    await handler.fetch(new Request(`${base}/org/1/board`, { headers: cookie })); // B: idle, timer pending
+    const aDone = handler.fetch(new Request(`${base}/slow`, { headers: cookie })); // A: slow mount
+    await aDone;
+    // A landed in the live session slice (pruned reference would leave it detached).
+    expect(handler.instanceCount).toBe(1);
+    expect(handler.sessionCount).toBe(1);
+    await handler.dispose();
+  });
+
+  it("keeps an attached instance's snapshot on warm eviction (regression)", async () => {
+    const storage = memory();
+    const handler = createRpxdHandler({
+      routes: [{ path: "/org/$orgId/board", def: boardDef }],
+      storage,
+      warmTtlMs: 25,
+      attachTtlMs: 5,
+    });
+    const cookie = { cookie: "rpxd_sid=keep-x" };
+    await handler.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers: cookie,
+        body: JSON.stringify({ type: "mount", path: "/org/2/board" }),
+      }),
+    );
+    const abort = new AbortController();
+    const streamRes = await handler.fetch(
+      new Request(`${base}/__rpxd/stream`, { headers: cookie, signal: abort.signal }),
+    );
+    const sse = new SseReader(streamRes);
+    await sse.next(); // subscribed → attached
+    abort.abort();
+    await new Promise((r) => setTimeout(r, 80)); // past warmTtlMs
+    expect(handler.instanceCount).toBe(0);
+    expect(await storage.get("keep-x:/org/2/board")).toBeDefined(); // adopted → snapshot kept
     await handler.dispose();
   });
 });
