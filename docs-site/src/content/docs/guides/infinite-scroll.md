@@ -16,7 +16,10 @@ export default live("/feed")
   .setup(() => ({ items: [] as Post[], cursor: null as string | null, hasMore: false, loading: true }))
   .load(async ({ search }, ctx) => {
     const append = search.cursor != null;
-    ctx.patchState((s) => { s.loading = true; });
+    // Subsequent pages flip the spinner synchronously (instant feedback, then
+    // streamed). The first page has no synchronous patch, so SSR waits for the
+    // awaited data — the initial feed is crawlable (§12).
+    if (append) ctx.patchState((s) => { s.loading = true; });
     const { items, nextCursor } = await listPosts(scopeFrom(ctx.session), {
       cursor: search.cursor ?? null, limit: 20, signal: ctx.signal,
     });
@@ -26,7 +29,7 @@ export default live("/feed")
       s.hasMore = nextCursor != null;
       s.loading = false;
     });
-  }, { blockSsr: true })
+  })
   .render(({ state, nav, keyOf }) => {
     const sentinel = useRef<HTMLDivElement>(null);
     useEffect(() => {

@@ -87,9 +87,11 @@ Pass `ctx.signal` to `fetch` so a superseded load stops early. Because the URL
 is the query key, filtering and pagination are shareable, bookmarkable, and
 rebuilt from the URL on cold wake.
 
-`opts.blockSsr` (default `false`) awaits the load during SSR so the first
-document carries data (crawlable); the default streams the data in after
-hydration. Optional.
+During SSR the first document carries state through the loader's **first
+patch**, then the rest streams (no flag). Patch synchronously before the first
+`await` and that projection renders immediately, streaming the data in after
+hydration (fast TTFB); `await` the data *before* the first `patchState` and the
+renderer waits for it, so the first document is crawlable and data-complete.
 
 See [Loading data](/rpxd-live/guides/loading-data/) for the full model and the
 [pagination](/rpxd-live/guides/pagination/),
@@ -113,9 +115,8 @@ Defines a reducer. The builder locks payloads and threads types:
   [Async handlers & streaming](/rpxd-live/guides/async-handlers-streaming/).
 - **`.onError((state, error, payload, ctx) => void)`** — a sync mutator run as a
   queued flush when the handler throws; its patches ride the error ack. Repairs
-  *state*, not the database.
-- **`.atomic()`** — buffer all `patchState` calls and flush once on success,
-  discard all on throw (whole-rpc rollback).
+  *state*, not the database. For whole-rpc all-or-nothing, do the fallible work
+  first (or `try/catch` + accumulate) and `patchState` once at the end.
 - **`.rateLimit(limit)`** — a per-rpc token bucket, per instance.
 
 ### `.on(event, (state, payload) => void)`
