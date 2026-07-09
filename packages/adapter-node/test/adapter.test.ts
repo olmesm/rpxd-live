@@ -16,12 +16,16 @@ import { nodeAdapter, writeChunk } from "../src/index.ts";
 
 describe("writeChunk backpressure", () => {
   it("resolves immediately when the socket accepts the write", async () => {
-    const res = Object.assign(new EventEmitter(), { write: () => true }) as unknown as ServerResponse;
+    const res = Object.assign(new EventEmitter(), {
+      write: () => true,
+    }) as unknown as ServerResponse;
     await writeChunk(res, new Uint8Array([1])); // must not hang
   });
 
   it("waits for 'drain' when the socket signals backpressure", async () => {
-    const res = Object.assign(new EventEmitter(), { write: () => false }) as unknown as ServerResponse;
+    const res = Object.assign(new EventEmitter(), {
+      write: () => false,
+    }) as unknown as ServerResponse;
     let resolved = false;
     const p = writeChunk(res, new Uint8Array([1])).then(() => {
       resolved = true;
@@ -34,7 +38,9 @@ describe("writeChunk backpressure", () => {
   });
 
   it("stops waiting if the client goes away ('close')", async () => {
-    const res = Object.assign(new EventEmitter(), { write: () => false }) as unknown as ServerResponse;
+    const res = Object.assign(new EventEmitter(), {
+      write: () => false,
+    }) as unknown as ServerResponse;
     const p = writeChunk(res, new Uint8Array([1]));
     res.emit("close");
     await p; // resolves instead of leaking forever
