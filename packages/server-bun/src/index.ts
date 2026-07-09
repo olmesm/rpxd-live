@@ -27,4 +27,5 @@ export {
   matchRoute,
   type RouteMatch,
 } from "./match.ts";
+export { type AllowedOrigins, originAllowed } from "./origin.ts";
 export { wsTransport } from "./ws.ts";

@@ -84,6 +84,50 @@ function openSocket(): Promise<{ socket: WebSocket; next(timeoutMs?: number): Pr
   });
 }
 
+describe("ws upgrade origin gate (#52)", () => {
+  const noop = () => true;
+  const target = "ws://localhost/__rpxd/ws";
+
+  it("rejects a cross-origin upgrade with 403", async () => {
+    const ws = wsTransport(handler);
+    const res = await ws.handleUpgrade(
+      new Request(target, { headers: { origin: "http://evil.example" } }),
+      noop,
+    );
+    expect(res?.status).toBe(403);
+  });
+
+  it("allows same-origin and Origin-less upgrades", async () => {
+    const ws = wsTransport(handler);
+    const same = await ws.handleUpgrade(
+      new Request(target, { headers: { origin: "http://localhost", host: "localhost" } }),
+      noop,
+    );
+    expect(same?.status).toBe(101);
+    const none = await ws.handleUpgrade(new Request(target), noop);
+    expect(none?.status).toBe(101);
+  });
+
+  it("honors an allowlist for a cross-origin upgrade", async () => {
+    const guarded = createRpxdHandler({
+      routes: [{ path: "/", def }],
+      allowedOrigins: ["http://trusted.example"],
+    });
+    const ws = wsTransport(guarded);
+    const ok = await ws.handleUpgrade(
+      new Request(target, { headers: { origin: "http://trusted.example" } }),
+      noop,
+    );
+    expect(ok?.status).toBe(101);
+    const blocked = await ws.handleUpgrade(
+      new Request(target, { headers: { origin: "http://evil.example" } }),
+      noop,
+    );
+    expect(blocked?.status).toBe(403);
+    await guarded.dispose();
+  });
+});
+
 describe("ws transport (§11)", () => {
   it("carries the full protocol over one duplex socket", async () => {
     // mount over HTTP (shared with SSE mode), then attach the socket

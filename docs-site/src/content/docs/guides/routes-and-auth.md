@@ -213,6 +213,53 @@ The `Scope` carries **both**: `{ sid, user }`. Per-user data scopes by `user.id`
 `sid` stays the instance key. Keeping `Scope` a plain struct threaded into
 `domain/` (not the db on `ctx`) is what lets it hold two identities cleanly.
 
+## Cross-site protection — the origin policy
+
+The live control plane (`/__rpxd/ws`, `/__rpxd/stream`, `/__rpxd/rpc`,
+`/__rpxd/control`) carries ambient credentials, and the **same-origin policy
+does not apply to WebSocket handshakes** — so without an origin check a
+malicious page could open `wss://your-app/__rpxd/ws` with the logged-in
+victim's cookies and drive rpc batches / read envelopes on their behalf
+(cross-site WebSocket hijacking).
+
+rpxd gates the control plane **same-origin by default**, before `authenticate`
+runs. A cross-origin request whose `Origin` isn't allow-listed gets `403`; an
+absent `Origin` (native apps, server-to-server, CLIs) is allowed, since the
+attack is browser-only. SSR `GET` navigation and `route()` handlers are **not**
+gated — a top-level navigation is legitimately cross-site.
+
+A same-origin app needs no config. For a deliberate cross-origin deployment
+(a separate admin origin, a native shell), widen the allowlist:
+
+```ts
+// rpxd.config.ts
+export default defineConfig({
+  // exact origins…
+  allowedOrigins: ["https://admin.example.com"],
+  // …or a predicate for wildcard subdomains / proxy-aware matching:
+  // allowedOrigins: (origin) => new URL(origin).hostname.endsWith(".example.com"),
+});
+```
+
+`allowedOrigins: ["*"]` opts back into the pre-check any-origin behavior — only
+if you fully own the cross-origin exposure.
+
+:::caution
+The origin check is **defense in depth, not a cookie policy.** The framework's
+own `rpxd_sid` cookie is `SameSite=Lax`, so browsers already withhold it from
+cross-site sockets and fetches. But if your `authenticate` hook depends on an
+app cookie set **without** `SameSite=Lax`/`Strict`, or on any non-cookie ambient
+credential the browser attaches automatically (HTTP Basic, a client cert), that
+credential *is* sent cross-site — the origin allowlist is what stops the request
+before your auth hook ever sees it. Set your auth cookie `SameSite=Lax` (or
+`Strict`) as well.
+:::
+
+The same-origin match is **host-based**, not scheme-based: behind a
+TLS-terminating proxy the server sees `http`, so a strict scheme compare would
+be unreliable. Use the `allowedOrigins` predicate form when you need
+scheme- or proxy-aware matching.
+
 ## The userland tree
 
 Everything above, laid out — the `examples/kitchen-sink` shape plus the auth

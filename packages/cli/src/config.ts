@@ -49,6 +49,19 @@ export interface RpxdConfig {
   session?: {
     authenticate?: (req: Request, ctx: { sid: string }) => unknown | Promise<unknown>;
   };
+  /**
+   * Cross-origin allowlist for the rpxd control plane (`/__rpxd/ws|stream|rpc|
+   * control`, #52). Defaults to **same-origin only** — the cross-site
+   * WebSocket-hijack / CSRF defense. Leave unset for a normal same-origin app;
+   * a deliberate cross-origin deployment lists its origins (or passes a
+   * predicate). `["*"]` opts back into the pre-#52 any-origin behavior.
+   *
+   * @example
+   * ```ts
+   * export default defineConfig({ allowedOrigins: ["https://admin.example.com"] });
+   * ```
+   */
+  allowedOrigins?: readonly string[] | ((origin: string) => boolean);
   /** RSC fields flag (§16). Default false — v1 is complete without it. */
   rsc?: boolean;
   /** Default per-rpc token bucket (§10). */
