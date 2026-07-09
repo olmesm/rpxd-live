@@ -179,6 +179,31 @@ describe("id linking + keyOf (§4)", () => {
   });
 });
 
+describe("malformed frame robustness (§2)", () => {
+  it("does not throw or wedge the pending rpc on a corrupt in-order frame", async () => {
+    const { store, sent, resyncs } = makeStore(addMeta);
+    const p = store.call("add", { text: "x" });
+    await flushTick();
+    const rpcId = sent.at(-1)?.rpcId;
+    expect(rpcId).toBeDefined();
+
+    // A corrupt in-order frame (patches present but not iterable) for the
+    // pending rpc — a hostile/buggy server must not throw into the transport
+    // or leave the rpc promise hanging forever.
+    expect(() =>
+      store.applyEnvelope({
+        seq: 2,
+        instance: "i1",
+        rpcId,
+        // biome-ignore lint/suspicious/noExplicitAny: intentionally malformed wire frame
+        patches: { length: 1 } as any,
+      }),
+    ).not.toThrow();
+    expect(resyncs.length).toBeGreaterThan(0); // recovered via resync
+    await expect(p).resolves.toBeUndefined(); // settled, not wedged
+  });
+});
+
 describe("seq handling (§2)", () => {
   it("requests a resync on gap and ignores patches until full arrives", () => {
     const { store, resyncs } = makeStore();

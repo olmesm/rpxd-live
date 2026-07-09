@@ -143,7 +143,7 @@ export class LiveStore<S = unknown, Session = Record<string, unknown>> {
   #queue: PendingCall[] = [];
   #flushScheduled = false;
 
-  readonly #tempToReal = new Map<string, string>();
+  /** realId → original tempId, for stable React keys across optimistic→confirmed (§4). */
   readonly #realToTemp = new Map<string, string>();
 
   #errors: EnvelopeError[] = [];
@@ -295,36 +295,47 @@ export class LiveStore<S = unknown, Session = Record<string, unknown>> {
       return;
     }
 
-    // In-order patch envelope.
+    // In-order patch envelope. The envelope is untrusted wire data, so any
+    // structural corruption (non-iterable patches, a bad path, an append on a
+    // non-string, §2) discards the whole frame and recovers via resync rather
+    // than throwing into the transport or wedging the acking rpc.
     if (env.patches && env.patches.length > 0) {
-      const sessionPatches: Patch[] = [];
-      const statePatches: Patch[] = [];
-      for (const p of env.patches) {
-        if (p.path[0] === "$session") sessionPatches.push({ ...p, path: p.path.slice(1) });
-        else statePatches.push(p);
-      }
-      // Expand both slices before applying either — a protocol error (append
-      // on a non-string, §2) discards the whole envelope and resyncs.
-      const stateExpanded = expandAppends(this.#confirmedState, statePatches);
-      const sessionExpanded = expandAppends(this.#confirmedSession ?? {}, sessionPatches);
-      if (!stateExpanded || !sessionExpanded) {
-        this.#awaitingFull = true;
-        this.#opts.requestResync(this.#seq);
-        if (env.rpcId) this.#settleOp(env);
-        this.#invalidate();
+      try {
+        const sessionPatches: Patch[] = [];
+        const statePatches: Patch[] = [];
+        for (const p of env.patches) {
+          if (p.path[0] === "$session") sessionPatches.push({ ...p, path: p.path.slice(1) });
+          else statePatches.push(p);
+        }
+        const stateExpanded = expandAppends(this.#confirmedState, statePatches);
+        const sessionExpanded = expandAppends(this.#confirmedSession ?? {}, sessionPatches);
+        if (!stateExpanded || !sessionExpanded) {
+          this.#recoverFromBadFrame(env);
+          return;
+        }
+        if (stateExpanded.length > 0) {
+          this.#confirmedState = applyPatches(this.#confirmedState as object, stateExpanded) as S;
+        }
+        if (sessionExpanded.length > 0) {
+          this.#confirmedSession = applyPatches(
+            (this.#confirmedSession ?? {}) as object,
+            sessionExpanded,
+          ) as Session;
+        }
+      } catch {
+        this.#recoverFromBadFrame(env);
         return;
-      }
-      if (stateExpanded.length > 0) {
-        this.#confirmedState = applyPatches(this.#confirmedState as object, stateExpanded) as S;
-      }
-      if (sessionExpanded.length > 0) {
-        this.#confirmedSession = applyPatches(
-          (this.#confirmedSession ?? {}) as object,
-          sessionExpanded,
-        ) as Session;
       }
     }
     this.#seq = env.seq;
+    if (env.rpcId) this.#settleOp(env);
+    this.#invalidate();
+  }
+
+  /** A corrupt/unapplyable frame: request recovery and settle the ack so the rpc can't wedge. */
+  #recoverFromBadFrame(env: Envelope): void {
+    this.#awaitingFull = true;
+    this.#opts.requestResync(this.#seq);
     if (env.rpcId) this.#settleOp(env);
     this.#invalidate();
   }
@@ -378,7 +389,6 @@ export class LiveStore<S = unknown, Session = Record<string, unknown>> {
     // Ack → link ids (position matching + server escape hatch), drop the fn.
     const matched = matchIdMap(op.lastPatches, env.patches ?? [], op.tempIds);
     for (const [tempId, realId] of Object.entries({ ...matched, ...env.idMap })) {
-      this.#tempToReal.set(tempId, realId);
       this.#realToTemp.set(realId, tempId);
     }
     for (const call of op.calls) call.resolve();
