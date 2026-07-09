@@ -149,24 +149,23 @@ describe("SSR mount (§12)", () => {
     await handler.dispose();
   });
 
-  it("blockSsr awaits the loader so first paint carries data (§12)", async () => {
+  it("awaits the first patch: an await-before-patch loader carries data in first paint (§12)", async () => {
     interface FeedState {
       rows: string[];
       loading: boolean;
     }
+    // No synchronous projection — the loader awaits before its first patch, so
+    // the renderer waits for that patch and the first document is data-complete
+    // (crawlable). Emergent from loader shape (§12), no flag.
     const feedDef: LiveDefinition<FeedState, "/feed", Record<string, unknown>> = {
       setup: () => ({ rows: [] as string[], loading: false }),
       load: async (_url, ctx) => {
-        ctx.patchState((s) => {
-          s.loading = true;
-        });
         await new Promise((r) => setTimeout(r, 20));
         ctx.patchState((s) => {
           s.rows = ["a", "b"];
           s.loading = false;
         });
       },
-      loadOptions: { blockSsr: true },
     };
     const handler = createRpxdHandler({ routes: [{ path: "/feed", def: feedDef }] });
     const res = await handler.fetch(new Request(`${base}/feed`, { headers: COOKIE }));

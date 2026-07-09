@@ -262,45 +262,7 @@ describe("streaming + append op (§2, §3)", () => {
   });
 });
 
-describe("atomic rpcs (§3)", () => {
-  const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-    setup: () => initial(),
-    rpc: {
-      transfer: {
-        atomic: true,
-        async handler({ boom }: { boom?: boolean }, ctx) {
-          ctx.patchState(((s) => {
-            s.log.push("step1");
-          }) as Mut);
-          await tick(); // would flush in non-atomic mode
-          ctx.patchState(((s) => {
-            s.log.push("step2");
-          }) as Mut);
-          if (boom) throw new Error("mid-transfer");
-        },
-      },
-    },
-  };
-
-  it("buffers all patches into one flush at completion", async () => {
-    const { inst, envelopes } = await make(def);
-    await inst.handleBatch(batch("transfer", {}));
-    expect(envelopes).toHaveLength(1);
-    expect(envelopes[0]?.patches).toHaveLength(2);
-    expect(envelopes[0]?.rpcId).toBeDefined();
-  });
-
-  it("discards everything on throw — whole-rpc rollback", async () => {
-    const { inst, envelopes } = await make(def);
-    await inst.handleBatch(batch("transfer", { boom: true }));
-    expect(inst.state.log).toEqual([]); // nothing landed
-    const ack = envelopes[0] as Envelope;
-    expect(ack.error?.message).toBe("mid-transfer");
-    expect(ack.patches ?? []).toHaveLength(0);
-  });
-});
-
-describe("atomic scope is per-rpc, not per-batch (§3)", () => {
+describe("per-rpc write isolation on throw (§3)", () => {
   const def: LiveDefinition<TodoState, "/t/$id", Session> = {
     setup: () => initial(),
     rpc: {
@@ -311,16 +273,7 @@ describe("atomic scope is per-rpc, not per-batch (§3)", () => {
           }) as Mut);
         },
       },
-      okAtomic: {
-        atomic: true,
-        async handler(_p, ctx) {
-          ctx.patchState(((s) => {
-            s.log.push("okAtomic");
-          }) as Mut);
-        },
-      },
-      boomAtomic: {
-        atomic: true,
+      boom: {
         async handler(_p, ctx) {
           ctx.patchState(((s) => {
             s.log.push("boom-write");
@@ -328,15 +281,10 @@ describe("atomic scope is per-rpc, not per-batch (§3)", () => {
           throw new Error("boom");
         },
       },
-      boomPlain: {
-        async handler() {
-          throw new Error("later-fail");
-        },
-      },
     },
   };
 
-  it("keeps a sibling non-atomic call's writes when a later atomic call throws", async () => {
+  it("keeps an earlier sibling call's committed writes when a later call throws", async () => {
     const { inst, envelopes } = await make(def);
     await inst.handleBatch({
       v: PROTOCOL_VERSION,
@@ -344,29 +292,105 @@ describe("atomic scope is per-rpc, not per-batch (§3)", () => {
       rpcId: "mix1",
       calls: [
         { rpc: "note", payload: {} },
-        { rpc: "boomAtomic", payload: {} },
+        { rpc: "boom", payload: {} },
       ],
     });
-    // Only the atomic rpc rolls back; the non-atomic sibling's write persists.
-    expect(inst.state.log).toEqual(["note"]);
+    // Every write streams to the pending list as it happens (§3): the failing
+    // call's own write rides the error ack too, and the sibling's write stands.
+    expect(inst.state.log).toEqual(["note", "boom-write"]);
     expect(envelopes.at(-1)?.error?.message).toBe("boom");
   });
+});
 
-  it("keeps an earlier atomic call's committed writes when a later call throws", async () => {
-    const { inst, envelopes } = await make(def);
-    await inst.handleBatch({
-      v: PROTOCOL_VERSION,
-      instance: "i",
-      rpcId: "mix2",
-      calls: [
-        { rpc: "okAtomic", payload: {} },
-        { rpc: "boomPlain", payload: {} },
-      ],
+describe("loadForRender render gate (§12)", () => {
+  it("await-before-patch: render waits for the loader's first patch (crawlable)", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async (_url, ctx) => {
+        await tick();
+        ctx.patchState(((s) => {
+          s.log.push("data");
+        }) as Mut);
+      },
+    };
+    const { inst } = await make(def);
+    await inst.loadForRender({});
+    expect(inst.state.log).toEqual(["data"]); // data is present at render time
+  });
+
+  it("sync projection: render opens on the first patch, not the awaited data", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async (_url, ctx) => {
+        ctx.patchState(((s) => {
+          s.log.push("chrome");
+        }) as Mut);
+        await gate("load"); // held open past the render
+        ctx.patchState(((s) => {
+          s.log.push("data");
+        }) as Mut);
+      },
+    };
+    const { inst } = await make(def);
+    await inst.loadForRender({});
+    expect(inst.state.log).toEqual(["chrome"]); // rendered before the awaited data
+    gates.load?.();
+  });
+
+  it("does not hang when a second render reconcile supersedes an in-flight one", async () => {
+    let calls = 0;
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async (_url, ctx) => {
+        if (++calls === 1) await gate("first"); // first run blocks before any patch
+        ctx.patchState(((s) => {
+          s.log.push(`load${calls}`);
+        }) as Mut);
+      },
+    };
+    const { inst } = await make(def);
+    const first = inst.loadForRender({}); // starts run 1, awaits, no patch yet
+    const second = inst.loadForRender({}); // supersedes run 1
+    // The superseded first render must resolve rather than orphan its gate.
+    await expect(first).resolves.toBeUndefined();
+    await expect(second).resolves.toBeUndefined();
+    gates.first?.(); // let the superseded run drain
+  });
+
+  it("an unrelated flush during an await-first load does not open the render gate", async () => {
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async (_url, ctx) => {
+        await gate("load"); // awaits before its first patch
+        ctx.patchState(((s) => {
+          s.log.push("data");
+        }) as Mut);
+      },
+      rpc: {
+        slow: {
+          async handler(_p, ctx) {
+            ctx.patchState(((s) => {
+              s.log.push("rpc");
+            }) as Mut); // schedules a coalescing #flushChunk
+            await gate("rpc"); // held across the tick so that flush fires mid-handler
+          },
+        },
+      },
+    };
+    const { inst } = await make(def);
+    let rendered = false;
+    const render = inst.loadForRender({}).then(() => {
+      rendered = true;
     });
-    // The atomic rpc already completed successfully — a later sibling throwing
-    // must not roll it back.
-    expect(inst.state.log).toEqual(["okAtomic"]);
-    expect(envelopes.at(-1)?.error?.message).toBe("later-fail");
+    const rpc = inst.handleBatch(batch("slow"));
+    await tick(); // the rpc's mid-handler flush lands while the loader still awaits
+    expect(rendered).toBe(false); // the rpc flush must not open the render gate
+    gates.rpc?.();
+    await rpc;
+    gates.load?.();
+    await render;
+    expect(rendered).toBe(true);
+    expect(inst.state.log).toContain("data");
   });
 });
 

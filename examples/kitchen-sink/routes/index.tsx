@@ -13,26 +13,25 @@ const asFilter = (v: string | undefined): TodoFilter =>
 //
 // `setup` (sync) returns the URL-invariant skeleton; `load` is the loader (§7)
 // — the single place the (filtered) list is fetched, on first paint and on
-// every `nav.patch`. `blockSsr` keeps the first document crawlable/data-complete.
+// every `nav.patch`. The synchronous projection below lands in the first paint
+// and the list streams in after (§12) — for a data-complete/crawlable first
+// paint instead, await the data before the first patch (see routes/doc.tsx).
 export default live("/")
   .setup(() => ({ todos: [] as TodoRow[], filter: "all" as TodoFilter, loading: true }))
-  .load(
-    async ({ search }, ctx) => {
-      const next = asFilter(search.filter);
-      // Synchronous projection: the tab flips instantly and the previous
-      // window stays visible (keepPreviousData) while the query runs.
-      ctx.patchState((s) => {
-        s.filter = next;
-        s.loading = true;
-      });
-      const todos = await listTodos(scopeFrom(ctx.session), { filter: next });
-      ctx.patchState((s) => {
-        s.todos = todos;
-        s.loading = false;
-      });
-    },
-    { blockSsr: true },
-  )
+  .load(async ({ search }, ctx) => {
+    const next = asFilter(search.filter);
+    // Synchronous projection: the tab flips instantly and the previous
+    // window stays visible (keepPreviousData) while the query runs.
+    ctx.patchState((s) => {
+      s.filter = next;
+      s.loading = true;
+    });
+    const todos = await listTodos(scopeFrom(ctx.session), { filter: next });
+    ctx.patchState((s) => {
+      s.todos = todos;
+      s.loading = false;
+    });
+  })
   .rpc("add", (r) =>
     r
       .optimistic((state, { text }: { text: string }, ctx) => {

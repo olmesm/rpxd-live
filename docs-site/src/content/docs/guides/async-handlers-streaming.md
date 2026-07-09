@@ -7,7 +7,7 @@ sidebar:
 
 Handlers are plain `async (payload, ctx)` functions. The one rule: **all state
 writes go through `ctx.patchState(mutator)`**, a synchronous Immer mutator on a
-fresh draft. Every flush produces exactly one atomic patch envelope.
+fresh draft. Every flush produces exactly one patch envelope.
 
 ## Awaits never block the instance
 
@@ -46,13 +46,15 @@ delta, a token stream is **O(delta)** on the wire, not O(total):
 .rpc("stop", (r) => r.handler(async (_p, ctx) => ctx.abort("ask")));
 ```
 
-## Coalescing and atomicity
+## Coalescing and all-or-nothing
 
 - Same-tick `patchState` calls from one rpc **coalesce** into a single flush →
   one envelope.
-- **`.atomic()`** buffers every `patchState` call and flushes once on success,
-  discarding all of them on a throw — whole-rpc rollback (the classic
-  plain-reducer semantics, now opt-in).
+- **Whole-rpc all-or-nothing is control flow, not a flag.** Do the fallible work
+  first (or wrap it in `try/catch`), accumulate results in locals, then
+  `patchState` **once** at the end — a throw before that terminal write applies
+  nothing. This is strictly more flexible than a rollback flag: a `catch` can
+  recover, partially commit, or rethrow.
 
 ## Cancellation
 

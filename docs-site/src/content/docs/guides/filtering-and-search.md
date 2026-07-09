@@ -18,7 +18,7 @@ export default live("/issues")
     ctx.patchState((st) => { st.filter = f; st.sort = s; st.loading = true; });
     const items = await listIssues(scopeFrom(ctx.session), { filter: f, sort: s, signal: ctx.signal });
     ctx.patchState((st) => { st.items = items; st.loading = false; });
-  }, { blockSsr: true })
+  })
   .render(({ state, nav }) => (
     <main>
       <FilterTabs value={state.filter} onChange={(f) => nav.patch({ filter: f })} />
@@ -28,7 +28,11 @@ export default live("/issues")
   ));
 ```
 
-The [kitchen-sink example](/rpxd-live/examples/kitchen-sink/) is a working version of this.
+The synchronous projection (`filter`/`sort`/`loading`) flips the tab instantly
+and lands in the SSR first paint; the awaited rows stream in after (§12). If the
+rows must be crawlable, `await` them before the first `patchState` instead — the
+renderer then waits for that patch. The
+[kitchen-sink example](/rpxd-live/examples/kitchen-sink/) is a working version of this.
 
 ## Reset the cursor when a filter changes
 

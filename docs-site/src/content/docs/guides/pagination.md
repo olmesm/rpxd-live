@@ -20,7 +20,8 @@ domain layer for the next window plus the cursor that follows it:
 export default live("/issues")
   .setup(() => ({ items: [] as Issue[], cursor: null as string | null, hasMore: false, loading: true }))
   .load(async ({ search }, ctx) => {
-    ctx.patchState((s) => { s.loading = true; });
+    // Await the data before the first patch: SSR waits for it, so the first
+    // page is part of the initial document (crawlable).
     const { items, nextCursor } = await listIssues(scopeFrom(ctx.session), {
       cursor: search.cursor ?? null, limit: 20, signal: ctx.signal,
     });
@@ -30,7 +31,7 @@ export default live("/issues")
       s.hasMore = nextCursor != null;
       s.loading = false;
     });
-  }, { blockSsr: true })
+  })
   .render(({ state, nav, keyOf }) => (
     <main>
       <ul aria-busy={state.loading}>
@@ -43,9 +44,9 @@ export default live("/issues")
   ));
 ```
 
-`blockSsr` makes the first page part of the initial document (crawlable). Each
-"Next" is a `nav.patch({ cursor })` — the URL changes, the loader reruns, the
-window replaces.
+Awaiting the data before the first `patchState` makes the first page part of
+the initial document (crawlable, §12). Each "Next" is a `nav.patch({ cursor })`
+— the URL changes, the loader reruns, the window replaces.
 
 ## Offset-based (jump-to-page + totals)
 
@@ -59,16 +60,16 @@ export default live("/issues")
   .setup(() => ({ items: [] as Issue[], page: 1, pageCount: 1, loading: true }))
   .load(async ({ search }, ctx) => {
     const p = Math.max(1, Number(search.page ?? "1"));
-    ctx.patchState((s) => { s.page = p; s.loading = true; });
     const { items, total } = await listIssues(scopeFrom(ctx.session), {
       limit: PAGE_SIZE, offset: (p - 1) * PAGE_SIZE, signal: ctx.signal,
     });
     ctx.patchState((s) => {
+      s.page = p;
       s.items = items;
       s.pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
       s.loading = false;
     });
-  }, { blockSsr: true })
+  })
   .render(({ state, nav, keyOf }) => (
     <main>
       <ul aria-busy={state.loading}>

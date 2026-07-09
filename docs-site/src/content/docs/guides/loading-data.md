@@ -83,23 +83,31 @@ and discards its late writes, so rapid changes resolve to the *last* URL, not to
 whichever query returned last. Always pass `ctx.signal` to `fetch`/SDK calls so a
 superseded load stops early.
 
-## SSR: stream by default, `blockSsr` to opt in
+## SSR: the first document carries state through the loader's first patch
 
-The loader runs synchronously up to its first `await`, so its projection (the
-filter/loading chrome) is staged the instant control returns. By default that
-projection is serialized into the first document and the awaited data **streams
-in** over the push stream after hydration — fast TTFB, but a crawler/no-JS
-client sees the chrome, not the rows.
-
-Pass `{ blockSsr: true }` to await the full load before serializing, so the first
-paint carries data (crawlable, no spinner) at the cost of TTFB:
+The renderer serializes state through the loader's **first patch** and streams
+everything after it. Because an `async` function runs synchronously up to its
+first `await`, *where you put the first `patchState` relative to the first
+`await`* is the whole choice — no flag:
 
 ```tsx
-.load(async ({ search }, ctx) => { /* … */ }, { blockSsr: true })
+// Patch before the await → the projection renders now, data streams in.
+.load(async ({ search }, ctx) => {
+  ctx.patchState((s) => { s.filter = f; s.loading = true; }); // ← first paint (fast TTFB)
+  const items = await listItems(f);
+  ctx.patchState((s) => { s.items = items; s.loading = false; }); // ← streams after hydration
+})
+
+// Await the data before the first patch → the renderer waits for it.
+.load(async ({ search }, ctx) => {
+  const items = await listItems(searchToFilter(search)); // no patch yet
+  ctx.patchState((s) => { s.items = items; }); // ← first paint (crawlable, data-complete)
+})
 ```
 
-Either way the capture is deterministic — keyed to what the loader has *staged*,
-never a timer.
+A crawler/no-JS client sees whatever is in that first document, so `await`
+before the first patch when the data must be crawlable. Either way the capture
+is deterministic — keyed to the first patch, never a timer.
 
 ## What the loader is not
 

@@ -22,7 +22,7 @@ Most apps never install this directly beyond importing `live()`; the
   `isRedirect()` recognises it.
 - **`LiveInstance`** — one mounted live object: a per-instance FIFO queue
   serializes mutations, handlers run off-queue (`await` never blocks the
-  instance), and every `ctx.patchState` flush becomes one atomic Immer patch
+  instance), and every `ctx.patchState` flush becomes one Immer patch
   envelope. String-suffix growth compiles to `append` ops so token streams
   are O(delta) on the wire.
 - **Protocol types** — the `{ seq, patches | full, rpcId?, idMap?, error? }`
@@ -53,7 +53,9 @@ can never escape across an `await`. `ctx.state` is a live read-only view
 )
 ```
 
-**`.atomic()`** opts a whole rpc back into buffer-and-rollback.
+**Whole-rpc all-or-nothing** is userland — do the fallible work first (or
+`try/catch` + accumulate), then `patchState` once at the end; `.onError`
+repairs state after a throw.
 **`ctx.signal`** aborts on disconnect/eviction; **`ctx.abort(name)`** is the
 stop-generating pattern. **`ctx.broadcast`/`.on()`** ride the storage bus
 for multiplayer — per-session instances, no shared state.

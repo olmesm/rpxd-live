@@ -18,7 +18,6 @@ export {
   type LiveDefinition,
   type LiveRoute,
   type Loader,
-  type LoaderOptions,
   live,
   type Mutator,
   type PathParams,

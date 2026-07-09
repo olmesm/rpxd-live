@@ -55,5 +55,5 @@ normative spec is `spec.md`; the wire protocol is
   `packages/core/test/live.test-d.ts`.
 - Handlers are async `(payload, ctx)` and never block the instance; ALL
   state writes go through `ctx.patchState(sync mutator)`; `ctx.state` is a
-  live read-only view. `.atomic()` = whole-rpc rollback. String `+=` growth
-  emits `append` patches.
+  live read-only view. Whole-rpc all-or-nothing is userland (do the fallible
+  work, then `patchState` once). String `+=` growth emits `append` patches.

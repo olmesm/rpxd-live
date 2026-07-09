@@ -4,7 +4,7 @@
  * Handlers run off-queue (awaits never block the instance, §3); only
  * mutations serialize through the per-instance FIFO queue: patchState
  * flushes, `on` handlers, and the `params` reducer. Each flush is one
- * Immer draft → one atomic patch envelope, with string-suffix growth
+ * Immer draft → one patch envelope, with string-suffix growth
  * compiled to `append` ops (§2).
  */
 import { createDraft, type Draft, enablePatches, finishDraft, setAutoFreeze } from "immer";
@@ -50,16 +50,6 @@ export interface CreateInstanceOptions<S, Path extends string, Session> {
   storageKey: string;
   /** Applied to rpcs that don't declare their own `rateLimit` (§10). */
   defaultRateLimit?: RateLimit;
-}
-
-/**
- * Per-batch write buffer. Non-atomic batches push straight to the instance's
- * global pending list (mutation order is instance-global FIFO); `.atomic()`
- * batches buffer here instead — one flush at completion, discard on throw (§3).
- */
-interface FlushBucket<S> {
-  muts: Mutator<S>[];
-  atomic: boolean;
 }
 
 const ACK_CACHE_LIMIT = 64;
@@ -133,6 +123,14 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   #flushScheduled = false;
   /** Monotonic load-run tag; a run's flushes are dropped once superseded (§7). */
   #loadRunId = 0;
+  /**
+   * Open first-paint gate for an in-flight {@link loadForRender} (§12): resolved
+   * by the loader's first patch flush (or rejected by a pre-patch redirect, or
+   * resolved when the run settles with no patch). `undefined` outside SSR.
+   */
+  #renderGate: { gate: Deferred<void>; runId: number } | undefined;
+  /** Whether the current load run's loader has produced a patch — gates the render open (§12). */
+  #loadWrote = false;
   /** Abort controller for the in-flight `authorize` guard — newer call cancels it (§10). */
   #authController: AbortController | undefined;
   /** rpcId → ack envelope, for at-least-once dedupe (§11). */
@@ -217,17 +215,6 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
-   * Apply whatever mutators are currently staged, now, without waiting for the
-   * scheduled coalescing tick (§3). Deterministic because the loader runs
-   * synchronously up to its first `await` (§7) — so once `load` has handed
-   * control back, its projection is already staged. Streaming SSR (§12) drains
-   * it to serialize the projection chrome, then lets the awaited data stream.
-   */
-  async flushStaged(): Promise<void> {
-    await this.#flushChunk();
-  }
-
-  /**
    * Execute an rpc batch (§6): calls run in order as plain async handlers;
    * same-tick patchState calls coalesce into flushes, and the final flush at
    * completion carries the ack (so its patches and idMap ride one envelope).
@@ -246,18 +233,14 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     try {
       for (const call of batch.calls) {
         current = call;
-        const { handler, payload, atomic } = await this.#prepare(call);
-        // Atomicity is per-rpc (§3): each call gets its own buffer. A
-        // non-atomic call's writes stream to the instance-global pending list
-        // as they happen; an atomic call buffers here and is promoted (below)
-        // only if it completes — so a throw rolls back this call alone, never a
-        // sibling's committed writes.
-        const bucket: FlushBucket<S> = { muts: [], atomic };
+        const { handler, payload } = await this.#prepare(call);
+        // A call's writes stream to the instance-global pending list as they
+        // happen (mutation order is instance-global FIFO, §3); a throw reports
+        // via the error ack while sibling calls' committed writes stand.
         const controller = this.#trackAbort(call.rpc);
-        const ctx = this.#makeHandlerCtx(idMap, bucket, controller.signal);
+        const ctx = this.#makeHandlerCtx(idMap, controller.signal);
         try {
           await handler(payload, ctx);
-          if (atomic) this.#pendingMuts.push(...bucket.muts);
         } finally {
           this.#untrackAbort(call.rpc, controller);
         }
@@ -313,27 +296,61 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * A `redirect` thrown by the loader (§10) is re-thrown — only for the current
    * run — for an awaiting caller to map to a 302 / soft-nav.
    *
-   * The caller decides whether to await: the server streams (fire-and-forget)
-   * by default and `await`s only when a route opts into blocking SSR (§12);
-   * tests await for determinism.
+   * Awaits the **whole** run (used by tests and the testing harness for
+   * determinism). SSR/reconcile uses {@link loadForRender}, which returns at the
+   * first patch and streams the rest.
    */
   async load(search: Record<string, string | undefined>): Promise<void> {
+    await this.#runLoad(search);
+  }
+
+  /**
+   * SSR/reconcile entry (§12): start the loader and resolve once its **first
+   * patch** has flushed — or the run settles with none. The unified render rule:
+   * the first document carries state through the loader's first patch, and
+   * everything after it streams. A loader whose first patch is synchronous (a
+   * projection before its first `await`) renders immediately; one that `await`s
+   * before patching blocks the first paint until that patch lands (crawlable,
+   * data-complete). A `redirect` thrown before the first patch propagates (302 /
+   * soft-nav); one thrown after is mid-stream, handled as a background run.
+   */
+  async loadForRender(search: Record<string, string | undefined>): Promise<void> {
+    if (!this.#def.load || this.#disposed) return;
+    const gate = makeDeferred<void>();
+    const runId = this.#loadRunId + 1; // #runLoad claims exactly this tag
+    // A newer render reconcile supersedes any pending one: resolve the outgoing
+    // gate so its awaiter renders current state instead of hanging on a slot
+    // this call is about to overwrite (concurrent reconciles share the instance).
+    this.#renderGate?.gate.resolve();
+    this.#renderGate = { gate, runId };
+    // The remainder streams after the gate opens; a late throw/redirect is
+    // reported inside #runLoad, so swallow the background rejection here.
+    void this.#runLoad(search).catch(() => {});
+    await gate.promise;
+  }
+
+  async #runLoad(search: Record<string, string | undefined>): Promise<void> {
     const loader = this.#def.load;
     if (!loader || this.#disposed) return;
 
     // Latest-wins: cancel any in-flight run, then claim this run's tag.
     this.#abortRpc(LOAD_KEY);
     const runId = ++this.#loadRunId;
+    // A run claimed by anything other than this render's own gate supersedes it
+    // (e.g. a plain load() over an in-flight loadForRender): settle the orphan.
+    this.#supersedeRenderGate(runId);
+    this.#loadWrote = false;
     const controller = this.#trackAbort(LOAD_KEY);
 
     const idMap: Record<string, string> = {};
-    const bucket: FlushBucket<S> = { muts: [], atomic: false };
-    const ctx = this.#makeHandlerCtx(idMap, bucket, controller.signal);
+    const ctx = this.#makeHandlerCtx(idMap, controller.signal);
     // Drop flushes from a superseded run even when userland ignores the
     // signal — the run tag is the authority, the signal is the courtesy.
     const queue = ctx.patchState;
     (ctx as { patchState: (mut: Mutator<S>) => void }).patchState = (mut) => {
-      if (runId === this.#loadRunId) queue(mut);
+      if (runId !== this.#loadRunId) return;
+      this.#loadWrote = true; // this run's loader has produced a patch (§12)
+      queue(mut);
     };
 
     try {
@@ -345,11 +362,37 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       // re-throw so the caller maps it to a 302 (SSR) / soft-nav (runtime). A
       // data throw is reported server-side.
       if (runId !== this.#loadRunId) return;
-      if (isRedirect(e)) throw e;
+      if (isRedirect(e)) {
+        this.#settleRenderGate(runId, e);
+        throw e;
+      }
       if (!controller.signal.aborted) console.error("[rpxd] load failed:", e);
     } finally {
       this.#untrackAbort(LOAD_KEY, controller);
+      // Run ended: if no patch ever opened the gate, render the setup skeleton.
+      this.#settleRenderGate(runId);
     }
+  }
+
+  /** Open (or reject) an in-flight render gate for the current run only (§12). */
+  #settleRenderGate(runId: number, redirect?: unknown): void {
+    const pending = this.#renderGate;
+    if (!pending || pending.runId !== runId) return;
+    this.#renderGate = undefined;
+    if (redirect !== undefined) pending.gate.reject(redirect);
+    else pending.gate.resolve();
+  }
+
+  /**
+   * Resolve a render gate left behind by an older run once `currentRunId` claims
+   * the tag (§12) — the superseded reconcile renders current state rather than
+   * hanging on a gate its run can no longer settle.
+   */
+  #supersedeRenderGate(currentRunId: number): void {
+    const pending = this.#renderGate;
+    if (!pending || pending.runId === currentRunId) return;
+    this.#renderGate = undefined;
+    pending.gate.resolve();
   }
 
   /**
@@ -400,7 +443,6 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
 
   #makeHandlerCtx(
     idMap: Record<string, string>,
-    bucket: FlushBucket<S>,
     signal: AbortSignal,
   ): HandlerCtx<S, PathParams<Path>, Session> {
     const self = this;
@@ -413,19 +455,15 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
           Session
         >["state"];
       },
-      patchState: (mut) => this.#queueMut(bucket, mut),
+      patchState: (mut) => this.#queueMut(mut),
       signal,
       abort: (rpc) => this.#abortRpc(rpc),
     };
   }
 
-  /** Buffer a mutator; schedule the tick's chunk flush unless atomic (§3). */
-  #queueMut(bucket: FlushBucket<S>, mut: Mutator<S>): void {
+  /** Buffer a mutator on the instance-global pending list; schedule the tick's chunk flush (§3). */
+  #queueMut(mut: Mutator<S>): void {
     if (this.#disposed) return;
-    if (bucket.atomic) {
-      bucket.muts.push(mut);
-      return;
-    }
     this.#pendingMuts.push(mut);
     if (this.#flushScheduled) return;
     this.#flushScheduled = true;
@@ -444,7 +482,14 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       .run(async () => {
         if (this.#disposed || this.#pendingMuts.length === 0) return;
         const patches = this.#applyMuts(this.#pendingMuts.splice(0));
-        if (patches.length > 0) this.#emit({ patches });
+        if (patches.length > 0) {
+          this.#emit({ patches });
+          // The loader's first patch opens the SSR render gate (§12): the first
+          // document carries state through here, the rest streams. Gate only on
+          // the loader's own write — an unrelated rpc/broadcast flush landing
+          // during a warm reconcile must not open the paint before load's data.
+          if (this.#loadWrote) this.#settleRenderGate(this.#loadRunId);
+        }
         await this.#writeThrough();
       })
       .catch((e) => {
@@ -452,10 +497,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       });
   }
 
-  /**
-   * Completion flush: drains the pending list (which now includes any
-   * successful atomic call's promoted writes), always emits the ack.
-   */
+  /** Completion flush: drains the pending list, always emits the ack. */
   async #flushFinal(rpcId: string, idMap: Record<string, string>): Promise<void> {
     await this.#queue.run(async () => {
       if (this.#disposed) return;
@@ -552,7 +594,6 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   async #prepare(call: RpcCall): Promise<{
     handler: RpcLongForm<S, unknown, PathParams<Path>, Session>["handler"];
     payload: unknown;
-    atomic: boolean;
   }> {
     const def: RpcDef<S, PathParams<Path>, Session> | undefined = this.#def.rpc?.[call.rpc];
     if (!def) throw new Error(`Unknown rpc "${call.rpc}"`);
@@ -574,14 +615,12 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     return {
       handler: isLongForm(def) ? def.handler : def,
       payload,
-      atomic: isLongForm(def) && def.atomic === true,
     };
   }
 
   /**
-   * Failure ack (§5): atomic discards its whole buffer (rollback); otherwise
-   * pending same-tick muts commit alongside the `onError` mutator, and the
-   * combined patches ride the error ack.
+   * Failure ack (§5): pending same-tick muts commit alongside the `onError`
+   * mutator, and the combined patches ride the error ack.
    */
   async #ackError(
     rpcId: string,
@@ -590,9 +629,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     payload: unknown,
     idMap: Record<string, string>,
   ): Promise<void> {
-    // The failing call's atomic buffer was never promoted (see handleBatch), so
-    // its writes are already rolled back. Sibling calls' committed writes live
-    // in the pending list and still flush with the error ack.
+    // Sibling calls' committed writes live in the pending list and still flush
+    // with the error ack, alongside any `onError` repair below.
     const muts = this.#pendingMuts.splice(0);
 
     const def = this.#def.rpc?.[rpcName];
@@ -658,6 +696,23 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       console.error("[rpxd] snapshot write-through failed:", e);
     }
   }
+}
+
+/** A promise plus its resolve/reject handles — the render gate's open signal (§12). */
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+}
+
+function makeDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 /**

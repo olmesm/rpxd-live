@@ -11,21 +11,20 @@ const INITIAL = "# rpxd doc\nrendered with a *server-only* markdown module";
  */
 export default live("/doc")
   // `setup` is sync (§7) — it returns the skeleton; the server-only RSC render
-  // is IO, so it runs in `load`. `blockSsr` awaits it into the first document.
+  // is IO, so it runs in `load`. The loader awaits the render *before* its first
+  // patch, so SSR waits for that patch — the body lands in the first document
+  // (crawlable, no flash), no flag needed (§12).
   .setup(() => ({ source: INITIAL, body: null as unknown }))
-  .load(
-    async (_url, ctx) => {
-      const [{ rsc }, { DocBody }] = await Promise.all([
-        import("@rpxd/rsc"),
-        import("../lib/components/markdown.tsx"),
-      ]);
-      const body = (await rsc(<DocBody source={INITIAL} />)) as unknown;
-      ctx.patchState((s) => {
-        s.body = body;
-      });
-    },
-    { blockSsr: true },
-  )
+  .load(async (_url, ctx) => {
+    const [{ rsc }, { DocBody }] = await Promise.all([
+      import("@rpxd/rsc"),
+      import("../lib/components/markdown.tsx"),
+    ]);
+    const body = (await rsc(<DocBody source={INITIAL} />)) as unknown;
+    ctx.patchState((s) => {
+      s.body = body;
+    });
+  })
   .rpc("append", (r) =>
     r.handler(async ({ text }: { text: string }, ctx) => {
       const [{ rsc }, { DocBody }] = await Promise.all([
