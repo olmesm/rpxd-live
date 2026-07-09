@@ -194,7 +194,7 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
     const route = live("/")
       .setup(() => ({ n: 0 }))
       .version("v2")
-      .rpc("bump", (r) => r.atomic().handler(async (_p, ctx) => ctx.patchState((s) => void s.n++)))
+      .rpc("bump", (r) => r.handler(async (_p, ctx) => ctx.patchState((s) => void s.n++)))
       .render(() => null);
     expectTypeOf(route.$live).toEqualTypeOf<true>();
     expectTypeOf(route.def.version).toEqualTypeOf<string | undefined>();

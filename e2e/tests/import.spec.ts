@@ -9,7 +9,7 @@ test("patchState flushes stream progressively, finally clears the flag", async (
   await expect(page.getByTestId("importing")).toBeVisible();
 
   // items appear one segment at a time — item-1 must render while the
-  // import is still running (progressive flushes, not one atomic patch)
+  // import is still running (progressive flushes, not one big patch)
   await expect(page.getByTestId("items").locator("li").first()).toContainText("item-1");
   await expect(page.getByTestId("importing")).toBeVisible();
 

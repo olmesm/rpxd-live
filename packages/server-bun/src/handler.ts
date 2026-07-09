@@ -177,11 +177,12 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   // page load, fresh or warm: the URL is the query key, so a full-page load (or
   // Link mount) must reconcile to its search, not just the first `setup`.
   // `guard` (§10) is awaited so a deny `throw redirect` 302s *before* we serve —
-  // the redirect propagates to the caller. SSR sequencing (§12): `blockSsr`
-  // awaits the full load so the first document carries data (crawlable); the
-  // default streams — the loader runs synchronously up to its first `await`, so
-  // once it hands back its projection is staged; we flush exactly that and
-  // serialize it, then let the awaited data stream in over the push stream.
+  // the redirect propagates to the caller. SSR sequencing (§12): the first
+  // document carries state through the loader's first patch (`loadForRender`),
+  // then the rest streams — a synchronous projection renders immediately (fast
+  // TTFB), an await-before-first-patch loader blocks the paint until its data
+  // lands (crawlable). A redirect thrown before the first patch propagates to a
+  // 302 / soft-nav; one thrown after is mid-stream and swallowed — use `guard`.
   async function reconcileUrl(
     def: RouteRegistration["def"],
     instance: InstanceEntry["instance"],
@@ -189,13 +190,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   ): Promise<void> {
     if (def.guard) await instance.authorize(search); // deny → throw redirect → 302
     if (!def.load) return;
-    const run = instance.load(search);
-    if (def.loadOptions?.blockSsr)
-      await run; // loader redirect → propagates → 302
-    else {
-      void run.catch(() => {}); // stream: a loader redirect is swallowed — use guard
-      await instance.flushStaged();
-    }
+    await instance.loadForRender(search);
   }
 
   async function mountInstance(

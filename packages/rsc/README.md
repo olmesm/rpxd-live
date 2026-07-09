@@ -16,11 +16,13 @@ import { DocBody } from "../lib/markdown.tsx"; // server component + islands
 
 export default live("/doc")
   // `setup` is sync — the server-only RSC render is IO, so it runs in `load`.
+  // It awaits the render before its first patch, so SSR waits for that patch
+  // and the body lands in the first document (crawlable) — no flag needed.
   .setup(() => ({ body: null as unknown }))
   .load(async (_url, ctx) => {
     const body = await rsc(<DocBody source={initial} />);
     ctx.patchState((s) => { s.body = body; });
-  }, { blockSsr: true })
+  })
   .rpc("append", (r) =>
     r.handler(async ({ text }, ctx) => {
       const body = await rsc(<DocBody source={next(ctx.state, text)} />);

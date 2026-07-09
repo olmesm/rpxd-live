@@ -49,13 +49,13 @@ Immer patches over a push stream with seq numbers; full snapshot as recovery.
 - Structural sharing preserved end-to-end (patch apply + optimistic view derivation via `produce`) → memoized children skip re-renders off the patch path
 
 ## 3. Async Handlers & patchState (Streaming)
-Handlers are plain async fns; `ctx.patchState(mut)` is the only write; every flush is one atomic patch.
+Handlers are plain async fns; `ctx.patchState(mut)` is the only write; every flush is one patch envelope.
 
 - `handler(payload, ctx)` — awaits **never block the instance**; other rpcs, broadcasts, and `load` run freely while a handler waits (concurrency by default, no flag)
 - `ctx.state`: live read-only view — reads after `await` see current state; writes throw ("use ctx.patchState")
-- `ctx.patchState(mut)`: `mut` is a **sync** Immer mutator on a fresh draft → exact patches. Same-tick calls from one rpc coalesce into one flush; each flush = one atomic envelope. Drafts never escape the callback → the stale-draft bug class is structurally impossible (no lint rule needed)
+- `ctx.patchState(mut)`: `mut` is a **sync** Immer mutator on a fresh draft → exact patches. Same-tick calls from one rpc coalesce into one flush; each flush = one envelope. Drafts never escape the callback → the stale-draft bug class is structurally impossible (no lint rule needed)
 - **Streaming = a loop**: `for await (chunk) { ctx.patchState(...) }` — one envelope per chunk tick
-- **`.atomic()`**: buffer all patchState calls; flush once on success, discard all on throw (whole-rpc rollback — the old plain-reducer semantics, now opt-in)
+- **Whole-rpc all-or-nothing** is userland: do the fallible work first (or `try/catch` + accumulate), then `patchState` once at the end — a throw before that terminal write applies nothing. `.onError` repairs *state* after a throw
 - **Cancellation**: `ctx.signal` aborts on disconnect/eviction — pass it to fetch/SDKs; `ctx.abort(name)` aborts in-flight invocations of a named rpc (the stop-generating pattern)
 - `sync.pending` spans call → ack (handler completion)
 
@@ -93,7 +93,7 @@ Client-side optimistic functions replayed over confirmed state — never merged 
 - `input(schema)`: Standard Schema (Zod/Valibot/ArkType); validated client-side (pre-optimistic) **and** server-side; **locks the payload type** for every later step
 - `.handler(async (payload, ctx) => ...)`: the single terminal — plain, streaming, and slow work are all just async fns (§3)
 - **`.onError((state, error, payload, ctx) => ...)`**: sync mutator run as a queued flush on handler throw → patches ride the error ack. Repairs *state*, not the database — DB atomicity stays userland transactions
-- `.atomic()`: whole-rpc buffered flush + rollback (§3); `.rateLimit(limit)`: per-rpc token bucket (§10)
+- `.rateLimit(limit)`: per-rpc token bucket (§10)
 - Without `input`, the payload type comes from the handler's own annotation (or `unknown`)
 - **Typed rpc record**: each `.rpc(name, ...)` extends an accumulated `{ name → payload }` type; `.render()` hands the component a payload-typed, exact-keyed `rpc` facade — unknown names and wrong payloads are compile errors. Types flow through `optimistic`, `handler`, `onError`, **and the client `rpc.*` signature** with no codegen
 - Chains evaluate to the same runtime long-form object the server consumes — the fluent API is construction-time only
@@ -182,7 +182,7 @@ Connections are disposable; state is not. SSE default, WS opt-in.
 - Connection presents token within pending-attach TTL (~10s) → adopts instance, resumes from seq
 - Token expired → silent re-setup + full snapshot; seq check covers gap broadcasts
 - `setup` runs **once** per identity; no connect-spinner; crawlable
-- **SSR sequencing** — three synchronous contributions to first paint, in order: (1) `setup`'s skeleton (sync, instant — can't block); (2) `load`'s synchronous prefix (its projection — filter/loading chrome — staged and flushed the instant `load` hands back control); then (3) `load`'s awaited data. Default **stream**: serialize (1)+(2), let (3) stream over the push stream after hydration (fast TTFB; a crawler/no-JS client sees the chrome, not the rows). Opt into **`blockSsr`** to await the full load before serializing — first paint carries data (crawlable, no spinner) at the cost of TTFB. Deterministic either way: capture is keyed to *what is staged*, never a timer. A `redirect` thrown in `setup`/`guard`/`load` during SSR → 302
+- **SSR sequencing** — the first document carries state through `load`'s **first patch**; everything after it streams. In order: (1) `setup`'s skeleton (sync, instant); (2) `load`'s first patch. If that first patch is **synchronous** (a projection — filter/loading chrome — before `load`'s first `await`) it renders immediately and the awaited data streams over the push stream after hydration (fast TTFB; a crawler/no-JS client sees the chrome, not the rows). If `load` **awaits before its first patch**, the renderer waits for that patch, so the first paint carries data (crawlable, no spinner) at the cost of TTFB. The author picks by loader structure — no flag. Deterministic: capture is keyed to *the first patch*, never a timer. A `redirect` thrown in `setup`/`guard`/`load` before the first patch → 302
 
 ## 13. Out of Scope
 Deliberately not covered by this spec; the seams below keep each addable later without a rewrite.

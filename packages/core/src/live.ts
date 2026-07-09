@@ -95,8 +95,9 @@ export interface HandlerCtx<S, Params, Session> extends RpcCtx<Params, Session> 
   readonly state: Immutable<S>;
   /**
    * Queue a sync mutator (§3). Same-tick calls from one rpc coalesce into a
-   * single flush; each flush is one atomic patch envelope. Under `.atomic()`
-   * all calls buffer until the handler completes.
+   * single flush; each flush is one patch envelope. For whole-rpc all-or-nothing,
+   * do the fallible work first and `patchState` once at the end (or `.onError` to
+   * repair state on throw).
    */
   patchState(mut: Mutator<S>): void;
   /**
@@ -181,19 +182,6 @@ export type Guard<Params, Session> = (
   ctx: GuardCtx<Params, Session>,
 ) => void | Promise<void>;
 
-/** Options for the URL-keyed loader (§7). */
-export interface LoaderOptions {
-  /**
-   * SSR sequencing (§12). Default `false` (stream): the initial document is the
-   * `setup` skeleton plus the loader's synchronous projection, and the awaited
-   * data streams in over the push stream after hydration — fast TTFB, but a
-   * crawler/no-JS client sees the chrome, not the rows. Set `true` to await the
-   * loader before serializing so the first paint carries data (crawlable, no
-   * spinner) at the cost of TTFB.
-   */
-  blockSsr?: boolean;
-}
-
 /**
  * Rpc long form (§5): validation, optimism, and recovery in one declaration —
  * the runtime object every fluent chain builds.
@@ -229,8 +217,6 @@ export interface RpcLongForm<S, Payload, Params, Session> {
     payload: Payload,
     ctx: RpcCtx<Params, Session>,
   ) => void;
-  /** Buffer all patchState calls; flush once on success, discard all on throw (§3). */
-  atomic?: boolean;
   /** Per-session token bucket override for this rpc (§10). */
   rateLimit?: RateLimit;
 }
@@ -267,8 +253,6 @@ export interface LiveDefinition<S, Path extends string, Session> {
    * writes page state, latest-wins. See {@link Loader}.
    */
   load?: Loader<S, PathParams<Path>, Session>;
-  /** SSR sequencing for {@link LiveDefinition.load} (§12); default stream. */
-  loadOptions?: LoaderOptions;
   rpc?: Record<string, RpcDef<S, PathParams<Path>, Session>>;
   on?: Record<string, EventHandler<S, PathParams<Path>, Session>>;
   /** Snapshot version tag (§9): mismatch → discard snapshot, re-setup. */
@@ -287,7 +271,7 @@ export interface LiveRoute<S, Path extends string, Session, Component> {
 
 import type { Pretty, RenderProps } from "./render-props.ts";
 
-/** Chain state before a handler is attached: pick `input`/`optimistic`/`atomic`, then the terminal. */
+/** Chain state before a handler is attached: pick `input`/`optimistic`, then the terminal. */
 export interface RpcChain<S, Params, Session> {
   /** Standard Schema (§5) — validated client-side (pre-optimistic) AND server-side; locks the payload type. */
   input<In>(schema: StandardSchemaV1<unknown, In>): RpcChainWithInput<S, In, Params, Session>;
@@ -295,8 +279,6 @@ export interface RpcChain<S, Params, Session> {
   optimistic<In>(
     fn: (state: S, payload: In, ctx: { tempId(): string }) => void,
   ): RpcChainWithInput<S, In, Params, Session>;
-  /** Whole-rpc buffered flush + rollback on throw (§3). */
-  atomic(): RpcChain<S, Params, Session>;
   /** The single terminal (§3): plain, streaming, and slow work are all just async fns. */
   handler<In = unknown>(fn: Handler<S, In, Params, Session>): RpcChainBuilt<S, In, Params, Session>;
 }
@@ -306,7 +288,6 @@ export interface RpcChainWithInput<S, In, Params, Session> {
   optimistic(
     fn: (state: S, payload: In, ctx: { tempId(): string }) => void,
   ): RpcChainWithInput<S, In, Params, Session>;
-  atomic(): RpcChainWithInput<S, In, Params, Session>;
   handler(fn: Handler<S, In, Params, Session>): RpcChainBuilt<S, In, Params, Session>;
 }
 
@@ -348,12 +329,11 @@ export interface LiveBuilder<S, Path extends string, Session, R> {
   /**
    * URL-keyed loader (§7): runs after `setup`+`guard` and on every URL change,
    * writes page state via `ctx.patchState`, latest-wins. First arg is
-   * `{ params, search }`. See {@link Loader}. Optionally block SSR (§12).
+   * `{ params, search }`. See {@link Loader}. SSR renders state through the
+   * loader's first patch, then streams (§12) — `await` the data before the
+   * first `patchState` for a crawlable, data-complete first paint.
    */
-  load(
-    loader: Loader<S, PathParams<Path>, Session>,
-    opts?: LoaderOptions,
-  ): LiveBuilder<S, Path, Session, R>;
+  load(loader: Loader<S, PathParams<Path>, Session>): LiveBuilder<S, Path, Session, R>;
   /** Snapshot version tag (§9): mismatch → discard snapshot, re-setup. */
   version(tag: string): LiveBuilder<S, Path, Session, R>;
   /** Bind the component (§1) — receives fully typed {@link RenderProps}. */
@@ -378,7 +358,6 @@ function rpcChain(partial: Record<string, any>): any {
   return {
     input: (schema: unknown) => rpcChain({ ...partial, input: schema }),
     optimistic: (fn: unknown) => rpcChain({ ...partial, optimistic: fn }),
-    atomic: () => rpcChain({ ...partial, atomic: true }),
     handler: (fn: unknown) => rpcChain({ ...partial, handler: fn }),
     onError: (fn: unknown) => rpcChain({ ...partial, onError: fn }),
     rateLimit: (limit: unknown) => rpcChain({ ...partial, rateLimit: limit }),
@@ -396,8 +375,7 @@ function liveBuilder(path: string, def: Record<string, any>): any {
     on: (event: string, handler: unknown) =>
       liveBuilder(path, { ...def, on: { ...def.on, [event]: handler } }),
     guard: (guard: unknown) => liveBuilder(path, { ...def, guard }),
-    load: (loader: unknown, opts?: unknown) =>
-      liveBuilder(path, { ...def, load: loader, loadOptions: opts }),
+    load: (loader: unknown) => liveBuilder(path, { ...def, load: loader }),
     version: (tag: string) => liveBuilder(path, { ...def, version: tag }),
     render: (component: unknown) => ({ $live: true, path, def, component }),
   };
