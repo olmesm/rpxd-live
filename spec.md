@@ -194,7 +194,7 @@ Deliberately not covered by this spec; the seams below keep each addable later w
 - Presence recipe (userland, ~20 lines)
 - CRDT field type for collaborative text
 - Per-rpc `concurrent` flag
-- Node server adapter (seam exists day one, §14)
+- ~~Node server adapter~~ — **shipped**: `@rpxd/adapter-node` (`node:http` + `ws`, §14), Node ≥ 24
 
 ## 14. Zero-Config App Shell, Runtime & Tooling
 Userland = config file + `routes/`. Framework owns server, client entry, hydration, bundling.
@@ -220,7 +220,8 @@ rpxd.config.ts
 ```
 
 - **Runtime: Bun primary** — `Bun.serve` (HTTP + WS one port), `bun:sqlite`
-- **`ServerAdapter` seam from day one**: `serve` / `stream` (SSE) / `ws?` / `env` — web-standard `Request`/`Response`/`ReadableStream` internally, no Bun types past the boundary → Node adapter later is ~100 lines
+- **Node runtime (Node ≥ 24)**: `@rpxd/adapter-node` mirrors the Bun adapter over `node:http` + `ws`; `rpxd start` selects it automatically off-Bun. Node's unflagged TypeScript stripping runs the source directly (the runtime is kept erasable — no parameter properties/enums), and `@rpxd/storage-sqlite/node` swaps `bun:sqlite` for `better-sqlite3`
+- **`ServerAdapter` seam from day one**: `serve` / `stream` (SSE) / `ws?` / `env` — web-standard `Request`/`Response`/`ReadableStream` internally, no Bun types past the boundary → the Node adapter is ~130 lines of `node:http` bridging
 - **Vite = dev server + bundler, running on Bun**: `rpxd dev` = one Bun process, Vite in middleware mode (HMR, Fast Refresh, codegen watcher) + rpxd runtime, one port. `rpxd build` = `vite build` (client + SSR bundles); `rpxd start` = pure Bun, no Vite at runtime
 - rpxd Vite plugin owns: route codegen (§7), reducer HMR (§15), RSC wiring (§16)
 - DB is userland (`db.ts` import); framework never touches it
@@ -255,9 +256,9 @@ rpxd/
     core/            # runtime: queue, patches, protocol, live()
     client/          # useLive, optimistic replay, keyOf, Link/nav
     server-bun/      # Bun ServerAdapter (primary)
-    adapter-node/    # ServerAdapter seam placeholder (rpxd runs on Bun)
+    adapter-node/    # Node ServerAdapter (node:http + ws)
     storage-memory/
-    storage-sqlite/  # bun:sqlite
+    storage-sqlite/  # bun:sqlite (+ better-sqlite3 via ./node)
     storage-redis/
     storage-session/
     vite-plugin/     # codegen, HMR, RSC wiring

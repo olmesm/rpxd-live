@@ -1,15 +1,32 @@
 # @rpxd/adapter-node
 
-A placeholder that holds the `ServerAdapter` seam open — rpxd runs on Bun
-(`@rpxd/server-bun`). The runtime handler is fully web-standard
-(`Request`/`Response`/`ReadableStream`) with no Bun types past the adapter
-boundary (§17), so a Node adapter is a thin `node:http` bridge plus
-`better-sqlite3` in place of `bun:sqlite`. This package has no implementation.
+The Node `ServerAdapter` (§14) — the `node:http` mirror of
+[`@rpxd/server-bun`](../server-bun)'s `bunAdapter`. The rpxd runtime handler is
+web-standard (`Request`/`Response`/`ReadableStream`) with no Bun types past the
+adapter boundary, so this is ~130 lines: a `node:http` request bridge plus WS
+upgrades through the [`ws`](https://github.com/websockets/ws) package (noServer).
+
+Requires **Node ≥ 24** (stable, unflagged TypeScript execution). Works on Node
+22.18+ too, where type-stripping is also unflagged. The rpxd source is kept
+erasable (no parameter properties, enums, or runtime namespaces) so Node runs it
+directly with no build step and no `--experimental-transform-types`.
 
 ```ts
+import { createRpxdHandler, wsTransport } from "@rpxd/server-bun";
 import { nodeAdapter } from "@rpxd/adapter-node";
 
-nodeAdapter(); // throws — run rpxd on Bun (bunAdapter)
+const handler = createRpxdHandler({ routes: [{ path: "/", def }] });
+const ws = wsTransport(handler);
+
+const handle = nodeAdapter().serve({
+  port: 3000,
+  websocket: ws.websocket,
+  fetch: async (req, upgrade) => (await ws.handleUpgrade(req, upgrade)) ?? handler.fetch(req),
+});
+await handle.ready; // node:http binds on the next tick
+console.log(`live on :${handle.port}`);
 ```
 
-Use [`@rpxd/server-bun`](../server-bun).
+`rpxd start` selects this adapter automatically when not running on Bun. For
+durable snapshots on Node, pair it with `sqliteNode` from
+[`@rpxd/storage-sqlite/node`](../storage-sqlite) (`better-sqlite3`).

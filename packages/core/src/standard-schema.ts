@@ -36,11 +36,12 @@ export type InferOutput<S> = S extends StandardSchemaV1<unknown, infer O> ? O : 
  */
 export class ValidationError extends Error {
   override name = "ValidationError";
-  constructor(
-    public readonly issues: ReadonlyArray<{ readonly message: string }>,
-    rpc: string,
-  ) {
+  // Plain field (not a parameter property) so the source stays erasable —
+  // Node runs it under default, unflagged TypeScript stripping.
+  readonly issues: ReadonlyArray<{ readonly message: string }>;
+  constructor(issues: ReadonlyArray<{ readonly message: string }>, rpc: string) {
     super(`Invalid payload for rpc "${rpc}": ${issues.map((i) => i.message).join("; ")}`);
+    this.issues = issues;
   }
 }
 

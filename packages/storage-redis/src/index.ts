@@ -31,10 +31,14 @@ export interface RedisStorageOptions {
 }
 
 class RedisBus implements PubSubBus {
-  constructor(
-    private readonly client: RedisLikeClient,
-    private readonly prefix: string,
-  ) {}
+  // Plain fields (not parameter properties) so the source stays erasable —
+  // Node runs it under default, unflagged TypeScript stripping.
+  private readonly client: RedisLikeClient;
+  private readonly prefix: string;
+  constructor(client: RedisLikeClient, prefix: string) {
+    this.client = client;
+    this.prefix = prefix;
+  }
 
   publish(msg: BroadcastMessage): void {
     void this.client.publish(`${this.prefix}bus:${msg.topic}`, JSON.stringify(msg));

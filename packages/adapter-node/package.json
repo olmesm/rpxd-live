@@ -2,13 +2,20 @@
   "name": "@rpxd/adapter-node",
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@rpxd/server-bun": "workspace:*"
+    "@rpxd/server-bun": "workspace:*",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@rpxd/core": "workspace:*",
+    "@types/node": "^26.0.0",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.9.0"
   }
 }

@@ -37,11 +37,12 @@ export class RateLimitError extends Error {
 export class TokenBucket {
   #tokens: number;
   #last: number;
+  // Plain field (not a parameter property) so the source stays erasable —
+  // Node runs it under default, unflagged TypeScript stripping.
+  private readonly limit: RateLimit;
 
-  constructor(
-    private readonly limit: RateLimit,
-    now = Date.now(),
-  ) {
+  constructor(limit: RateLimit, now = Date.now()) {
+    this.limit = limit;
     this.#tokens = limit.capacity;
     this.#last = now;
   }

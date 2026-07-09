@@ -1,29 +1,29 @@
 /**
- * SQLite storage adapter (§9) via `bun:sqlite` — durable snapshots for
- * single-node deployments. The pubsub bus stays in-process (`LocalBus`);
- * use `@rpxd/storage-redis` when fan-out must cross nodes (§8).
- *
- * On Node, import `sqliteNode` from `@rpxd/storage-sqlite/node` instead — it
- * swaps `bun:sqlite` for `better-sqlite3` behind the same schema and interface.
+ * SQLite storage adapter (§9) for the Node runtime, via `better-sqlite3` —
+ * the `node:http`/`@rpxd/adapter-node` counterpart to {@link sqlite} (which
+ * uses `bun:sqlite`). Same schema, same {@link StorageAdapter} interface, same
+ * in-process `LocalBus`; only the driver differs. Kept in its own module so
+ * `bun:sqlite` is never imported under Node.
  *
  * @packageDocumentation
  */
-import { Database } from "bun:sqlite";
 import { LocalBus, type Snapshot, type StorageAdapter } from "@rpxd/core";
+import Database from "better-sqlite3";
 
 /**
- * Create a SQLite-backed storage adapter.
+ * Create a SQLite-backed storage adapter for Node (`better-sqlite3`).
  *
  * @param path - Database file path, or `":memory:"` for tests.
  *
  * @example
  * ```ts
- * export default defineConfig({ storage: sqlite("./data.db") });
+ * import { sqliteNode } from "@rpxd/storage-sqlite/node";
+ * export default defineConfig({ storage: sqliteNode("./data.db") });
  * ```
  */
-export function sqlite(path: string): StorageAdapter {
+export function sqliteNode(path: string): StorageAdapter {
   const db = new Database(path);
-  db.run(`CREATE TABLE IF NOT EXISTS rpxd_snapshots (
+  db.exec(`CREATE TABLE IF NOT EXISTS rpxd_snapshots (
     key TEXT PRIMARY KEY,
     state TEXT NOT NULL,
     session TEXT NOT NULL,
@@ -33,24 +33,21 @@ export function sqlite(path: string): StorageAdapter {
   )`);
   const upsert = db.prepare(
     `INSERT INTO rpxd_snapshots (key, state, session, seq, version, updated_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET
        state = excluded.state, session = excluded.session,
        seq = excluded.seq, version = excluded.version, updated_at = excluded.updated_at`,
   );
   const select = db.prepare(
-    "SELECT state, session, seq, version FROM rpxd_snapshots WHERE key = ?1",
+    "SELECT state, session, seq, version FROM rpxd_snapshots WHERE key = ?",
   );
-  const remove = db.prepare("DELETE FROM rpxd_snapshots WHERE key = ?1");
+  const remove = db.prepare("DELETE FROM rpxd_snapshots WHERE key = ?");
 
   return {
     get(key): Snapshot | undefined {
-      const row = select.get(key) as {
-        state: string;
-        session: string;
-        seq: number;
-        version: string;
-      } | null;
+      const row = select.get(key) as
+        | { state: string; session: string; seq: number; version: string }
+        | undefined;
       if (!row) return undefined;
       return {
         state: JSON.parse(row.state),
