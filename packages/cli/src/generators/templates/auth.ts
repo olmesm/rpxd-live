@@ -36,11 +36,13 @@ export default route("/api/auth/$").all((req) => auth.handler(req));
 `;
 
 const loginRoute = (): string => `import { live } from "@rpxd/core";
+import { authClient } from "../adapters/auth-client";
 
 /**
- * Login page. Issuance is HTTP, not an rpc (it must set a cookie), so the form
- * posts to the auth route (\`/api/auth/*\`); then a full navigation re-runs
- * \`authenticate\` with the new session (docs/routes-and-auth.md).
+ * Login page. Issuance is HTTP, not an rpc (it must set a cookie), so it uses
+ * Better Auth's own client (\`authClient.signIn/signUp\`, which posts to
+ * \`/api/auth/*\`); then a full navigation re-runs \`authenticate\` with the new
+ * session (docs/routes-and-auth.md).
  */
 export default live("/login")
   .mount(async () => ({ error: "" as string }))
@@ -55,16 +57,14 @@ export default live("/login")
     const submit = (action: "sign-in" | "sign-up") => async (form: HTMLFormElement) => {
       const data = new FormData(form);
       const email = String(data.get("email") ?? "");
-      const res = await fetch(\`/api/auth/\${action}/email\`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, password: data.get("password"), name: email }),
-      });
-      if (res.ok) window.location.assign("/");
-      else {
-        const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-        void rpc.setError({ message: body.message ?? body.error ?? "sign in failed" });
-      }
+      const password = String(data.get("password") ?? "");
+      // Better Auth's typed client — sign-up needs a name.
+      const res =
+        action === "sign-up"
+          ? await authClient.signUp.email({ email, password, name: email })
+          : await authClient.signIn.email({ email, password });
+      if (!res.error) window.location.assign("/");
+      else void rpc.setError({ message: res.error.message ?? "sign in failed" });
     };
     return (
       <main>
@@ -117,18 +117,32 @@ export default live("/account")
   ));
 `;
 
+const authClientAdapter = (): string => `/**
+ * Better Auth browser client — issuance only (sign in / up / out). It's the
+ * library's own client, so login/logout use typed methods instead of hand-rolled
+ * \`fetch\`. Session *reads* stay server-authoritative via rpxd's \`session\` render
+ * prop (\`scopeFrom(session)\`) — so we deliberately do NOT use \`useSession()\`,
+ * which would race that. \`baseURL\` is omitted so the client uses the current
+ * origin at fetch time, matching \`auth.ts\`'s request-origin \`trustedOrigins\`.
+ */
+import { createAuthClient } from "better-auth/react";
+
+export const authClient = createAuthClient();
+`;
+
 /**
- * The Better Auth wiring files (adapter + auth routes). Pair with {@link dbFiles}
- * for the Prisma client the adapter consumes.
+ * The Better Auth wiring files (adapter + client + auth routes). Pair with
+ * {@link dbFiles} for the Prisma client the adapter consumes.
  *
  * @example
  * ```ts
- * authFiles(); // adapters/auth.ts, routes/{login,account}.tsx, routes/api.auth.$.ts
+ * authFiles(); // adapters/{auth,auth-client}.ts, routes/{login,account}.tsx, routes/api.auth.$.ts
  * ```
  */
 export function authFiles(): FileWrite[] {
   return [
     { path: "adapters/auth.ts", contents: authAdapter() },
+    { path: "adapters/auth-client.ts", contents: authClientAdapter() },
     { path: "routes/login.tsx", contents: loginRoute() },
     { path: "routes/account.tsx", contents: accountRoute() },
     { path: "routes/api.auth.$.ts", contents: apiAuthRoute() },

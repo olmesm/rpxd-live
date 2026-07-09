@@ -254,14 +254,14 @@ rpxd/
     vite-plugin/     # codegen, HMR, RSC wiring
     cli/             # rpxd dev/build/start
   examples/
-    todos/           # demo app — Playwright runs against this
+    kitchen-sink/             # demo app — Playwright runs against this
   e2e/               # Playwright: SSR attach, reconnect, optimistic, multiplayer, streaming
 ```
 
 - **Bun workspaces** (no turborepo/nx in v1 — `bun run --filter` covers it)
 - **Biome** — lint + format, single root config; home for custom rules (§4 identity-based lookups)
 - **Vitest** — unit tests: reducers/queue/replay per package
-- **Playwright** — e2e against `examples/todos`; the demo doubles as the acceptance suite for §1–§12
+- **Playwright** — e2e against `examples/kitchen-sink`; the demo doubles as the acceptance suite for §1–§12
 - **Latest TS** (5.9+), latest deps, `"type": "module"` throughout
 - **TSDoc mandatory on all public APIs** — `live`, `defineConfig`, adapters, render props, ctx methods — with `@example` blocks; enforced in CI
 - **Generated code documented**: `.rpxd/routes.gen.ts` emits TSDoc on the route tree and `Register`; scaffolded path literals get a watcher-maintained comment

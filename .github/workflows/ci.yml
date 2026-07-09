@@ -25,7 +25,7 @@ jobs:
 
       - name: Prisma generate + db (todos example)
         run: bun run setup
-        working-directory: examples/todos
+        working-directory: examples/kitchen-sink
 
       - name: Lint
         run: bun run lint
@@ -40,7 +40,7 @@ jobs:
         run: bun run test
 
       - name: Bun-runtime tests (smoke + adapters)
-        run: bun test spikes/vite-bun-ssr spikes/rsc-flight packages/server-bun/test-bun packages/storage-sqlite/test-bun examples/todos/test-bun packages/cli/test-bun
+        run: bun test spikes/vite-bun-ssr spikes/rsc-flight packages/server-bun/test-bun packages/storage-sqlite/test-bun examples/kitchen-sink/test-bun packages/cli/test-bun
 
   generators:
     name: Generators (init + scaffold + run)
@@ -68,7 +68,7 @@ jobs:
           set -euxo pipefail
           CLI="$GITHUB_WORKSPACE/packages/cli/src/cli.ts"
           bun "$CLI" init .ci-gen --no-db --force
-          ln -s "$GITHUB_WORKSPACE/examples/todos/node_modules" .ci-gen/node_modules
+          ln -s "$GITHUB_WORKSPACE/examples/kitchen-sink/node_modules" .ci-gen/node_modules
           cd .ci-gen
           bun "$CLI" scaffold Notes Note notes title:string pinned:boolean
           bunx tsc --noEmit -p tsconfig.json
@@ -82,7 +82,7 @@ jobs:
           set -euxo pipefail
           CLI="$GITHUB_WORKSPACE/packages/cli/src/cli.ts"
           bun "$CLI" init .ci-gen-db --force
-          ln -s "$GITHUB_WORKSPACE/examples/todos/node_modules" .ci-gen-db/node_modules
+          ln -s "$GITHUB_WORKSPACE/examples/kitchen-sink/node_modules" .ci-gen-db/node_modules
           cd .ci-gen-db
           bun "$CLI" scaffold Posts Post posts title:string author_id:references:User meta:json due:date
           grep -q "@relation(fields: \[authorId\]" prisma/schema.prisma
@@ -158,7 +158,7 @@ jobs:
 
       - name: Prisma generate + db (todos example)
         run: bun run setup
-        working-directory: examples/todos
+        working-directory: examples/kitchen-sink
 
       - name: Install chromium (once, shared by all combos)
         run: bunx playwright install --with-deps chromium

@@ -16,7 +16,7 @@ The fastest way to see rpxd is the `todos` example in the repo:
 git clone https://github.com/olmesm/rpxd-live
 cd rpxd-live
 bun install
-cd examples/todos
+cd examples/kitchen-sink
 bun run dev   # http://localhost:3000
 ```
 

@@ -63,6 +63,11 @@ new data in with **no remount**. Writes **page state** via `ctx.patchState`;
 `ctx.session` is read-only. Loading and errors are ordinary state the loader
 writes — there's no ack.
 
+The **first argument is the *search* params** (`?filter=…`) — untyped view state
+(`Record<string, string | undefined>`). **Path** params (`/org/$orgId` → `orgId`)
+are on **`ctx.params`**, typed from the route literal, the same as in `mount` and
+rpc handlers — see `ctx.params.orgId` in the example above.
+
 It's **latest-wins**: a newer invocation aborts the prior run's `ctx.signal` and
 drops its late flushes, so rapid filter/page changes resolve to the last URL.
 Pass `ctx.signal` to `fetch` so a superseded load stops early. Because the URL
@@ -72,6 +77,11 @@ rebuilt from the URL on cold wake.
 `opts.blockSsr` (default `false`) awaits the load during SSR so the first
 document carries data (crawlable); the default streams the data in after
 hydration. Optional.
+
+See [Loading data](/rpxd-live/guides/loading-data/) for the full model and the
+[pagination](/rpxd-live/guides/pagination/),
+[infinite scroll](/rpxd-live/guides/infinite-scroll/), and
+[filtering & search](/rpxd-live/guides/filtering-and-search/) patterns built on it.
 
 ### `.rpc(name, r => r.input().optimistic().handler().onError())`
 

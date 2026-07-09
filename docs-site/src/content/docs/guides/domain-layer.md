@@ -33,7 +33,7 @@ adapters/        # server-only clients behind the domain
   auth.ts        #   the auth library
 ```
 
-`examples/todos` is laid out this way. API routes (webhooks, auth) and how an
+`examples/kitchen-sink` is laid out this way. API routes (webhooks, auth) and how an
 auth library wires into `authenticate` are covered in
 [Routes & auth](/rpxd-live/guides/routes-and-auth/).
 
@@ -125,7 +125,7 @@ Phoenix homage.
 
 Start at 1; move up only when an app earns it.
 
-1. **Convention** — documented here, demonstrated in `examples/todos`. *(This
+1. **Convention** — documented here, demonstrated in `examples/kitchen-sink`. *(This
    is where we are.)*
 2. **Lint** — a Biome rule forbidding a `db` import under `routes/`. The
    enforceable form of the discipline.

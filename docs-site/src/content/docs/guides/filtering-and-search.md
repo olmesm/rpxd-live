@@ -1,0 +1,86 @@
+---
+title: Filtering & search
+description: Filters, sort, and debounced text search as URL search params on the params loader — resetting the cursor on filter change, and why latest-wins makes typeahead clean.
+sidebar:
+  order: 11
+---
+
+Filters, sort, and a search box are all just search params read by the
+[params loader](/rpxd-live/guides/loading-data/). Each is a `nav.patch`; the URL
+stays the source of truth, so the view is shareable and back-button-correct.
+
+```tsx
+export default live("/issues")
+  .mount(async () => ({ items: [] as Issue[], filter: "open", sort: "newest", loading: true }))
+  .params(async ({ filter, sort }, ctx) => {
+    const f = filter ?? "open";
+    const s = sort ?? "newest";
+    ctx.patchState((st) => { st.filter = f; st.sort = s; st.loading = true; });
+    const items = await listIssues(scopeFrom(ctx.session), { filter: f, sort: s, signal: ctx.signal });
+    ctx.patchState((st) => { st.items = items; st.loading = false; });
+  }, { blockSsr: true })
+  .render(({ state, nav }) => (
+    <main>
+      <FilterTabs value={state.filter} onChange={(f) => nav.patch({ filter: f })} />
+      <SortMenu value={state.sort} onChange={(s) => nav.patch({ sort: s })} />
+      <ul aria-busy={state.loading}>{state.items.map((i) => <Row key={i.id} {...i} />)}</ul>
+    </main>
+  ));
+```
+
+The [kitchen-sink example](/rpxd-live/examples/kitchen-sink/) is a working version of this.
+
+## Reset the cursor when a filter changes
+
+If you combine filtering with [pagination](/rpxd-live/guides/pagination/), a
+filter change must **drop the cursor/page** — otherwise page 3 of the *old*
+filter bleeds into the *new* one. Since the URL is the query key, resetting is
+just omitting `cursor` from the patch:
+
+```tsx
+// changing the filter starts a fresh window
+onChange={(f) => nav.patch({ filter: f })}        // no cursor → page 1
+// paging within the current filter keeps it
+onClick={() => nav.patch({ filter: state.filter, cursor: state.cursor! })}
+```
+
+## Debounced text search
+
+A search box is a search param like any other — debounce the keystrokes into a
+`nav.patch`, and let **latest-wins** do the rest: each keystroke's loader run
+aborts the previous one's `ctx.signal`, so a slow query for `"fo"` can't land
+after `"foobar"`.
+
+```tsx
+const [q, setQ] = useState(state.query ?? "");
+useEffect(() => {
+  const id = setTimeout(() => nav.patch({ q, cursor: "" }), 200); // reset window on new query
+  return () => clearTimeout(id);
+}, [q]);
+
+return <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" />;
+```
+
+On the server the loader just reads `search.q` and passes it — and because it
+threads `ctx.signal` into the query, superseded searches stop early instead of
+racing:
+
+```tsx
+.params(async ({ q }, ctx) => {
+  ctx.patchState((s) => { s.query = q ?? ""; s.loading = true; });
+  const items = await searchIssues(scopeFrom(ctx.session), { q: q ?? "", signal: ctx.signal });
+  ctx.patchState((s) => { s.items = items; s.loading = false; });
+})
+```
+
+## Empty and error states
+
+Filtering routinely produces empty results — render them off state, the same way
+as loading and errors (there's no ack, it's all state the loader writes):
+
+```tsx
+{state.loading ? <Spinner />
+ : state.error ? <Error msg={state.error} onRetry={() => nav.patch({ filter: state.filter })} />
+ : state.items.length === 0 ? <Empty>No matches.</Empty>
+ : <ul>{state.items.map((i) => <Row key={i.id} {...i} />)}</ul>}
+```

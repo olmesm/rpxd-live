@@ -2,7 +2,7 @@
  * Templates for the app shell `rpxd init` scaffolds: the framework document
  * (`__root`/`__404`/`__error`), the zero-config `rpxd.config.ts`, a runnable
  * welcome route, the `Scope` primitive, and the project manifests. Kept close
- * to `examples/todos` so drift between the demo and generated apps is visible.
+ * to `examples/kitchen-sink` so drift between the demo and generated apps is visible.
  */
 import type { FileWrite } from "../types.ts";
 

@@ -1,6 +1,6 @@
 /**
  * Typed `nav` (§7, B6): `props.nav.navigate` autocompletes registered
- * routes. The examples/todos `.rpxd/routes.gen.ts` augmentation is in the
+ * routes. The examples/kitchen-sink `.rpxd/routes.gen.ts` augmentation is in the
  * typecheck program, so its route table is the registered set here.
  */
 import type { NavProp } from "@rpxd/core";

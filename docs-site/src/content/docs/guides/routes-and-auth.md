@@ -6,7 +6,7 @@ sidebar:
 ---
 
 :::tip[Status: implemented]
-Demonstrated end to end in `examples/todos` (sign up / in / out, user-scoped
+Demonstrated end to end in `examples/kitchen-sink` (sign up / in / out, user-scoped
 todos, a protected route). Auth is real **Better Auth** over **Prisma 7 /
 SQLite**, wired in `adapters/` — swap `adapters/auth.ts` for another library at
 the same seam and everything else stays.

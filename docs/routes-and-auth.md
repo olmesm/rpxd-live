@@ -1,6 +1,6 @@
 # HTTP routes & authentication
 
-> **Status: implemented**, demonstrated end-to-end in `examples/todos` (sign
+> **Status: implemented**, demonstrated end-to-end in `examples/kitchen-sink` (sign
 > up / in / out, user-scoped todos, a protected route). The `route()` fluent
 > API, the catch-all path segment, the API-route file kind, the
 > `authenticate(req, { sid })` hook, and `redirect()` from `mount` all ship.
@@ -130,7 +130,7 @@ delegation route.
 A protected page enforces authn where it already runs server code: `mount`.
 Read `scope.user`; if it's absent, **`throw redirect("/login")`** — the
 `require_authenticated_user` equivalent. Because the bounce happens before any
-handler, `domain/` never sees an unauthenticated call. `examples/todos` ships
+handler, `domain/` never sees an unauthenticated call. `examples/kitchen-sink` ships
 `routes/account.tsx` doing exactly this.
 
 ```tsx
@@ -182,7 +182,7 @@ cleanly.
 
 ## The userland tree
 
-Everything above, laid out — the `examples/todos` shape plus the auth files:
+Everything above, laid out — the `examples/kitchen-sink` shape plus the auth files:
 
 ```
 my-app/

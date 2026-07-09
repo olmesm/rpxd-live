@@ -32,6 +32,10 @@ export const routeTree = {
     file: "../routes/login.tsx",
     pattern: "/login",
   },
+  "/stream": {
+    file: "../routes/stream.tsx",
+    pattern: "/stream",
+  },
 } as const;
 
 /** Lazy importers for each page route — used by the client router and SSR. */
@@ -43,6 +47,7 @@ export const routeModules = {
   "/doc": () => import("../routes/doc.tsx"),
   "/import": () => import("../routes/import.tsx"),
   "/login": () => import("../routes/login.tsx"),
+  "/stream": () => import("../routes/stream.tsx"),
 } as const;
 
 /** Shell modules (§14): HTML root, unmatched-URL page, error page. */

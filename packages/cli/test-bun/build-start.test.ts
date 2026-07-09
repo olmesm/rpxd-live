@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp, type StartedApp, startApp } from "../src/index.ts";
 
-const exampleRoot = fileURLToPath(new URL("../../../examples/todos", import.meta.url));
+const exampleRoot = fileURLToPath(new URL("../../../examples/kitchen-sink", import.meta.url));
 const distDir = join(exampleRoot, "dist");
 let app: StartedApp;
 const COOKIE = "rpxd_sid=prod-session";
