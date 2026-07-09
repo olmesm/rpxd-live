@@ -126,6 +126,24 @@ describe("LiveConnection (§11, §12)", () => {
     expect(redirects).toEqual(["/login"]);
   });
 
+  it("refuses an unsafe (cross-origin / javascript:) redirect target (§10)", async () => {
+    const redirects: string[] = [];
+    const fetchImpl = (async () =>
+      Response.json({ redirect: "javascript:alert(document.cookie)" })) as unknown as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      bootstrap,
+      fetchImpl,
+      onRedirect: (loc) => redirects.push(loc),
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.patchSearch({ admin: "1" });
+    await new Promise((r) => setTimeout(r, 0));
+    // A server-supplied redirect that isn't a same-origin path must be dropped,
+    // not handed to the router / window.location.
+    expect(redirects).toEqual([]);
+  });
+
   it("tier-2 remount swaps the store, resyncs the new instance, releases the old (§7)", async () => {
     const requests: { url: string; body: unknown }[] = [];
     const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {

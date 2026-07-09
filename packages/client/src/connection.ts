@@ -30,6 +30,26 @@ function randomId(): string {
     : `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+/**
+ * Normalize a server-supplied redirect to a same-origin target, or `null` if it
+ * isn't one. Accepts a plain relative path; accepts a same-origin absolute URL
+ * (returning its path+query+hash); rejects protocol-relative `//host`,
+ * cross-origin URLs, and non-http schemes like `javascript:`.
+ */
+function safeRedirectTarget(target: string): string | null {
+  if (target.startsWith("/") && !target.startsWith("//")) return target;
+  try {
+    const origin = typeof location !== "undefined" ? location.origin : undefined;
+    if (origin) {
+      const u = new URL(target, origin);
+      if (u.origin === origin) return `${u.pathname}${u.search}${u.hash}`;
+    }
+  } catch {
+    // malformed URL — fall through to reject
+  }
+  return null;
+}
+
 /** SSR bootstrap payload embedded by the server (§12). */
 export interface Bootstrap {
   instance: string;
@@ -300,14 +320,27 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   async #consumeRedirect(res: Response): Promise<void> {
     if (!(res.headers.get("content-type") ?? "").includes("application/json")) return;
     const body = (await res.json().catch(() => null)) as { redirect?: string } | null;
-    if (body?.redirect) this.#onRedirect?.(body.redirect);
+    if (body?.redirect) this.#navigateSafely(body.redirect);
   }
 
   /** A `redirect` envelope (WS runtime deny, §10) for the bound instance → soft-nav. */
   #handleRedirectEnvelope(env: Envelope): boolean {
     if (!env.redirect || env.instance !== this.#instance) return false;
-    this.#onRedirect?.(env.redirect);
+    this.#navigateSafely(env.redirect);
     return true;
+  }
+
+  /**
+   * Forward a server-supplied redirect only if it's a same-origin target. The
+   * value comes off the wire and flows to the router / `window.location`, so a
+   * cross-origin URL, a protocol-relative `//host`, or a `javascript:` scheme
+   * would be an open-redirect / script-injection vector (§10) — those are
+   * dropped with a warning rather than navigated to.
+   */
+  #navigateSafely(target: string): void {
+    const safe = safeRedirectTarget(target);
+    if (safe) this.#onRedirect?.(safe);
+    else console.warn(`[rpxd] ignoring unsafe redirect target: ${target}`);
   }
 
   /** Close the transport. Server-side warm TTL takes it from here (§11). */
