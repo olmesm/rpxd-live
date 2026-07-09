@@ -1,5 +1,5 @@
 /**
- * Scope — who is acting (docs/routes-and-auth.md). Kept in its own module, free
+ * Scope — who is acting (the routes & auth guide). Kept in its own module, free
  * of any `db`/Prisma import, so the render component (which runs on the client)
  * can call `scopeFrom(session)` without dragging the server-only data layer
  * into the client bundle. `domain/todos.ts` and the config import `Scope` here.

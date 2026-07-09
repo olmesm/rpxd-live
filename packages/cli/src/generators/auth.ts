@@ -2,7 +2,7 @@
  * `rpxd auth` — layer Better Auth + Prisma/SQLite onto an existing app. Writes
  * the auth files (and the db files if the app has none yet), and *prints* the
  * two things it must never own: the `rpxd.config.ts` `authenticate` hook and
- * the `package.json` deps (docs/routes-and-auth.md).
+ * the `package.json` deps (the routes & auth guide).
  */
 import type { ProjectFeatures } from "./detect.ts";
 import { authFiles } from "./templates/auth.ts";

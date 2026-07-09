@@ -4,7 +4,7 @@ import { scopeFrom } from "../domain/scope";
 /**
  * A protected page. Its state *is* the user, so the check lives in `setup`
  * (which runs before `guard`): reading the scope and — when there's no user —
- * throwing `redirect("/login")` (§10, docs/routes-and-auth.md) is the coarse
+ * throwing `redirect("/login")` (§10, the routes & auth guide) is the coarse
  * fail-fast. A full load gets a 302, a soft `Link` navigation is bounced
  * client-side. (`guard` is auth's idiom when state doesn't depend on identity.)
  */

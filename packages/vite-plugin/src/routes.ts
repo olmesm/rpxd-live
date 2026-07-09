@@ -18,7 +18,7 @@ const ROUTE_EXT = /\.(tsx|jsx|ts|js)$/;
 /**
  * Map a flat route filename to its URL path (§7). Extension decides the kind:
  * `.tsx`/`.jsx` export `live()` (a page), `.ts`/`.js` export `route()` (an
- * HTTP endpoint) — see `docs/routes-and-auth.md`.
+ * HTTP endpoint) — see the routes & auth guide.
  *
  * - `index.tsx` → `/` (page)
  * - `org.$orgId.board.tsx` → `/org/$orgId/board` (page)

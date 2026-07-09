@@ -25,7 +25,7 @@ test("rsc field SSRs, updates live, and the heavy renderer never loads client-si
   );
   expect(loadedInBrowser).toBeUndefined();
 });
-test("'use client' island inside the rsc field hydrates and stays interactive (§16 step 2)", async ({
+test("'use client' island inside the rsc field hydrates and stays interactive (§16)", async ({
   page,
 }) => {
   await page.goto("/doc");

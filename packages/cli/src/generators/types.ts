@@ -3,7 +3,7 @@
  *
  * A generator is a pure `plan()` that returns a {@link GeneratorPlan} — the
  * files to write, blocks to *append*, and the steps/commands to *print*. It
- * never rewrites existing content in a hand-owned file (docs/routes-and-auth.md:
+ * never rewrites existing content in a hand-owned file (the routes & auth guide:
  * "the framework maintains the mirror, not the logic"): it only writes new files
  * or appends new blocks; anything else is surfaced as a printed instruction.
  * {@link applyPlan} does the disk IO.

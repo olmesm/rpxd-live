@@ -1,10 +1,10 @@
 /**
- * Phoenix-style `field:type` parsing for `rpxd scaffold`. A schema is a list of
+ * `field:type` parsing for `rpxd scaffold`. A schema is a list of
  * `name:type` tokens (`title:string done:boolean`); a bare `name` defaults to
  * `string`. Field names are normalized to camelCase (`author_id` → `authorId`)
  * so the generated TS + Prisma is idiomatic regardless of how they're typed.
  *
- * A `references` field is a belongs_to: `author_id:references:User` →
+ * A `references` field is a foreign-key relation: `author_id:references:User` →
  * a `String` foreign key plus (in the printed Prisma model) a `@relation` to
  * `User`. See {@link Field.reference}.
  */
@@ -22,7 +22,7 @@ export type FieldType =
   | "json"
   | "references";
 
-/** The parent side of a `references` (belongs_to) field. */
+/** The parent side of a `references` (foreign-key) field. */
 export interface FieldReference {
   /** Referenced model, PascalCase (e.g. `User`). */
   model: string;
@@ -40,7 +40,7 @@ export interface Field {
   tsType: string;
   /** Prisma scalar type used in the schema model. */
   prismaType: string;
-  /** Present only for `references` — the belongs_to target + relation name. */
+  /** Present only for `references` — the foreign-key target + relation name. */
   reference?: FieldReference;
 }
 

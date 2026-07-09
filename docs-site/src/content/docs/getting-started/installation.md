@@ -10,7 +10,7 @@ one port) and `bun:sqlite`; Vite runs on Bun for dev and build.
 
 ## Try the example
 
-The fastest way to see rpxd is the `todos` example in the repo:
+The fastest way to see rpxd is the `kitchen-sink` example in the repo:
 
 ```sh
 git clone https://github.com/olmesm/rpxd-live

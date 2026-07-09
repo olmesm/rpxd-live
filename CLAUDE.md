@@ -2,7 +2,8 @@
 
 rpxd is a live-object framework for React: server-side stateful objects with
 reducers, Immer patches over SSE/WS, optimistic replay on the client. The
-normative spec is `spec.md`; the wire protocol is `docs/protocol.md`.
+normative spec is `spec.md`; the wire protocol is
+`docs-site/src/content/docs/concepts/wire-protocol.md`.
 
 ## Workflow
 
@@ -20,7 +21,7 @@ normative spec is `spec.md`; the wire protocol is `docs/protocol.md`.
 - `bun run test` — Vitest unit tests (packages/*/test)
 - `bun run typecheck` — `tsc -p tsconfig.json`
 - `bun run lint` / `bun run format` — Biome
-- `bun test spikes/... packages/*/test-bun` — Bun-runtime tests (bun:sqlite,
+- `bun test packages/*/test-bun` — Bun-runtime tests (bun:sqlite,
   Bun.serve, Vite-on-Bun)
 
 ## Layout

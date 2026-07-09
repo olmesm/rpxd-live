@@ -1,5 +1,5 @@
 /**
- * `redirect()` from `setup`/`guard` (§10, docs/routes-and-auth.md): a full page
+ * `redirect()` from `setup`/`guard` (§10, the routes & auth guide): a full page
  * load gets a real 302; a client control-mount / runtime URL change (SPA nav)
  * gets a `{ redirect }` JSON signal the router acts on (a 302 would be
  * auto-followed by fetch). `setup` is a coarse fail-fast; `guard` is auth's home

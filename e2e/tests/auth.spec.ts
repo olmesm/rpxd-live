@@ -1,5 +1,5 @@
 /**
- * Auth through the `route()` seam (docs/routes-and-auth.md): sign up via the
+ * Auth through the `route()` seam (the routes & auth guide): sign up via the
  * /api/auth/* delegation route, land signed-in, add a user-scoped todo, sign
  * out (todos revert to anonymous), sign back in (the todo persists for the
  * user). Exercises route() dispatch, authenticate→Scope, and user-scoped data.

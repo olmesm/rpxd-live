@@ -1,5 +1,5 @@
 /**
- * redirect() from setup/guard (§10, docs/routes-and-auth.md): a protected route
+ * redirect() from setup/guard (§10, the routes & auth guide): a protected route
  * bounces anonymous visitors to /login — via a 302 on a full load and a soft
  * client navigation on a Link click — and renders once signed in.
  */

@@ -37,8 +37,8 @@ Optimistic functions must be **synchronous, pure, and identity-based**:
 ```
 
 - **Identity-based lookups.** Use `find(t => t.id === id)`, never an index —
-  the queue may have reordered things. (A Biome rule enforces this; the
-  convention is documented in TSDoc today.)
+  the queue may have reordered things. (This convention isn't enforced by
+  tooling yet; it's documented here and in TSDoc.)
 - **Creates use `ctx.tempId`** as a placeholder id.
 
 ## Id linking without remounting

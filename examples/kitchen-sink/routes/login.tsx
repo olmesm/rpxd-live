@@ -5,7 +5,7 @@ import { authClient } from "../adapters/auth-client";
  * Login page. Issuance is HTTP, not an rpc (it must set a cookie), so it uses
  * Better Auth's own client (`authClient.signIn/signUp`, which posts to
  * `/api/auth/*`); then a full navigation re-runs `authenticate` with the new
- * session — see docs/routes-and-auth.md.
+ * session — see the routes & auth guide.
  */
 export default live("/login")
   .setup(() => ({ error: "" as string }))

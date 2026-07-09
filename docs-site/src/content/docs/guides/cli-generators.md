@@ -46,7 +46,8 @@ app boots immediately.
 
 ## `rpxd scaffold` — a resource
 
-Phoenix-style: a context, a schema, a plural, and `field:type` pairs.
+A context (the domain module grouping), a schema, a plural route segment, and
+`field:type` pairs.
 
 ```sh
 rpxd scaffold Todos Todo todos text:string done:boolean
@@ -98,7 +99,7 @@ applies to it. (The auth-generated account page is the one exception: its state
 
 ### Relationships
 
-A `references` field is a **belongs_to**, Phoenix-style
+A `references` field declares a **foreign-key relation**,
 `foreign_key:references:Model`:
 
 ```sh
@@ -124,7 +125,7 @@ model Post {
 Then run the printed steps — **`prisma format`** inserts the inverse
 `posts Post[]` field on `User` for you, and `bun run db:push` (or
 `prisma migrate dev`) syncs the database. The scaffold only writes the
-belongs_to side and scopes the resource by `owner`; whether it should instead be
+foreign-key side and scopes the resource by `owner`; whether it should instead be
 reached through its parent is a decision it leaves to you.
 
 ## `rpxd auth` — add auth later

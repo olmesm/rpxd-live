@@ -1,6 +1,6 @@
 /**
  * Templates for `rpxd scaffold <Context> <Schema> <plural> [field:type…]` — a
- * Phoenix-style resource: a live (or HTTP) route, a scoped domain module, a
+ * resource: a live (or HTTP) route, a scoped domain module, a
  * test, and (printed, never written) the Prisma model. The domain layer is
  * Prisma-backed when the app has `adapters/db.ts`, otherwise an in-memory store
  * so a db-less app stays runnable.
@@ -105,7 +105,7 @@ export async function ${n.toggleFn}(scope: Scope, id: string): Promise<${n.rowTy
 `
     : "";
   return `/**
- * ${spec.context} domain module — the service-layer boundary (Phoenix "context").
+ * ${spec.context} domain module — the service-layer boundary.
  * \`routes/\` calls these; nothing else touches the store. In-memory (no db
  * wired) — swap the \`store\` Map for Prisma once you add \`adapters/db.ts\`.
  * Queries scope by {@link Scope}: a signed-in user by \`user.id\`, else \`sid\`.
@@ -173,7 +173,7 @@ export async function ${n.toggleFn}(scope: Scope, id: string): Promise<${n.rowTy
     ? '\nimport type { Prisma } from "../generated/prisma/client";'
     : "";
   return `/**
- * ${spec.context} domain module — the service-layer boundary (Phoenix "context").
+ * ${spec.context} domain module — the service-layer boundary.
  * \`routes/\` calls these; only the domain layer touches \`db\`. Prisma is loaded
  * lazily + server-only (\`import.meta.env.SSR\` is a static \`false\` in the client
  * build, so it tree-shakes out). Queries scope by {@link Scope}.

@@ -1,5 +1,7 @@
 /**
- * RSC Flight spike (§16 step 2) under `bun test`:
+ * RSC Flight conformance (§16) under `bun test` — the real Flight
+ * serialization that `packages/rsc/test/rsc.test.tsx` deliberately does not
+ * re-assert (it needs the plugin's `rsc`/`ssr` environments):
  *
  * 1. The `rsc` environment (react-server condition) serializes a subtree
  *    containing a 'use client' island into a Flight payload string — the
@@ -9,9 +11,8 @@
  * 3. The `ssr` environment deserializes the payload and renders HTML with
  *    the island's SSR output in place.
  *
- * This is the load-bearing evidence that `@vitejs/plugin-rsc` environments
- * can back rpxd's RSC fields with our own server owning the request loop
- * (`serverHandler: false`) on Vite-on-Bun.
+ * Pins that `@vitejs/plugin-rsc` environments back rpxd's RSC fields with our
+ * own server owning the request loop (`serverHandler: false`) on Vite-on-Bun.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { fileURLToPath } from "node:url";

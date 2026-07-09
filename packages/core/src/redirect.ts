@@ -1,10 +1,10 @@
 /**
- * Server-side navigation from `setup`/`guard`/`load` (§10,
- * docs/routes-and-auth.md). Throwing `redirect("/login")` sends the visitor
- * elsewhere *before* the page renders: the server turns it into a `302` on a
- * full page load and a client navigation during SPA nav. This is the
- * login-bounce primitive — enforcement (checking `scope.user`) stays userland;
- * the redirect mechanism is the framework's. `guard` is auth's home (§7).
+ * Server-side navigation from `setup`/`guard`/`load` (§10, the routes & auth
+ * guide). Throwing `redirect("/login")` sends the visitor elsewhere *before* the
+ * page renders: the server turns it into a `302` on a full page load and a
+ * client navigation during SPA nav. This is the login-bounce primitive —
+ * enforcement (checking `scope.user`) stays userland; the redirect mechanism is
+ * the framework's. `guard` is auth's home (§7).
  */
 
 /**

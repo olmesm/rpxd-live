@@ -1,5 +1,5 @@
 /**
- * HTTP routes (`docs/routes-and-auth.md`): plain request → `Response` handlers
+ * HTTP routes (the routes & auth guide): plain request → `Response` handlers
  * that live in `routes/` alongside live pages. Where {@link live} builds a
  * stateful page, `route()` builds a server-only endpoint — webhooks, uploads,
  * or delegating a whole subtree to an auth library.
@@ -85,7 +85,7 @@ function makeRoute<Path extends string>(
 }
 
 /**
- * Declare an HTTP route for a `routes/*.ts` file (`docs/routes-and-auth.md`).
+ * Declare an HTTP route for a `routes/*.ts` file (the routes & auth guide).
  * The path literal is maintained by the dev watcher from the filename, exactly
  * like {@link live} (§7); a trailing `$` segment is a catch-all.
  *

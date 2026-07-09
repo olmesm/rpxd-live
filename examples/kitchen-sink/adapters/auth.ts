@@ -1,6 +1,6 @@
 /**
  * Authentication — Better Auth over the shared Prisma/SQLite adapter
- * (`./db`). This is the real library at the seam `docs/routes-and-auth.md`
+ * (`./db`). This is the real library at the seam the routes & auth guide
  * describes: `auth.handler` owns `/api/auth/*` (delegated from a `route()`),
  * `auth.api.getSession` resolves a request for `rpxd.config`'s `authenticate`.
  *

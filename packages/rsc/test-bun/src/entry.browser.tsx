@@ -1,8 +1,8 @@
 /**
  * `client` environment entry: deserialize the Flight payload in the browser
- * and mount — the client half of §16 step 2. Exercised indirectly in this
- * spike (the dev test asserts the module reference resolves); full browser
- * hydration is the integration step's e2e.
+ * and mount — the client half of §16. Exercised indirectly by this fixture
+ * (the dev test asserts the module reference resolves); full browser
+ * hydration is covered by the doc e2e.
  */
 import { createFromReadableStream } from "@vitejs/plugin-rsc/browser";
 import type { ReactElement } from "react";

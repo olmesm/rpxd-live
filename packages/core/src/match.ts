@@ -50,7 +50,7 @@ export function matchRoute(paths: string[], pathname: string): RouteMatch | null
 }
 
 /**
- * Match an HTTP route path (`docs/routes-and-auth.md`) against a pathname.
+ * Match an HTTP route path (the routes & auth guide) against a pathname.
  * Like {@link matchPath}, `$name` captures one segment — but a **trailing bare
  * `$`** is a catch-all that matches the prefix and everything under it
  * (possibly nothing), capturing the rest under `params.$`. Kept separate from

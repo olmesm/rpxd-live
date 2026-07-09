@@ -1,15 +1,15 @@
 # @rpxd/adapter-node
 
-A v2 stub — rpxd v1 runs on Bun. This package exists so the `ServerAdapter`
-seam is proven by structure (§17): the runtime handler is fully web-standard
+A placeholder that holds the `ServerAdapter` seam open — rpxd runs on Bun
+(`@rpxd/server-bun`). The runtime handler is fully web-standard
 (`Request`/`Response`/`ReadableStream`) with no Bun types past the adapter
-boundary, so the Node adapter is ~100 lines of `node:http` bridging when it
-lands, plus `better-sqlite3` swapped into `@rpxd/storage-sqlite`.
+boundary (§17), so a Node adapter is a thin `node:http` bridge plus
+`better-sqlite3` in place of `bun:sqlite`. This package has no implementation.
 
 ```ts
 import { nodeAdapter } from "@rpxd/adapter-node";
 
-nodeAdapter(); // throws: run rpxd on Bun (bunAdapter) for now
+nodeAdapter(); // throws — run rpxd on Bun (bunAdapter)
 ```
 
-Until then, use [`@rpxd/server-bun`](../server-bun).
+Use [`@rpxd/server-bun`](../server-bun).

@@ -2,7 +2,7 @@
  * Stand-in for a heavy rendering dependency (markdown + shiki, §16). Loaded
  * only inside server reducers via dynamic import — the e2e suite asserts
  * this module never executes in the browser. `DocBody` mixes the server
- * markup with a 'use client' island (§16 step 2): the island ships, the
+ * markup with a 'use client' island (§16): the island ships, the
  * renderer doesn't.
  */
 import type { ReactElement } from "react";

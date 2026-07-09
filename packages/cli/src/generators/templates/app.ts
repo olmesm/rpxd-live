@@ -138,7 +138,7 @@ import { auth } from "./adapters/auth";
  * App config (§14). \`session.authenticate\` runs once per request and its
  * return becomes \`ctx.session\` everywhere; project the auth library's session
  * down to a STABLE \`{ id, email }\` so a rolling token doesn't thrash the warm
- * instance (docs/routes-and-auth.md).
+ * instance (the routes & auth guide).
  */
 export default defineConfig({
   session: {
@@ -230,7 +230,7 @@ export default live("/")
 `;
 
 const scope = (): string => `/**
- * Scope — who is acting (docs/routes-and-auth.md). Free of any \`db\`/Prisma
+ * Scope — who is acting (the routes & auth guide). Free of any \`db\`/Prisma
  * import so the render component (client) can call \`scopeFrom(session)\` without
  * dragging the data layer into the client bundle. The domain layer scopes by it.
  */

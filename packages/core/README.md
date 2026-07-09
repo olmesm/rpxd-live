@@ -27,7 +27,7 @@ Most apps never install this directly beyond importing `live()`; the
   are O(delta) on the wire.
 - **Protocol types** — the `{ seq, patches | full, rpcId?, idMap?, error? }`
   envelope and rpc batch shapes. Transport-agnostic; the normative document
-  is [`docs/protocol.md`](../../docs/protocol.md).
+  is the [Wire protocol](https://olmesm.github.io/rpxd-live/concepts/wire-protocol/).
 - **Storage seam** — `StorageAdapter` (`get`/`set` of snapshots + the pubsub
   bus). `memory()` ships here as the default; see the `@rpxd/storage-*`
   packages for the rest.
