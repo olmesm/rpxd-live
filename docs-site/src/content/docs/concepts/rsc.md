@@ -2,7 +2,7 @@
 title: RSC fields (experimental)
 description: Server-rendered component subtrees as opaque state values — Flight is the serialization, patches are the transport. Opt-in behind rsc:true.
 sidebar:
-  order: 6
+  order: 7
 ---
 
 :::caution[Experimental]

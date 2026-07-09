@@ -2,7 +2,7 @@
 title: Transports & connection lifecycle
 description: SSE by default, WebSocket opt-in — API-identical. How connections reconnect, adopt SSR-warmed instances, and how instances are evicted.
 sidebar:
-  order: 2
+  order: 3
 ---
 
 Connections are disposable; state is not. The same live object runs over
