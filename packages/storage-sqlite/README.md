@@ -16,5 +16,18 @@ database never serves stale multiplayer state.
 
 The pubsub bus stays in-process (`LocalBus`); use
 [`@rpxd/storage-redis`](../storage-redis) when fan-out must cross nodes.
-The store is written against `bun:sqlite`; a `better-sqlite3` backing behind
-the same schema and interface is a drop-in swap.
+
+The default entry is written against `bun:sqlite`. For Node runtimes, the
+`@rpxd/storage-sqlite/node` entry provides the same schema and interface on
+top of `better-sqlite3` — an optional peer dependency, so install it yourself
+when using that entry:
+
+```sh
+npm install better-sqlite3
+```
+
+```ts
+import { sqliteNode } from "@rpxd/storage-sqlite/node";
+
+export default defineConfig({ storage: sqliteNode("data/app.db") });
+```
