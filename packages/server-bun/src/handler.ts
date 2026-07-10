@@ -265,6 +265,9 @@ interface InstanceEntry {
 interface StreamHandle {
   subscribeInstance: (entry: InstanceEntry) => void;
   releaseInstance: (instanceId: string) => void;
+  /** Push a synthetic envelope down this stream — for acks that can't come
+   * from an instance (e.g. an unknown-instance error ack). */
+  send: (env: Envelope) => void;
   cleanup: () => void;
 }
 
@@ -340,6 +343,22 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     if (!instanceId) return undefined;
     const entry = byInstanceId.get(instanceId);
     return entry && entry.sid === sid ? entry : undefined;
+  }
+
+  /**
+   * One ack per batch, even when the instance is gone (a §2 invariant): a
+   * batch naming an unknown/unowned instance (stale id after eviction or a
+   * redeploy) is error-acked so the client's pending call rejects instead of
+   * hanging forever. `seq: 0` deliberately lands in the client's stale-seq
+   * branch, which still settles acks.
+   */
+  function unknownInstanceAck(instanceId: string, rpcId: string): Envelope {
+    return {
+      seq: 0,
+      instance: instanceId,
+      rpcId,
+      error: { name: "UnknownInstanceError", message: "unknown or expired instance" },
+    };
   }
   /** sessionId → client stream id → live SSE subscriber (§7 tier-2 late mount). */
   const streamRegistry = new Map<string, Map<string, StreamHandle>>();
@@ -743,6 +762,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     return {
       subscribeInstance: (entry) => subscribeInstance(entry, false),
       releaseInstance,
+      send,
       cleanup: () => {
         // Re-arm from the live registry, not the connect-time `entries`
         // capture: empty-slice pruning can orphan that map mid-connection, and
@@ -860,7 +880,15 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   async function handleRpc(req: Request, sid: string): Promise<Response> {
     const batch = (await readJsonCapped(req, maxBodyBytes)) as RpcBatch;
     const entry = ownedInstance(batch.instance, sid);
-    if (!entry) return new Response("unknown instance", { status: 404 });
+    if (!entry) {
+      // The ack rides the session's stream(s), like every other ack. If no
+      // stream is open, the client resends on reconnect and is acked then.
+      if (typeof batch.instance === "string" && typeof batch.rpcId === "string") {
+        const ack = unknownInstanceAck(batch.instance, batch.rpcId);
+        for (const handle of streamRegistry.get(sid)?.values() ?? []) handle.send(ack);
+      }
+      return new Response("unknown instance", { status: 404 });
+    }
     // Fire-and-forget: the ack rides the SSE stream, not this response.
     void entry.instance.handleBatch(batch);
     return new Response(null, { status: 202 });
@@ -1070,6 +1098,8 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           if ("calls" in msg) {
             const entry = ownedInstance(msg.instance, sid);
             if (entry) void entry.instance.handleBatch(msg);
+            else if (typeof msg.instance === "string" && typeof msg.rpcId === "string")
+              send(unknownInstanceAck(msg.instance, msg.rpcId));
             return;
           }
           if (msg.type === "mount" && msg.path) {
