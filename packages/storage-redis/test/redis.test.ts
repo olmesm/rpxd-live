@@ -177,3 +177,230 @@ describe("redis storage adapter", () => {
     expect(seen).toEqual(["me", "other"]); // self:true and other senders only
   });
 });
+
+describe("RedisBus subscribe multiplexing (#62)", () => {
+  /**
+   * A fake redis server whose `subscribe` is synchronous (returns the
+   * unsubscribe function directly, not a promise) and counts low-level
+   * subscribe/unsubscribe calls so tests can assert ref-counting instead of
+   * inferring it from side effects.
+   */
+  function countingFakeClient() {
+    const listeners = new Map<string, Set<(m: string) => void>>();
+    let subscribeCalls = 0;
+    let unsubscribeCalls = 0;
+    const client: RedisLikeClient = {
+      get: () => null,
+      set: () => {},
+      del: () => {},
+      publish: (ch, m) => {
+        for (const fn of listeners.get(ch) ?? []) fn(m);
+      },
+      subscribe: (ch, fn) => {
+        subscribeCalls++;
+        let set = listeners.get(ch);
+        if (!set) {
+          set = new Set();
+          listeners.set(ch, set);
+        }
+        set.add(fn);
+        return () => {
+          unsubscribeCalls++;
+          set?.delete(fn);
+        };
+      },
+    };
+    return {
+      client,
+      getSubscribeCalls: () => subscribeCalls,
+      getUnsubscribeCalls: () => unsubscribeCalls,
+    };
+  }
+
+  /** A tick of the microtask queue — enough for a resolved promise's `.then` to run. */
+  async function tick(times = 2) {
+    for (let i = 0; i < times; i++) await Promise.resolve();
+  }
+
+  it("multiplexes N local subscribers into ONE client.subscribe call and ONE parse per message", () => {
+    const { client, getSubscribeCalls } = countingFakeClient();
+    const storage = redis(client);
+    const parseSpy = vi.spyOn(JSON, "parse");
+    const seenA: BroadcastMessage[] = [];
+    const seenB: BroadcastMessage[] = [];
+
+    storage.bus.subscribe("t", "a", (m) => seenA.push(m));
+    storage.bus.subscribe("t", "b", (m) => seenB.push(m));
+    expect(getSubscribeCalls()).toBe(1); // one channel, one low-level subscribe
+
+    storage.bus.publish({ topic: "t", event: "e", payload: 1, senderId: "other", self: false });
+
+    expect(parseSpy).toHaveBeenCalledTimes(1); // parsed once, fanned out to both
+    expect(seenA).toHaveLength(1);
+    expect(seenB).toHaveLength(1);
+    parseSpy.mockRestore();
+  });
+
+  it("applies exclude-self per subscriber during fan-out", () => {
+    const { client } = countingFakeClient();
+    const storage = redis(client);
+    const seenA: BroadcastMessage[] = [];
+    const seenB: BroadcastMessage[] = [];
+
+    storage.bus.subscribe("t", "a", (m) => seenA.push(m));
+    storage.bus.subscribe("t", "b", (m) => seenB.push(m));
+    storage.bus.publish({ topic: "t", event: "e", payload: 1, senderId: "a", self: false });
+
+    expect(seenA).toEqual([]); // excluded — sender was "a"
+    expect(seenB).toHaveLength(1); // "b" still gets it off the same shared delivery
+  });
+
+  it("issues exactly one redis unsubscribe when the last local subscriber leaves", async () => {
+    const { client, getSubscribeCalls, getUnsubscribeCalls } = countingFakeClient();
+    const storage = redis(client);
+
+    const unsubA = storage.bus.subscribe("t", "a", () => {});
+    const unsubB = storage.bus.subscribe("t", "b", () => {});
+    await tick();
+    expect(getSubscribeCalls()).toBe(1);
+
+    unsubA();
+    await tick();
+    expect(getUnsubscribeCalls()).toBe(0); // "b" is still riding the channel
+
+    unsubB();
+    await tick();
+    expect(getUnsubscribeCalls()).toBe(1); // last leaver tears down the shared subscribe
+  });
+
+  it("issues a fresh client.subscribe after full teardown and re-subscribe", async () => {
+    const { client, getSubscribeCalls } = countingFakeClient();
+    const storage = redis(client);
+
+    const unsub = storage.bus.subscribe("t", "a", () => {});
+    await tick();
+    expect(getSubscribeCalls()).toBe(1);
+
+    unsub();
+    await tick();
+
+    storage.bus.subscribe("t", "a", () => {});
+    expect(getSubscribeCalls()).toBe(2); // fresh subscribe — the old entry is gone
+  });
+
+  it("an idempotent unsubscribe only removes its own subscriber", async () => {
+    const { client, getUnsubscribeCalls } = countingFakeClient();
+    const storage = redis(client);
+
+    const unsubA = storage.bus.subscribe("t", "a", () => {});
+    const unsubB = storage.bus.subscribe("t", "b", () => {});
+    await tick();
+
+    unsubA();
+    unsubA(); // calling twice must not double-teardown or affect "b"
+    await tick();
+    expect(getUnsubscribeCalls()).toBe(0); // "b" still present
+
+    unsubB();
+    await tick();
+    expect(getUnsubscribeCalls()).toBe(1);
+  });
+
+  it("async race: a second local subscriber arriving before client.subscribe resolves joins the pending entry", async () => {
+    let subscribeCalls = 0;
+    let capturedResolve: ((u: () => void) => void) | undefined;
+    const client: RedisLikeClient = {
+      get: () => null,
+      set: () => {},
+      del: () => {},
+      publish: () => {},
+      subscribe: () => {
+        subscribeCalls++;
+        return new Promise<() => void>((resolve) => {
+          capturedResolve = resolve;
+        });
+      },
+    };
+    const storage = redis(client);
+
+    storage.bus.subscribe("t", "a", () => {});
+    storage.bus.subscribe("t", "b", () => {}); // arrives while the first subscribe is still pending
+    expect(subscribeCalls).toBe(1); // no second low-level subscribe issued
+
+    let unsubCalls = 0;
+    capturedResolve?.(() => {
+      unsubCalls++;
+    });
+    await tick();
+    expect(unsubCalls).toBe(0); // nobody has torn down yet
+  });
+
+  it("teardown before the pending client.subscribe resolves still calls the eventual unsub exactly once", async () => {
+    let capturedResolve: ((u: () => void) => void) | undefined;
+    const client: RedisLikeClient = {
+      get: () => null,
+      set: () => {},
+      del: () => {},
+      publish: () => {},
+      subscribe: () =>
+        new Promise<() => void>((resolve) => {
+          capturedResolve = resolve;
+        }),
+    };
+    const storage = redis(client);
+
+    const unsub = storage.bus.subscribe("t", "a", () => {});
+    unsub(); // last (only) subscriber leaves before the client.subscribe promise settles
+
+    let unsubCalls = 0;
+    capturedResolve?.(() => {
+      unsubCalls++;
+    });
+    await tick();
+    expect(unsubCalls).toBe(1); // the "cancelled" channel entry still tears down once resolved
+  });
+
+  it("still drops a malformed message once, without delivering to any subscriber", () => {
+    let deliver: ((raw: string) => void) | undefined;
+    const client: RedisLikeClient = {
+      get: () => null,
+      set: () => {},
+      del: () => {},
+      publish: () => {},
+      subscribe: (_ch, onMessage) => {
+        deliver = onMessage;
+        return () => {};
+      },
+    };
+    const storage = redis(client);
+    const seenA: BroadcastMessage[] = [];
+    const seenB: BroadcastMessage[] = [];
+    storage.bus.subscribe("t", "a", (m) => seenA.push(m));
+    storage.bus.subscribe("t", "b", (m) => seenB.push(m));
+
+    expect(() => deliver?.("not json{")).not.toThrow();
+    expect(seenA).toEqual([]);
+    expect(seenB).toEqual([]);
+  });
+
+  it("still catches a rejected client.subscribe (no unhandled rejection) with multiple subscribers pending", async () => {
+    const client: RedisLikeClient = {
+      get: () => null,
+      set: () => {},
+      del: () => {},
+      publish: () => {},
+      subscribe: () => Promise.reject(new Error("redis down")),
+    };
+    const storage = redis(client);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const unsubA = storage.bus.subscribe("t", "a", () => {});
+    const unsubB = storage.bus.subscribe("t", "b", () => {});
+    await tick();
+
+    expect(spy).toHaveBeenCalled();
+    expect(() => unsubA()).not.toThrow();
+    expect(() => unsubB()).not.toThrow();
+    spy.mockRestore();
+  });
+});

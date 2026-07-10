@@ -30,11 +30,33 @@ export interface RedisStorageOptions {
   prefix?: string;
 }
 
+/** One local subscriber riding a shared channel entry (see {@link ChannelEntry}). */
+interface ChannelSubscriber {
+  subscriberId: string;
+  fn: (msg: BroadcastMessage) => void;
+}
+
+/**
+ * Ref-counting state for one low-level redis channel (§62): every local
+ * subscriber to the same topic shares a single `client.subscribe` call and a
+ * single `JSON.parse` per delivered message, fanned out to `subscribers`.
+ * `unsub`/`cancelled` mirror the single-subscriber `unsub`/`cancelled` pair
+ * this replaced, just promoted to channel granularity so a subscriber leaving
+ * before the pending `client.subscribe` resolves still tears it down once it
+ * does.
+ */
+interface ChannelEntry {
+  subscribers: Set<ChannelSubscriber>;
+  unsub: (() => void) | undefined;
+  cancelled: boolean;
+}
+
 class RedisBus implements PubSubBus {
   // Plain fields (not parameter properties) so the source stays erasable —
   // Node runs it under default, unflagged TypeScript stripping.
   private readonly client: RedisLikeClient;
   private readonly prefix: string;
+  private readonly channels = new Map<string, ChannelEntry>();
   constructor(client: RedisLikeClient, prefix: string) {
     this.client = client;
     this.prefix = prefix;
@@ -52,37 +74,62 @@ class RedisBus implements PubSubBus {
   }
 
   subscribe(topic: string, subscriberId: string, fn: (msg: BroadcastMessage) => void): () => void {
-    let unsub: (() => void) | undefined;
-    let cancelled = false;
-    // Like publish above: a rejecting subscribe (redis unreachable at instance
-    // mount) must be caught, not left as an unhandled rejection. `unsub` stays
-    // undefined, so the returned unsubscribe remains a safe no-op.
-    Promise.resolve(
-      this.client.subscribe(`${this.prefix}bus:${topic}`, (raw) => {
-        // The channel carries untrusted bytes (another service sharing the
-        // prefix, a truncated frame). A parse failure must not throw inside the
-        // client library's message-listener callback.
-        let msg: BroadcastMessage;
-        try {
-          msg = JSON.parse(raw) as BroadcastMessage;
-        } catch (err) {
-          console.error(`[rpxd] redis: dropped malformed message on "${topic}":`, err);
-          return;
-        }
-        if (!msg.self && msg.senderId === subscriberId) return; // exclude-self (§8)
-        fn(msg);
-      }),
-    )
-      .then((u) => {
-        if (cancelled) u();
-        else unsub = u;
-      })
-      .catch((err) => {
-        console.error(`[rpxd] redis subscribe to "${topic}" failed:`, err);
-      });
+    const channel = `${this.prefix}bus:${topic}`;
+    const subscriber: ChannelSubscriber = { subscriberId, fn };
+    const isFirstLocalSubscriber = !this.channels.has(channel);
+    const entry: ChannelEntry = this.channels.get(channel) ?? {
+      subscribers: new Set(),
+      unsub: undefined,
+      cancelled: false,
+    };
+
+    if (isFirstLocalSubscriber) {
+      this.channels.set(channel, entry);
+      // Like publish above: a rejecting subscribe (redis unreachable at instance
+      // mount) must be caught, not left as an unhandled rejection. `entry.unsub`
+      // stays undefined, so every subscriber's returned unsubscribe remains a
+      // safe no-op. Issued exactly once per channel — later local subscribers
+      // just join `entry.subscribers` below, whether they arrive before or
+      // after this promise settles.
+      Promise.resolve(
+        this.client.subscribe(channel, (raw) => {
+          // The channel carries untrusted bytes (another service sharing the
+          // prefix, a truncated frame). A parse failure must not throw inside
+          // the client library's message-listener callback. Parsed once per
+          // delivered message, then fanned out to every local subscriber.
+          let msg: BroadcastMessage;
+          try {
+            msg = JSON.parse(raw) as BroadcastMessage;
+          } catch (err) {
+            console.error(`[rpxd] redis: dropped malformed message on "${topic}":`, err);
+            return;
+          }
+          // Snapshot: a subscriber unsubscribing mid-fan-out can't disturb iteration.
+          for (const sub of [...entry.subscribers]) {
+            if (!msg.self && msg.senderId === sub.subscriberId) continue; // exclude-self (§8), per subscriber
+            sub.fn(msg);
+          }
+        }),
+      )
+        .then((u) => {
+          if (entry.cancelled) u();
+          else entry.unsub = u;
+        })
+        .catch((err) => {
+          console.error(`[rpxd] redis subscribe to "${topic}" failed:`, err);
+        });
+    }
+
+    entry.subscribers.add(subscriber);
     return () => {
-      cancelled = true;
-      unsub?.();
+      if (!entry.subscribers.delete(subscriber)) return; // already unsubscribed — idempotent no-op
+      if (entry.subscribers.size > 0) return; // other local subscribers still riding this channel
+      // Last local subscriber leaving: tear down the shared redis subscription
+      // (or mark it for teardown once the pending client.subscribe resolves)
+      // and drop the map entry so a future subscriber issues a fresh subscribe.
+      if (this.channels.get(channel) === entry) this.channels.delete(channel);
+      if (entry.unsub) entry.unsub();
+      else entry.cancelled = true;
     };
   }
 }
