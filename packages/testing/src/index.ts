@@ -69,8 +69,11 @@ export interface TestLive<S, Session, Rpc> {
   readonly envelopes: Envelope[];
   /**
    * Typed rpc facade (§5): exact keys and payloads from the route's chain.
-   * Each call is one batch; the promise resolves on ack and rejects with the
-   * ack error when the handler throws or validation fails.
+   * Calls made in the same tick coalesce into one `RpcBatch` → one ack,
+   * exactly like the real client (§6) — each call's promise still resolves
+   * independently, but a batch-level error rejects every call in it. The
+   * promise resolves on ack and rejects with the ack error when the handler
+   * throws or validation fails.
    */
   readonly rpc: Rpc;
   /** Untyped rpc escape hatch — same semantics as `rpc.*`. */
@@ -99,6 +102,14 @@ export interface TestLive<S, Session, Rpc> {
 
 let instanceCounter = 0;
 let rpcCounter = 0;
+
+/** One queued `t.rpc.*`/`t.call` invocation awaiting its tick's coalesced flush. */
+interface QueuedCall {
+  rpc: string;
+  payload: unknown;
+  resolve: () => void;
+  reject: (e: unknown) => void;
+}
 
 /**
  * Mount a route for testing (§17): real runtime, typed access. The mount runs
@@ -175,27 +186,58 @@ export async function testLive<S, Path extends string, Session, Component>(
 
   const inflight = new Set<Promise<unknown>>();
 
-  const call = (rpc: string, payload: unknown = {}): Promise<void> => {
+  // Same-tick coalescing (§6): the real client (LiveStore#call) queues calls
+  // and defers the actual send to a `queueMicrotask` flush, so two `rpc.*`
+  // calls issued back-to-back land in one `RpcBatch` → one `handleBatch` → one
+  // ack. Mirror that boundary exactly here so a harness-green test predicts
+  // the client; dispatching each call as its own batch (the old behavior)
+  // would pass a test that then fails against a real connection.
+  let queue: QueuedCall[] = [];
+  let flushScheduled = false;
+
+  const scheduleFlush = (): void => {
+    if (flushScheduled) return;
+    flushScheduled = true;
+    queueMicrotask(() => {
+      flushScheduled = false;
+      void flush();
+    });
+  };
+
+  const flush = async (): Promise<void> => {
+    if (queue.length === 0) return;
+    const calls = queue;
+    queue = [];
     const rpcId = `t-${++rpcCounter}`;
     const batch: RpcBatch = {
       v: PROTOCOL_VERSION,
       instance: id,
       rpcId,
-      calls: [{ rpc, payload }],
+      calls: calls.map((c) => ({ rpc: c.rpc, payload: c.payload })),
     };
-    const run = (async () => {
-      await instance.handleBatch(batch);
-      for (let i = envelopes.length - 1; i >= 0; i--) {
-        const env = envelopes[i];
-        if (env?.rpcId !== rpcId) continue;
-        if (env.error) {
-          const e = new Error(env.error.message);
-          e.name = env.error.name;
-          throw e;
-        }
+    await instance.handleBatch(batch);
+    for (let i = envelopes.length - 1; i >= 0; i--) {
+      const env = envelopes[i];
+      if (env?.rpcId !== rpcId) continue;
+      if (env.error) {
+        // One ack, one error → every call in the batch rejects (the client's
+        // #settleOp rejects every op.calls entry from the single ack, §6).
+        const e = new Error(env.error.message);
+        e.name = env.error.name;
+        for (const c of calls) c.reject(e);
         return;
       }
-    })();
+      for (const c of calls) c.resolve();
+      return;
+    }
+    for (const c of calls) c.resolve();
+  };
+
+  const call = (rpc: string, payload: unknown = {}): Promise<void> => {
+    const run = new Promise<void>((resolve, reject) => {
+      queue.push({ rpc, payload, resolve, reject });
+      scheduleFlush();
+    });
     // Track a rejection-safe copy so settled() never trips on an rpc the
     // test is about to assert rejects.
     const tracked = run.catch(() => {});
