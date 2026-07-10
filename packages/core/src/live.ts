@@ -5,6 +5,7 @@
  */
 import type { Draft, Immutable } from "immer";
 import type { RateLimit } from "./rate-limit.ts";
+import type { EventName, EventPayload } from "./register.ts";
 import type { StandardSchemaV1 } from "./standard-schema.ts";
 
 /** Search params are untyped view state in v1 (§7). */
@@ -59,10 +60,42 @@ export interface RpcCtx<Params, Session> {
   /** Authenticated session data — read it, don't mutate it here (§10). */
   session: Session;
   /**
-   * Publish an event to a topic (§8). Excludes the sender unless
-   * `{ self: true }`.
+   * Publish an `event` with `payload` to every instance subscribed to `topic`
+   * (§8). Excludes the sending instance unless `{ self: true }`.
+   *
+   * **Typesafety is opt-in.** Out of the box `event` is any `string` and
+   * `payload` is unchecked. To autocomplete event names and type-check payloads,
+   * augment the {@link Register} interface with an `events` map — event name →
+   * payload shape — in a `.d.ts` covered by your `tsconfig`. There is no
+   * codegen: the map is maintained by hand, and unregistered events stay
+   * permissive.
+   *
+   * @example Opt in to typed events — e.g. `rpxd-events.d.ts`
+   * ```ts
+   * import type { Message } from "./routes/chat.tsx";
+   *
+   * declare module "@rpxd/core" {
+   *   interface Register {
+   *     events: {
+   *       "message.created": Message;
+   *       "typing": { userId: string };
+   *     };
+   *   }
+   * }
+   * ```
+   *
+   * @example Broadcasting — the event autocompletes and the payload is checked
+   * ```ts
+   * ctx.broadcast("chat:lobby", "message.created", message);
+   * ctx.broadcast("chat:lobby", "typing", { userId: ctx.session.id });
+   * ```
    */
-  broadcast(topic: string, event: string, payload: unknown, opts?: BroadcastOptions): void;
+  broadcast<const K extends EventName>(
+    topic: string,
+    event: K,
+    payload: EventPayload<K>,
+    opts?: BroadcastOptions,
+  ): void;
   /**
    * Escape hatch for optimistic id linking (§4): explicitly map a client
    * tempId to the real id when position matching can't infer it. The mapping
@@ -226,11 +259,14 @@ export type RpcDef<S, Params, Session> =
   // biome-ignore lint/suspicious/noExplicitAny: payload type flows from the caller/long form
   Handler<S, any, Params, Session> | RpcLongForm<S, any, Params, Session>;
 
-/** Broadcast event handler (§8): a sync mutator run in response to a topic event. */
-export type EventHandler<S, Params, Session> = (
+/**
+ * Broadcast event handler (§8): a sync mutator run in response to a topic event.
+ * `Payload` is the registered shape for the event (see {@link RpcCtx.broadcast}),
+ * or `any` for an unregistered event.
+ */
+export type EventHandler<S, Payload, Params, Session> = (
   state: Draft<S>,
-  // biome-ignore lint/suspicious/noExplicitAny: event payloads are producer-defined
-  payload: any,
+  payload: Payload,
   ctx: RpcCtx<Params, Session>,
 ) => void;
 
@@ -254,7 +290,8 @@ export interface LiveDefinition<S, Path extends string, Session> {
    */
   load?: Loader<S, PathParams<Path>, Session>;
   rpc?: Record<string, RpcDef<S, PathParams<Path>, Session>>;
-  on?: Record<string, EventHandler<S, PathParams<Path>, Session>>;
+  // biome-ignore lint/suspicious/noExplicitAny: the runtime record is keyed by arbitrary event name, so payloads are heterogeneous here
+  on?: Record<string, EventHandler<S, any, PathParams<Path>, Session>>;
   /** Snapshot version tag (§9): mismatch → discard snapshot, re-setup. */
   version?: string;
 }
@@ -316,10 +353,22 @@ export interface LiveBuilder<S, Path extends string, Session, R> {
       r: RpcChain<S, PathParams<Path>, Session>,
     ) => RpcChainBuilt<S, In, PathParams<Path>, Session>,
   ): LiveBuilder<S, Path, Session, R & Record<Name, In>>;
-  /** Broadcast handler (§8): a sync mutator run in response to a topic event. */
-  on(
-    event: string,
-    handler: EventHandler<S, PathParams<Path>, Session>,
+  /**
+   * Broadcast handler (§8): a sync mutator run in response to a topic event.
+   * `payload` is typed from the same `Register["events"]` map that types
+   * {@link RpcCtx.broadcast} — see that method to opt into typed events. Until an
+   * event is registered its `payload` is `any`.
+   *
+   * @example
+   * ```ts
+   * .on("message.created", (state, message) => {
+   *   state.messages.push(message); // message: Message, once the event is registered
+   * })
+   * ```
+   */
+  on<const K extends EventName>(
+    event: K,
+    handler: EventHandler<S, EventPayload<K>, PathParams<Path>, Session>,
   ): LiveBuilder<S, Path, Session, R>;
   /**
    * Auth guard (§10): runs before `load` on every URL change; `throw redirect`

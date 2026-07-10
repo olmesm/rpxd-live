@@ -11,6 +11,7 @@ import type { Draft } from "immer";
 import { describe, expectTypeOf, it } from "vitest";
 import { z } from "zod";
 import { type LiveRoute, live, type PathParams } from "../src/live.ts";
+import type { EventName, EventPayload, RegisteredEvent } from "../src/register.ts";
 import type { RenderProps } from "../src/render-props.ts";
 
 interface Project {
@@ -201,6 +202,37 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
     expectTypeOf(route.$live).toEqualTypeOf<true>();
     expectTypeOf(route.def.version).toEqualTypeOf<string | undefined>();
     expectTypeOf(route.def.rpc).not.toBeNever();
+  });
+});
+
+describe("typed broadcasts (§8)", () => {
+  it("keeps topic a free-form string and accepts any event name (incremental adoption)", () => {
+    live("/")
+      .setup(() => ({ log: [] as string[] }))
+      .rpc("send", (r) =>
+        r.handler(async (_p: { text: string }, ctx) => {
+          // arg 0 (topic/channel) is never narrowed — it stays a plain string.
+          expectTypeOf(ctx.broadcast).parameter(0).toEqualTypeOf<string>();
+          // an unregistered event name is still allowed (payload falls back to unknown).
+          ctx.broadcast("chat:lobby", "some.unregistered.event", { anything: true });
+        }),
+      )
+      .on("some.unregistered.event", (state, payload) => {
+        expectTypeOf(state).toEqualTypeOf<Draft<{ log: string[] }>>();
+        // no registration for this event → payload stays permissive (`any`),
+        // so existing annotated handlers keep compiling.
+        expectTypeOf(payload).toBeAny();
+      })
+      .render(() => null);
+  });
+
+  it("derives the event-name and payload helper types", () => {
+    // EventName accepts any string (open for incremental adoption)…
+    expectTypeOf<string>().toMatchTypeOf<EventName>();
+    // …and RegisteredEvent is always a string subtype.
+    expectTypeOf<RegisteredEvent>().toMatchTypeOf<string>();
+    // an unregistered event resolves to the permissive `any`.
+    expectTypeOf<EventPayload<"totally.unregistered">>().toBeAny();
   });
 });
 
