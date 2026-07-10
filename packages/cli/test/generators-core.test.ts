@@ -5,14 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { applyPlan } from "../src/generators/apply.ts";
 import { detectFeatures } from "../src/generators/detect.ts";
 import { parseFields } from "../src/generators/fields.ts";
-import {
-  camelCase,
-  kebabCase,
-  pascalCase,
-  pluralize,
-  routePlural,
-  singularize,
-} from "../src/generators/names.ts";
+import { camelCase, kebabCase, pascalCase, routePlural } from "../src/generators/names.ts";
 
 describe("parseFields (field:type)", () => {
   it("maps every supported type to prisma + ts", () => {
@@ -100,6 +93,26 @@ describe("parseFields (field:type)", () => {
     expect(() => parseFields(["full_name:string", "fullName:string"])).toThrow(/duplicate field/i);
   });
 
+  it("rejects a relation name that collides with a sibling scalar field", () => {
+    // `author_id:references:User` derives relation `author` — alongside
+    // `author:string` the model would carry both `author String` and
+    // `author User @relation(...)`, which Prisma rejects.
+    expect(() => parseFields(["author:string", "author_id:references:User"])).toThrow(
+      /duplicate field "author"/,
+    );
+    // order-independent: the scalar can arrive after the relation too
+    expect(() => parseFields(["author_id:references:User", "author:string"])).toThrow(
+      /duplicate field "author"/,
+    );
+  });
+
+  it("rejects two references fields deriving the same relation name", () => {
+    // `author` and `author_id` both derive fk `authorId` + relation `author`.
+    expect(() => parseFields(["author:references:User", "author_id:references:Person"])).toThrow(
+      /duplicate field/i,
+    );
+  });
+
   it("rejects a references relation name that collides with a generated column", () => {
     // owner_id -> fk `ownerId` (fine) but relation `owner`, which collides with
     // the always-present `owner` column.
@@ -120,21 +133,14 @@ describe("name helpers", () => {
     expect(camelCase("TodoItems")).toBe("todoItems");
     expect(kebabCase("TodoItems")).toBe("todo-items");
   });
-  it("pluralize / singularize (simple)", () => {
-    expect(pluralize("todo")).toBe("todos");
-    expect(pluralize("note")).toBe("notes");
-    expect(singularize("todos")).toBe("todo");
-  });
-
-  it("routePlural normalizes + guarantees plural, idempotently", () => {
-    // already-plural args stay put (no double-pluralize)
+  it("routePlural normalizes casing but never re-pluralizes the user's plural", () => {
     expect(routePlural("todos")).toBe("todos");
     expect(routePlural("Posts")).toBe("posts");
-    // singular args become plural
-    expect(routePlural("todo")).toBe("todos");
     // messy input → clean camelCase token
     expect(routePlural("blog posts")).toBe("blogPosts");
-    expect(routePlural("blog_post")).toBe("blogPosts");
+    // an explicitly supplied irregular plural is the plural — verbatim
+    expect(routePlural("people")).toBe("people");
+    expect(routePlural("children")).toBe("children");
   });
 });
 

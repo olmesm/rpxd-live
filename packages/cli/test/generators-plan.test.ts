@@ -1,3 +1,4 @@
+import { ensurePathLiteral, fileToRoute } from "@rpxd/vite-plugin";
 import { describe, expect, it } from "vitest";
 import { planAuth } from "../src/generators/auth.ts";
 import { planInit } from "../src/generators/init.ts";
@@ -190,10 +191,67 @@ describe("planScaffold", () => {
       kind: "http",
       features: noFeatures,
     });
-    expect(paths(plan)).toContain("routes/todos.ts");
-    expect(file(plan, "routes/todos.ts")).toContain('route("/api/todos")');
+    expect(paths(plan)).toContain("routes/api.todos.ts");
+    expect(file(plan, "routes/api.todos.ts")).toContain('route("/api/todos")');
     // http has no rpcs → a domain test, not a testLive route test
     expect(paths(plan)).toContain("domain/todos.test.ts");
+  });
+
+  it("--kind http survives route codegen: the filename derives the /api path", () => {
+    const plan = planScaffold({
+      context: "Todos",
+      schema: "Todo",
+      plural: "todos",
+      fieldSpecs: ["text:string"],
+      kind: "http",
+      features: noFeatures,
+    });
+    const routeFile = plan.files.find((f) => f.path.startsWith("routes/"));
+    if (!routeFile) throw new Error("expected a route file in the plan");
+    // The literal-maintenance pass (`runCodegen`) treats the filename as truth:
+    // fileToRoute derives the path, then ensurePathLiteral rewrites any literal
+    // that disagrees. The generated endpoint must already agree, or codegen
+    // clobbers /api/todos right after scaffolding writes it.
+    const entry = fileToRoute(routeFile.path.replace(/^routes\//, ""));
+    expect(entry?.kind).toBe("http");
+    expect(entry?.path).toBe("/api/todos");
+    expect(ensurePathLiteral(routeFile.contents, entry?.path ?? "")).toBeNull();
+  });
+
+  it("keeps an explicit irregular plural verbatim across every sink (People Person people)", () => {
+    const plan = planScaffold({
+      context: "People",
+      schema: "Person",
+      plural: "people",
+      fieldSpecs: ["name:string"],
+      features: noFeatures,
+    });
+    // file name, route literal, and identifiers must all agree on "people"
+    expect(paths(plan)).toEqual(["routes/people.tsx", "domain/people.ts", "test/people.test.ts"]);
+    const route = file(plan, "routes/people.tsx");
+    expect(route).toContain('live("/people")');
+    expect(route).toContain("listPeople(");
+    expect(route).not.toContain("peoples");
+    expect(file(plan, "domain/people.ts")).toContain("export async function listPeople(");
+  });
+
+  it("keeps an explicit irregular plural verbatim (Children Child children)", () => {
+    const plan = planScaffold({
+      context: "Children",
+      schema: "Child",
+      plural: "children",
+      fieldSpecs: ["name:string"],
+      features: noFeatures,
+    });
+    expect(paths(plan)).toEqual([
+      "routes/children.tsx",
+      "domain/children.ts",
+      "test/children.test.ts",
+    ]);
+    const route = file(plan, "routes/children.tsx");
+    expect(route).toContain('live("/children")');
+    expect(route).toContain("listChildren(");
+    expect(route).not.toContain("childrens");
   });
 
   it("rejects an invalid context/schema name", () => {

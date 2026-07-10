@@ -93,16 +93,28 @@ function parseReference(rawName: string, target: string | undefined, spec: strin
  * ```
  */
 export function parseFields(specs: string[]): Field[] {
-  const seen = new Set<string>();
+  // Claimed identifier → the token that introduced it. A `references` field
+  // claims two identifiers: its FK column and its `@relation` object field.
+  // Any overlap — field vs field, field vs relation, relation vs relation —
+  // emits duplicate TS interface members (TS2300) and duplicate Prisma
+  // columns. Names are compared post-normalization, so `full_name` and
+  // `fullName` collide.
+  const seen = new Map<string, string>();
+  const claim = (name: string, origin: string) => {
+    const prior = seen.get(name);
+    if (prior !== undefined) {
+      throw new Error(
+        `duplicate field "${name}" — ${origin} collides with ${prior}; field and relation names must be unique`,
+      );
+    }
+    seen.set(name, origin);
+  };
   return specs.map((spec) => {
     const field = parseField(spec);
-    // Names are compared post-normalization, so `full_name` and `fullName`
-    // collide. Two same-named fields would emit duplicate TS interface members
-    // (TS2300) and duplicate Prisma columns.
-    if (seen.has(field.name)) {
-      throw new Error(`duplicate field "${field.name}" — field names must be unique`);
+    claim(field.name, `field "${spec}"`);
+    if (field.reference) {
+      claim(field.reference.relationName, `the relation derived from "${spec}"`);
     }
-    seen.add(field.name);
     return field;
   });
 }

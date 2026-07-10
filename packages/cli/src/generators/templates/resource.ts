@@ -505,9 +505,13 @@ export function resourceFiles(spec: ResourceSpec): FileWrite[] {
     spec.kind === "http"
       ? { path: `domain/${n.domainFile}.test.ts`, contents: domainTest(spec, n) }
       : { path: `test/${spec.plural}.test.ts`, contents: routeTest(spec, n) };
+  // The http endpoint lives at `/api/<plural>`, so its file is
+  // `api.<plural>.ts` — the filename is truth for route codegen, and a
+  // `<plural>.ts` name would make the literal-maintenance pass rewrite the
+  // template's `route("/api/<plural>")` to `route("/<plural>")`.
   const routeFile =
     spec.kind === "http"
-      ? { path: `routes/${spec.plural}.ts`, contents: httpRoute(spec, n) }
+      ? { path: `routes/api.${spec.plural}.ts`, contents: httpRoute(spec, n) }
       : { path: `routes/${spec.plural}.tsx`, contents: pageRoute(spec, n) };
   return [routeFile, { path: `domain/${n.domainFile}.ts`, contents: domain }, testFile];
 }

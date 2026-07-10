@@ -53,10 +53,10 @@ A context (the domain module grouping), a schema, a plural route segment, and
 rpxd scaffold Todos Todo todos text:string done:boolean
 ```
 
-The **plural** becomes the route path (`/todos`) and table. It's normalized —
-camelCased and forced plural, idempotently — so `todo`, `todos`, or
-`Blog Posts` all resolve to a clean segment (`todos`, `todos`, `blogPosts`); you
-can't accidentally double-pluralize it.
+The **plural** becomes the route path (`/todos`) and table. It's only
+normalized for casing — `Blog Posts` resolves to a clean segment
+(`blogPosts`) — and otherwise taken verbatim, so irregular plurals just work:
+`rpxd scaffold People Person people` scaffolds `/people`, never `/peoples`.
 
 This writes a live route (`routes/todos.tsx`), a scoped domain module
 (`domain/todos.ts`), and a test (`test/todos.test.ts` — a `testLive` route test
@@ -83,7 +83,7 @@ map to TypeScript and Prisma:
 
 | Flag             | Effect                                                          |
 | ---------------- | -------------------------------------------------------------- |
-| `--kind http`    | Emit a `route()` endpoint (`routes/<plural>.ts`) instead of a page |
+| `--kind http`    | Emit a `route()` endpoint (`routes/api.<plural>.ts`, served at `/api/<plural>`) instead of a page |
 | `--no-protected` | Make the page public (see below)                               |
 | `--protected`    | Force the guard → `/login` gate (auth apps only)               |
 | `--no-test`      | Skip the test                                                  |
