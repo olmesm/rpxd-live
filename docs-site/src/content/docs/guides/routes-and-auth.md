@@ -230,17 +230,20 @@ more ways:
   sid is unsigned and the server warns once; set one in production. Signing is
   integrity, not confidentiality — it pairs with the `Secure` cookie.
 
-Two more request-level guards, both configured in `rpxd.config.ts`:
+Two more request-level guards:
 
-- **Throttle.** An opt-in per-key token bucket (`throttle`) — you supply the key
-  from a **trusted** source (a proxy-set header or peer address; a raw
-  `X-Forwarded-For` is spoofable). Over-limit HTTP requests get `429`; the
-  long-lived SSE stream is exempt. In-process, so multi-node deployments should
-  rate-limit at the proxy/edge.
+- **Throttle.** An opt-in per-key token bucket (`throttle` in `rpxd.config.ts`)
+  — you supply the key from a **trusted** source (a proxy-set header; the key
+  function receives only the `Request`, so validate `X-Forwarded-For` at your
+  proxy — a raw one is spoofable). Over-limit HTTP requests get `429`; the
+  long-lived SSE stream is exempt, and with `transport: ws()` only the initial
+  navigation is metered (frames after the socket upgrade bypass the HTTP
+  entrypoint). In-process, so multi-node deployments should rate-limit at the
+  proxy/edge.
 - **Error disclosure.** A crash returns a generic `500` (the real error logged
   server-side), and a rejected auth a generic `403`, by default — internal
-  messages never reach the client. Set `debugErrors` (the dev server does) to
-  echo them locally.
+  messages never reach the client. `bun run dev` echoes the detail locally (the
+  `debugErrors` handler option).
 
 ## Cross-site protection — the origin policy
 

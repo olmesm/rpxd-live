@@ -35,8 +35,9 @@ Every request — a page navigation, an SSE stream, an rpc batch, a `route()`
 call — enters through the one handler `fetch` and passes the same outer stages.
 
 1. **Session resolution.** The `rpxd_sid` cookie is read into a session id
-   (`sid`); an absent cookie mints a fresh `sid` and sets it on the response.
-   The `sid` namespaces this browser's instances and their stored snapshots.
+   (`sid`) — its signature verified when a secret is set, so a forged or unsigned
+   cookie mints a fresh `sid` instead. An absent cookie mints one too and sets it
+   on the response. The `sid` namespaces this browser's instances and snapshots.
 2. **Origin policy.** The control-plane endpoints (`/__rpxd/ws|stream|rpc|
    control`) are **same-origin by default** — a cross-origin request whose
    `Origin` isn't allow-listed gets a `403`, checked _before_ authentication.
