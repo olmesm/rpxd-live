@@ -46,6 +46,20 @@ export interface DevServerOptions {
   port?: number;
   /** CLI flag overrides (`--transport`, `--rsc`/`--no-rsc`) applied over the config. */
   overrides?: ConfigOverrides;
+  /**
+   * Config fields merged (shallow) over the loaded `rpxd.config.ts` — the
+   * injection seam for tests and embedding, where the config can't come from
+   * a file (e.g. an `onSecurityEvent` spy, or capacity caps under test).
+   *
+   * @example
+   * ```ts
+   * await createDevServer(root, {
+   *   port: 0,
+   *   configOverride: { onSecurityEvent: (e) => events.push(e) },
+   * });
+   * ```
+   */
+  configOverride?: Partial<RpxdConfig>;
 }
 
 /** A running dev shell. */
@@ -130,10 +144,13 @@ export async function createDevServer(
 
   // Config (§14): the only non-route file. Bun imports TS directly.
   const configPath = join(root, "rpxd.config.ts");
-  const config: RpxdConfig = applyConfigOverrides(
-    existsSync(configPath) ? ((await import(pathToFileURL(configPath).href)).default ?? {}) : {},
-    opts.overrides,
-  );
+  const config: RpxdConfig = {
+    ...applyConfigOverrides(
+      existsSync(configPath) ? ((await import(pathToFileURL(configPath).href)).default ?? {}) : {},
+      opts.overrides,
+    ),
+    ...opts.configOverride,
+  };
 
   // Route codegen before anything imports .rpxd/routes.gen.ts (§7).
   runCodegen(root);

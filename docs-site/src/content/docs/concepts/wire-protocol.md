@@ -102,6 +102,11 @@ type RpcBatch = {
 - A batch carrying more than `maxBatchCalls` calls (default 256) is rejected
   wholesale — no call runs — with a `PayloadTooLargeError` ack. See
   [Ingress limits](#ingress-limits).
+- A batch naming an **unknown or unowned instance** (a stale id after eviction
+  or a redeploy) is error-acked — `error: { name: "UnknownInstanceError" }` at
+  `seq: 0`, delivered over the session's stream/socket — so the pending call
+  rejects instead of hanging. No handler runs; every batch still gets exactly
+  one ack.
 
 ## Ingress limits
 

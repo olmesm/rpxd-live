@@ -305,6 +305,57 @@ describe("stream + rpc + control (§11)", () => {
     await handler.dispose();
   });
 
+  it("error-acks an rpc batch for an unknown instance over the session's stream (one ack per batch)", async () => {
+    const handler = makeHandler();
+    // A live stream but no instance with this id (stale id after an eviction
+    // horizon or a redeploy): the batch must still get exactly one ack, or the
+    // client's pending call hangs forever.
+    const streamRes = await handler.fetch(
+      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+    );
+    const sse = new SseReader(streamRes);
+
+    const rpcRes = await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({
+          v: V,
+          instance: "ghost",
+          rpcId: "g1",
+          calls: [{ rpc: "add", payload: { item: "never" } }],
+        }),
+      }),
+    );
+    expect(rpcRes.status).toBe(404); // transport-level status is unchanged
+
+    const ack = await sse.next();
+    expect(ack?.instance).toBe("ghost");
+    expect(ack?.rpcId).toBe("g1");
+    expect(ack?.error?.name).toBe("UnknownInstanceError");
+    await handler.dispose();
+  });
+
+  it("error-acks an unknown-instance batch on the WS path too", async () => {
+    const handler = makeHandler();
+    const envelopes: Envelope[] = [];
+    const sock = handler.socket("session-a", {}, (env) => envelopes.push(env));
+
+    await sock.message(
+      JSON.stringify({
+        v: V,
+        instance: "ghost",
+        rpcId: "ws-g1",
+        calls: [{ rpc: "add", payload: { item: "never" } }],
+      }),
+    );
+    const ack = envelopes.find((e) => e.rpcId === "ws-g1");
+    expect(ack?.instance).toBe("ghost");
+    expect(ack?.error?.name).toBe("UnknownInstanceError");
+    sock.close();
+    await handler.dispose();
+  });
+
   it("routes params control to the session slice", async () => {
     const handler = makeHandler();
     const mountRes = await handler.fetch(
