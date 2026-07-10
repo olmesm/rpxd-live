@@ -25,6 +25,7 @@ import { type RateLimit, RateLimitError, TokenBucket } from "./rate-limit.ts";
 import { isRedirect } from "./redirect.ts";
 import { validateInput } from "./standard-schema.ts";
 import type { StorageAdapter } from "./storage.ts";
+import { SupersededError } from "./supersede.ts";
 
 enablePatches();
 // Server state stays unfrozen: ctx.state's read-only proxy guards handler
@@ -262,9 +263,11 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * separate from `load` so the server can 302 *before* streaming/serving a
    * guarded page. A deny (`throw redirect`) — or any throw — propagates to the
    * caller. No-op when no `guard` is declared. A newer call aborts the prior
-   * guard's `signal` (latest-wins for slow async auth lookups); a throw from a
-   * run that a newer call already superseded is swallowed, so a signal-respecting
-   * guard's `AbortError` never reaches the transport as a spurious 500.
+   * guard's `signal` (latest-wins for slow async auth lookups); the superseded
+   * run then rejects with {@link SupersededError} — whatever its guard did.
+   * Resolving instead would turn a swallowed deny into an allow (the caller
+   * would proceed to load the denied URL), so supersession is explicit: callers
+   * catch it and bail quietly — the winning run owns the outcome.
    */
   async authorize(search: Record<string, string | undefined>): Promise<void> {
     const guard = this.#def.guard;
@@ -278,12 +281,16 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
         { params: this.#params, session: this.#session, signal: controller.signal },
       );
     } catch (e) {
-      // A newer URL claimed the guard (this controller was aborted): its result
-      // is stale, so drop any throw — including a signal-respecting guard's
-      // `AbortError`. The live run propagates its redirect/auth error normally.
-      if (controller.signal.aborted) return;
+      // A newer URL claimed the guard (this controller was aborted): its
+      // outcome is stale — a deny here must not be swallowed into a resolve
+      // (auth bypass), and a signal-respecting guard's `AbortError` must not
+      // reach the transport as a spurious 500. Reject with the marker instead.
+      if (controller.signal.aborted) throw new SupersededError();
       throw e;
     }
+    // An allow from a superseded run is equally stale: its caller must not
+    // load a URL the winning run never authorized.
+    if (controller.signal.aborted) throw new SupersededError();
   }
 
   /**

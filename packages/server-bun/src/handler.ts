@@ -7,6 +7,7 @@
 import {
   type Envelope,
   isRedirect,
+  isSuperseded,
   type LiveDefinition,
   LiveInstance,
   memory,
@@ -351,7 +352,15 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     instance: InstanceEntry["instance"],
     search: Record<string, string | undefined>,
   ): Promise<void> {
-    if (def.guard) await instance.authorize(search); // deny → throw redirect → 302
+    try {
+      if (def.guard) await instance.authorize(search); // deny → throw redirect → 302
+    } catch (e) {
+      // A newer URL superseded this guard run mid-flight: the winning run owns
+      // the outcome. Bail without loading — falling through would load a URL
+      // this run never authorized (a swallowed deny would leak its data).
+      if (isSuperseded(e)) return;
+      throw e;
+    }
     if (!def.load) return;
     await instance.loadForRender(search);
   }
