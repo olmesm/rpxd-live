@@ -7,7 +7,7 @@ import {
 } from "@rpxd/core";
 import { describe, expect, it } from "vitest";
 import { signSessionId } from "../src/cookie.ts";
-import { createRpxdHandler } from "../src/handler.ts";
+import { createRpxdHandler, type SecurityEvent } from "../src/handler.ts";
 import { matchPath, matchRoute } from "../src/match.ts";
 
 interface BoardState {
@@ -775,6 +775,73 @@ describe("guard runs before setup — denied requests allocate nothing (#8)", ()
     });
     await new Promise((r) => setTimeout(r, 30));
     expect(ghostReactions).toBe(0); // disposed on throw → unsubscribed → no ghost reaction
+    await handler.dispose();
+  });
+});
+
+describe("security events — observability hook (#8)", () => {
+  it("emits origin-rejected on a cross-origin control POST", async () => {
+    const events: SecurityEvent[] = [];
+    const handler = makeHandler({ onSecurityEvent: (e) => events.push(e) });
+    await handler.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers: { ...COOKIE, origin: "http://evil.example" },
+        body: JSON.stringify({ type: "mount", path: "/org/9/board" }),
+      }),
+    );
+    expect(events.map((e) => e.type)).toContain("origin-rejected");
+    await handler.dispose();
+  });
+
+  it("emits rate-limited when the throttle rejects", async () => {
+    const events: SecurityEvent[] = [];
+    const handler = makeHandler({
+      throttle: { key: () => "k", limit: { capacity: 1, refillPerSec: 0 } },
+      onSecurityEvent: (e) => events.push(e),
+    });
+    await handler.fetch(new Request(`${base}/org/7/board`, { headers: COOKIE }));
+    await handler.fetch(new Request(`${base}/org/7/board`, { headers: COOKIE })); // 429
+    expect(events.map((e) => e.type)).toContain("rate-limited");
+    await handler.dispose();
+  });
+
+  it("emits cap-evicted when a session exceeds its cap", async () => {
+    const events: SecurityEvent[] = [];
+    const handler = makeHandler({
+      maxInstancesPerSession: 1,
+      warmTtlMs: 1000,
+      attachTtlMs: 1000,
+      onSecurityEvent: (e) => events.push(e),
+    });
+    const m = (n: number) =>
+      handler.fetch(
+        new Request(`${base}/__rpxd/control`, {
+          method: "POST",
+          headers: COOKIE,
+          body: JSON.stringify({ type: "mount", path: `/org/${n}/board` }),
+        }),
+      );
+    await m(1);
+    await m(2); // 2nd mount evicts the 1st (cap 1)
+    expect(events.map((e) => e.type)).toContain("cap-evicted");
+    await handler.dispose();
+  });
+
+  it("swallows a throwing hook so it can't break the request", async () => {
+    const handler = makeHandler({
+      onSecurityEvent: () => {
+        throw new Error("hook blew up");
+      },
+    });
+    const res = await handler.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers: { ...COOKIE, origin: "http://evil.example" },
+        body: JSON.stringify({ type: "mount", path: "/org/9/board" }),
+      }),
+    );
+    expect(res.status).toBe(403); // still the normal rejection, not a 500
     await handler.dispose();
   });
 });

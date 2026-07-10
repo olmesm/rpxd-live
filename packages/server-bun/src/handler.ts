@@ -46,6 +46,17 @@ export interface RenderContext {
   attachToken: string;
 }
 
+/**
+ * A security-relevant event the runtime rejected or shed (#8) — an observability
+ * seam for the app to log/meter (feeds the structured-logging epic #73). Fired
+ * for a rejected cross-origin request, a throttle rejection, and a
+ * capacity-driven instance eviction.
+ */
+export interface SecurityEvent {
+  type: "origin-rejected" | "rate-limited" | "cap-evicted";
+  detail?: Record<string, unknown>;
+}
+
 /** Options for {@link createRpxdHandler}. */
 export interface RpxdHandlerOptions {
   routes: RouteRegistration[];
@@ -143,6 +154,12 @@ export interface RpxdHandlerOptions {
    * so rate-limit the upgrade at the proxy. Omit to disable.
    */
   throttle?: { key: (req: Request) => string | null; limit: RateLimit };
+  /**
+   * Observability hook for {@link SecurityEvent}s (#8) — a rejected cross-origin
+   * request, a throttle rejection, a capacity eviction. Log or meter them; the
+   * runtime swallows any throw from the hook so it can't affect the request.
+   */
+  onSecurityEvent?: (event: SecurityEvent) => void;
   defaultRateLimit?: RateLimit;
 }
 
@@ -260,6 +277,18 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
    */
   function safeErrorMessage(e: unknown, fallback: string): string {
     return debugErrors && e instanceof Error ? e.message : fallback;
+  }
+
+  /** Fire a {@link SecurityEvent} (#8), swallowing any hook error — observability
+   * must never affect the request it observes. */
+  function emitSecurity(type: SecurityEvent["type"], detail?: Record<string, unknown>): void {
+    const fn = opts.onSecurityEvent;
+    if (!fn) return;
+    try {
+      fn({ type, detail });
+    } catch (e) {
+      console.error("[rpxd] onSecurityEvent hook threw:", e);
+    }
   }
 
   function registerStream(sid: string, streamId: string, handle: StreamHandle): void {
@@ -488,6 +517,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     for (const entry of unattached) {
       if (unattached.size <= maxUnattachedInstances) break;
       if (entry === keep) continue;
+      emitSecurity("cap-evicted", { reason: "unattached", sid: entry.sid, path: entry.key });
       evictEntry(entry);
     }
   }
@@ -505,6 +535,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     for (const entry of [...m.values()]) {
       if (m.size <= maxInstancesPerSession) break;
       if (entry === keep || entry.instance.subscriberCount > 0) continue;
+      emitSecurity("cap-evicted", { reason: "per-session", sid, path: entry.key });
       evictEntry(entry);
     }
   }
@@ -729,6 +760,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         url.pathname === "/__rpxd/rpc" ||
         url.pathname === "/__rpxd/control";
       if (isControlPlane && !originAllowed(req, opts.allowedOrigins)) {
+        emitSecurity("origin-rejected", { origin: req.headers.get("origin"), path: url.pathname });
         return new Response("forbidden origin", { status: 403 });
       }
 
@@ -752,7 +784,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
             bucket = new TokenBucket(opts.throttle.limit);
             throttleBuckets.set(k, bucket);
           }
-          if (!bucket.take()) return new Response("rate limited", { status: 429 });
+          if (!bucket.take()) {
+            emitSecurity("rate-limited", { key: k, path: url.pathname });
+            return new Response("rate limited", { status: 429 });
+          }
         }
       }
 
@@ -958,6 +993,12 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
      */
     safeErrorMessage(e: unknown, fallback: string): string {
       return safeErrorMessage(e, fallback);
+    },
+
+    /** Fire a {@link SecurityEvent} (#8) — shared with the WS transport so an
+     * upgrade rejection is observed the same as SSE/POST. */
+    emitSecurity(type: SecurityEvent["type"], detail?: Record<string, unknown>): void {
+      emitSecurity(type, detail);
     },
 
     /** Test/introspection hook: number of live instances across sessions. */
