@@ -72,6 +72,13 @@ export interface RpxdConfig {
   rsc?: boolean;
   /** Default per-rpc token bucket (§10). */
   rateLimit?: RateLimit;
+  /**
+   * Opt-in request throttle (#6). `key(req)` returns the throttle key (from a
+   * trusted source — a proxy-set header or peer address, not a spoofable raw
+   * `X-Forwarded-For`) or `null` to skip; over-limit HTTP requests get `429`.
+   * In-process (single node) — for multi-node, rate-limit at the proxy/edge.
+   */
+  throttle?: { key: (req: Request) => string | null; limit: RateLimit };
 }
 
 /**

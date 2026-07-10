@@ -779,6 +779,59 @@ describe("guard runs before setup — denied requests allocate nothing (#8)", ()
   });
 });
 
+describe("opt-in throttle — per-key rate limit (#6)", () => {
+  const hit = (h: ReturnType<typeof makeHandler>, ip?: string) =>
+    h.fetch(
+      new Request(`${base}/org/7/board`, {
+        headers: ip ? { ...COOKIE, "x-ip": ip } : COOKIE,
+      }),
+    );
+
+  it("rejects over-limit requests for a key with 429", async () => {
+    const handler = makeHandler({
+      throttle: { key: (req) => req.headers.get("x-ip"), limit: { capacity: 2, refillPerSec: 0 } },
+    });
+    expect((await hit(handler, "1.2.3.4")).status).toBe(200);
+    expect((await hit(handler, "1.2.3.4")).status).toBe(200);
+    expect((await hit(handler, "1.2.3.4")).status).toBe(429); // bucket drained
+    await handler.dispose();
+  });
+
+  it("does not throttle when the key returns null", async () => {
+    const handler = makeHandler({
+      throttle: { key: () => null, limit: { capacity: 1, refillPerSec: 0 } },
+    });
+    expect((await hit(handler)).status).toBe(200);
+    expect((await hit(handler)).status).toBe(200); // null key bypasses the limiter
+    await handler.dispose();
+  });
+
+  it("meters keys independently", async () => {
+    const handler = makeHandler({
+      throttle: { key: (req) => req.headers.get("x-ip"), limit: { capacity: 1, refillPerSec: 0 } },
+    });
+    expect((await hit(handler, "a")).status).toBe(200);
+    expect((await hit(handler, "a")).status).toBe(429);
+    expect((await hit(handler, "b")).status).toBe(200); // separate bucket
+    await handler.dispose();
+  });
+
+  it("exempts the SSE stream — a 429 there would kill the live channel", async () => {
+    const handler = makeHandler({
+      throttle: { key: (req) => req.headers.get("x-ip"), limit: { capacity: 1, refillPerSec: 0 } },
+    });
+    expect((await hit(handler, "streamer")).status).toBe(200);
+    expect((await hit(handler, "streamer")).status).toBe(429); // key drained
+    // The long-lived SSE stream is never throttled (native EventSource can't
+    // reconnect after a non-200), so a drained key can still open it.
+    const streamRes = await handler.fetch(
+      new Request(`${base}/__rpxd/stream`, { headers: { ...COOKIE, "x-ip": "streamer" } }),
+    );
+    expect(streamRes.status).toBe(200);
+    await handler.dispose();
+  });
+});
+
 describe("error disclosure — generic 500 by default (#9)", () => {
   const boomDef: LiveDefinition<{ ok: boolean }, "/boom", Record<string, unknown>> = {
     setup: () => ({ ok: true }),
