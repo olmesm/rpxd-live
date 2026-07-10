@@ -2,7 +2,7 @@
 title: App structure (the domain layer)
 description: A convention for organising app logic — routes are the thin edge, domain/ is the service-layer core, and only domain/ touches the database.
 sidebar:
-  order: 5
+  order: 9
 ---
 
 rpxd's `routes/` is your web edge — one live object per page, `setup` / `load` /
@@ -11,8 +11,9 @@ access live. This is the convention we recommend for that other half: a
 **service layer** of bounded modules that own all real work.
 
 It is a **convention only** — no runtime, no codegen, no framework awareness.
-The framework never touches your database (spec §14); this is purely how you
-organise userland modules. Adopt it, adapt it, or ignore it.
+The framework never touches your database (see
+[config & tooling](/rpxd-live/getting-started/installation/)); this is purely
+how you organise userland modules. Adopt it, adapt it, or ignore it.
 
 ## The layers
 
@@ -48,8 +49,9 @@ layer off the database directly buys you:
 
 - **Thin edge, fat core.** The handler validates (`input`), calls a domain fn,
   then `patchState` / `broadcast`. All real work — queries, invariants, joins —
-  lives in `domain/`. (This is spec §6's "chatty client = missing reducer"
-  pushed one layer deeper.)
+  lives in `domain/`. (This is the
+  [reducer](/rpxd-live/guides/the-fluent-chain/) discipline's "chatty client =
+  missing reducer" pushed one layer deeper.)
 - **Swappable persistence.** Swap the client in `adapters/db.ts` (the example
   uses Prisma/SQLite) and nothing under `routes/` changes.
 - **Tests without the harness.** The pure parts (e.g. `scopeFrom`) unit-test
@@ -60,10 +62,11 @@ layer off the database directly buys you:
   ([Testing](/rpxd-live/guides/testing/) covers the `testLive` harness and the
   test tiers.)
 - **Transactions land where they belong.** A DB transaction opens and closes
-  *inside* a domain function. Keeping the db off `ctx` (spec §10) follows from
-  this: a transaction that lived on `ctx` would span a handler's awaits, and
-  since awaits don't block the instance (§3) it would hold a connection open
-  across unrelated rpcs.
+  *inside* a domain function. Keeping the db off `ctx` follows from this: a
+  transaction that lived on `ctx` would span a handler's awaits, and since
+  awaits don't block the instance (see
+  [async handlers & streaming](/rpxd-live/guides/async-handlers-streaming/))
+  it would hold a connection open across unrelated rpcs.
 
 ```tsx
 // routes/index.tsx — the edge
@@ -116,7 +119,7 @@ session: { authenticate: (_req, { sid }) => ({ sid }) },
 
 Routes derive the scope from `ctx.session` (`scopeFrom`) and pass it down;
 domain functions scope their queries by it (`db.todo.findMany({ where: { owner
-} })` — spec §1's `findMany({ where: { orgId } })`). A bare `sid` today extends
+} })` — the same pattern as `findMany({ where: { orgId } })`). A bare `sid` today extends
 to `{ user, org }` tomorrow without rewriting every signature. Keeping this a
 plain value passed *into* domain functions — rather than the db on `ctx` — is why
 two sessions never see each other's todos from one shared database.
@@ -134,8 +137,8 @@ The convention is enforced by discipline; if you want it harder, two options
 your app can adopt:
 
 - **Lint** — a Biome rule forbidding a `db` import under `routes/` (a natural
-  sibling to spec §4's identity-lookup rule). The enforceable form of the
-  discipline.
+  sibling to the [optimistic updates](/rpxd-live/guides/optimistic-updates/)
+  identity-lookup rule). The enforceable form of the discipline.
 - **Package boundary** — `domain/` as a workspace package with `db` as its
   private dependency. Hard enforcement, but overkill until the app is large.
 

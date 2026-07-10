@@ -2,7 +2,7 @@
 title: Async handlers & streaming
 description: Handlers are plain async functions; patchState is the only write; awaits never block the instance. How token streams become O(delta) on the wire.
 sidebar:
-  order: 2
+  order: 8
 ---
 
 Handlers are plain `async (payload, ctx)` functions. The one rule: **all state

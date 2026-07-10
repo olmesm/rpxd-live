@@ -46,8 +46,8 @@ export default defineConfig({
 });
 ```
 
-With that config in place, `rpxd start` under Node builds and serves exactly as
-it does on Bun — it picks the Node adapter for you.
+With that config in place, `rpxd start` under Node serves the `rpxd build`
+output exactly as it does on Bun — it picks the Node adapter for you.
 
 ## Embedding in a custom `node:http` server
 

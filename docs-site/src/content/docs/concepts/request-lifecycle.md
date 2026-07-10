@@ -2,7 +2,7 @@
 title: Request lifecycle
 description: How a request flows through rpxd — the outer request pipeline every request passes through, and the inner live-object lifecycle a page mount runs.
 sidebar:
-  order: 2
+  order: 1
 ---
 
 Every request rpxd handles runs **two nested sequences**: an outer _request

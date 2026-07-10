@@ -6,8 +6,7 @@ sidebar:
 ---
 
 Errors don't have one path through rpxd — they have five, depending on where
-they originate. This page is the map, plus the piece that was missing until
-now: `sync.errors` is dismissable.
+they originate. This page is the map.
 
 ## The map
 
@@ -54,15 +53,11 @@ rollback — nothing to undo).
 
 ## `sync.errors` + dismissing them
 
-Every rejection above (except the pre-flight client validation case, which
-also pushes here) also lands in `sync.errors` — an array of
-`{ name, message, rpc? }` surfaced to every render of the page, independent of
-whether anything is `await`-ing the promise. That's the right shape for an
-error-toast component, but until now there was no way to clear it from inside
-`.render()`: `LiveStore.clearErrors()` existed on the client-only class, not on
-the `sync` render prop.
-
-`sync.clearErrors()` closes that gap:
+Every rejection above — including the pre-flight client validation case —
+also lands in `sync.errors`: an array of `{ name, message, rpc? }` surfaced to
+every render of the page, independent of whether anything is `await`-ing the
+promise. That's the right shape for an error-toast component, and
+`sync.clearErrors()` is how the component dismisses it:
 
 ```tsx
 .render(({ sync }) => (

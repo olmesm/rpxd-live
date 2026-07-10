@@ -2,7 +2,7 @@
 title: Persistence & storage adapters
 description: Write-through snapshots behind a small interface that also carries the pubsub bus — memory, session, SQLite, and Redis adapters.
 sidebar:
-  order: 5
+  order: 4
 ---
 
 Persistence is a small interface with two jobs: store whole-state snapshots, and

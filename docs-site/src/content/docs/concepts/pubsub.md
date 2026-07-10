@@ -2,7 +2,7 @@
 title: Pubsub & multiplayer
 description: Per-session instances coordinated by broadcast — subscribe in setup, broadcast in rpcs, mutate in on handlers. Exclude-self by default.
 sidebar:
-  order: 4
+  order: 3
 ---
 
 Instances are **per-session** — there are no shared instances, no `key` or

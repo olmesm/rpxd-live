@@ -2,7 +2,7 @@
 title: Server-side rendering
 description: Mount runs during SSR and the live connection adopts the warm instance — crawlable HTML, no connect spinner, resume from seq.
 sidebar:
-  order: 6
+  order: 5
 ---
 
 `mount` runs during SSR, so the first paint is real server-rendered HTML — no

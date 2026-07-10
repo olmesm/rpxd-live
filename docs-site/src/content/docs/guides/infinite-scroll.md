@@ -2,7 +2,7 @@
 title: Infinite scroll
 description: Accumulate windows with the `load` loader — cursor in the URL, an IntersectionObserver sentinel, and the honest snapshot-retention caveat.
 sidebar:
-  order: 10
+  order: 6
 ---
 
 Infinite scroll is [pagination](/rpxd-live/guides/pagination/) that **appends**
@@ -18,7 +18,7 @@ export default live("/feed")
     const append = search.cursor != null;
     // Subsequent pages flip the spinner synchronously (instant feedback, then
     // streamed). The first page has no synchronous patch, so SSR waits for the
-    // awaited data — the initial feed is crawlable (§12).
+    // awaited data — the initial feed is crawlable.
     if (append) ctx.patchState((s) => { s.loading = true; });
     const { items, nextCursor } = await listPosts(scopeFrom(ctx.session), {
       cursor: search.cursor ?? null, limit: 20, signal: ctx.signal,
@@ -57,7 +57,7 @@ not O(total).
 
 :::caution[Accumulated lists and snapshots]
 Appending means `state.items` grows with every window — and rpxd persists
-**whole-state** snapshots (§9). So the accumulated feed is written through on
+**whole-state** [snapshots](/rpxd-live/concepts/persistence/). So the accumulated feed is written through on
 every flush and pushed in full on a reconnect resync, both O(total). And on a
 cold wake the instance re-runs `setup` and `load` rebuilds from the URL's cursor,
 which means the *first* window — a deep-scrolled position isn't restored.

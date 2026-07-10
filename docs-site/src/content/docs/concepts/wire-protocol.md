@@ -2,7 +2,7 @@
 title: Wire protocol
 description: The transport-agnostic envelope, the upstream rpc batch, control messages, the connection lifecycle, and the invariants both core and client implement exactly.
 sidebar:
-  order: 1
+  order: 7
 ---
 
 One page. Transport-agnostic. This document is normative for `@rpxd/core`

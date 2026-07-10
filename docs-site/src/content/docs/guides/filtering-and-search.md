@@ -2,7 +2,7 @@
 title: Filtering & search
 description: Filters, sort, and debounced text search as URL search params on the `load` loader — resetting the cursor on filter change, and why latest-wins makes typeahead clean.
 sidebar:
-  order: 11
+  order: 7
 ---
 
 Filters, sort, and a search box are all just search params read by the
@@ -29,7 +29,8 @@ export default live("/issues")
 ```
 
 The synchronous projection (`filter`/`sort`/`loading`) flips the tab instantly
-and lands in the SSR first paint; the awaited rows stream in after (§12). If the
+and lands in the SSR first paint; the awaited rows stream in after (see
+[SSR](/rpxd-live/concepts/ssr/)). If the
 rows must be crawlable, `await` them before the first `patchState` instead — the
 renderer then waits for that patch. The
 [kitchen-sink example](/rpxd-live/examples/kitchen-sink/) is a working version of this.
