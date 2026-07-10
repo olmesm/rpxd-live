@@ -54,7 +54,10 @@ class RedisBus implements PubSubBus {
   subscribe(topic: string, subscriberId: string, fn: (msg: BroadcastMessage) => void): () => void {
     let unsub: (() => void) | undefined;
     let cancelled = false;
-    void Promise.resolve(
+    // Like publish above: a rejecting subscribe (redis unreachable at instance
+    // mount) must be caught, not left as an unhandled rejection. `unsub` stays
+    // undefined, so the returned unsubscribe remains a safe no-op.
+    Promise.resolve(
       this.client.subscribe(`${this.prefix}bus:${topic}`, (raw) => {
         // The channel carries untrusted bytes (another service sharing the
         // prefix, a truncated frame). A parse failure must not throw inside the
@@ -69,10 +72,14 @@ class RedisBus implements PubSubBus {
         if (!msg.self && msg.senderId === subscriberId) return; // exclude-self (§8)
         fn(msg);
       }),
-    ).then((u) => {
-      if (cancelled) u();
-      else unsub = u;
-    });
+    )
+      .then((u) => {
+        if (cancelled) u();
+        else unsub = u;
+      })
+      .catch((err) => {
+        console.error(`[rpxd] redis subscribe to "${topic}" failed:`, err);
+      });
     return () => {
       cancelled = true;
       unsub?.();

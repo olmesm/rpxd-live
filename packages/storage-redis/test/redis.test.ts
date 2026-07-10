@@ -147,6 +147,25 @@ describe("redis storage adapter", () => {
     spy.mockRestore();
   });
 
+  it("handles a failed subscribe() instead of leaking an unhandled rejection", async () => {
+    const client: RedisLikeClient = {
+      get: () => null,
+      set: () => {},
+      del: () => {},
+      publish: () => {},
+      subscribe: () => Promise.reject(new Error("redis down")),
+    };
+    const storage = redis(client);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const unsubscribe = storage.bus.subscribe("t", "me", () => {});
+    // Let the rejected subscribe promise settle.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(spy).toHaveBeenCalled(); // the failure was caught + reported, not left dangling
+    expect(() => unsubscribe()).not.toThrow(); // teardown stays a safe no-op
+    spy.mockRestore();
+  });
+
   it("filters self-delivery in the bus layer", () => {
     const { makeClient } = fakeRedisServer();
     const storage = redis(makeClient());
