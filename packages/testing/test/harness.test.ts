@@ -69,6 +69,49 @@ describe("testLive: mount + typed rpc calls", () => {
     await expect(t.call("nope")).rejects.toThrow('Unknown rpc "nope"');
     await t.dispose();
   });
+
+  it("coalesces same-tick rpc calls into one batch/ack (§6)", async () => {
+    const t = await testLive(todosRoute);
+    // Both calls fire synchronously, in the same tick — mirrors two rpc.*
+    // calls from a single event handler on the real client.
+    const p1 = t.rpc.add({ text: "milk" });
+    const p2 = t.rpc.add({ text: "eggs" });
+    await Promise.all([p1, p2]);
+    expect(t.state.todos.map((td) => td.text)).toEqual(["milk", "eggs"]);
+    // One combined ack envelope, not two.
+    const acks = t.envelopes.filter((e) => e.rpcId);
+    expect(acks).toHaveLength(1);
+    expect(acks[0]?.patches).toHaveLength(2);
+    const rpcIds = new Set(acks.map((e) => e.rpcId));
+    expect(rpcIds.size).toBe(1);
+    await t.dispose();
+  });
+
+  it("calls in separate ticks still produce separate batches", async () => {
+    const t = await testLive(todosRoute);
+    await t.rpc.add({ text: "milk" });
+    await t.rpc.add({ text: "eggs" });
+    const acks = t.envelopes.filter((e) => e.rpcId);
+    expect(acks).toHaveLength(2);
+    expect(acks[0]?.rpcId).not.toBe(acks[1]?.rpcId);
+    await t.dispose();
+  });
+
+  it("a same-tick batch failure rejects every call in the batch (mirrors client op semantics)", async () => {
+    const t = await testLive(todosRoute);
+    const p1 = t.rpc.add({ text: "milk" });
+    const p2 = t.rpc.explode();
+    await expect(p1).rejects.toThrow("db down");
+    await expect(p2).rejects.toThrow("db down");
+    // "milk" ran before the throwing call, so its patchState write rides the
+    // one error ack (sibling-write all-or-nothing is userland, §3) — the
+    // point under test is that both promises settle off that single ack.
+    expect(t.state.todos.map((td) => td.text)).toEqual(["milk"]);
+    const acks = t.envelopes.filter((e) => e.rpcId);
+    expect(acks).toHaveLength(1);
+    expect(acks[0]?.error).toBeDefined();
+    await t.dispose();
+  });
 });
 
 describe("testLive: streaming + settled", () => {
