@@ -108,6 +108,15 @@ export interface RpxdHandlerOptions {
    * traffic shape. `null` disables the cap. Default 1024.
    */
   maxUnattachedInstances?: number | null;
+  /**
+   * Cap on concurrent instances held for a **single session** (C). When a
+   * session exceeds it, its oldest *idle* (unsubscribed) instance is evicted to
+   * make room — bounding memory one abusive or many-tabbed session can pin,
+   * without dropping instances a live connection still holds. `null` disables.
+   * Default 32 (a session with that many simultaneous live routes is already
+   * pathological).
+   */
+  maxInstancesPerSession?: number | null;
   defaultRateLimit?: RateLimit;
 }
 
@@ -187,6 +196,8 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   const unattachedTtlMs = opts.unattachedTtlMs ?? attachTtlMs;
   const maxUnattachedInstances =
     opts.maxUnattachedInstances === undefined ? 1024 : opts.maxUnattachedInstances;
+  const maxInstancesPerSession =
+    opts.maxInstancesPerSession === undefined ? 32 : opts.maxInstancesPerSession;
   /** sessionId → instanceKey → entry */
   const sessions = new Map<string, Map<string, InstanceEntry>>();
   const byInstanceId = new Map<string, InstanceEntry>();
@@ -396,35 +407,65 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     byInstanceId.set(instance.id, entry);
     unattached.add(entry);
     enforceUnattachedCap(entry);
-    scheduleEvictionIfIdle(sid, pathname, entry);
+    enforcePerSessionCap(sid, entry);
+    scheduleEvictionIfIdle(entry);
     return entry;
+  }
+
+  /**
+   * Remove an entry from every registry and dispose it, pruning its session
+   * slice if it empties (#61). A never-adopted instance drops its snapshot and
+   * storage row (a cookieless scan — persisting is waste); an adopted one gets
+   * a final write-through snapshot (§11). Shared by every eviction site.
+   */
+  function evictEntry(entry: InstanceEntry): void {
+    if (entry.evictTimer) {
+      clearTimeout(entry.evictTimer);
+      entry.evictTimer = undefined;
+    }
+    const m = sessions.get(entry.sid);
+    m?.delete(entry.key);
+    if (m && m.size === 0) sessions.delete(entry.sid);
+    byInstanceId.delete(entry.instance.id);
+    unattached.delete(entry);
+    if (entry.everAttached) {
+      void entry.instance.dispose();
+    } else {
+      void entry.instance
+        .dispose(false)
+        .then(() => storage.delete(`${entry.sid}:${entry.key}`))
+        .catch(() => {});
+    }
   }
 
   /**
    * Shed least-recently-used never-attached instances until the set is within
    * {@link RpxdHandlerOptions.maxUnattachedInstances} (#61). `keep` is the entry
-   * we just registered — never evict it, even if the cap is 0/1. Cap-evictions
-   * dispose *without* a snapshot and delete any storage a cookieless mount left
-   * behind: it was never an adopted session, so persisting it is pure waste.
+   * we just registered — never evict it, even if the cap is 0/1.
    */
   function enforceUnattachedCap(keep: InstanceEntry): void {
     if (maxUnattachedInstances == null) return;
     for (const entry of unattached) {
       if (unattached.size <= maxUnattachedInstances) break;
       if (entry === keep) continue;
-      if (entry.evictTimer) {
-        clearTimeout(entry.evictTimer);
-        entry.evictTimer = undefined;
-      }
-      unattached.delete(entry);
-      const m = sessions.get(entry.sid);
-      m?.delete(entry.key);
-      if (m && m.size === 0) sessions.delete(entry.sid); // prune the empty slice (#61)
-      byInstanceId.delete(entry.instance.id);
-      void entry.instance
-        .dispose(false)
-        .then(() => storage.delete(`${entry.sid}:${entry.key}`))
-        .catch(() => {});
+      evictEntry(entry);
+    }
+  }
+
+  /**
+   * Cap instances held for one session (C): shed the session's oldest *idle*
+   * (unsubscribed) instances until within {@link
+   * RpxdHandlerOptions.maxInstancesPerSession}. Skips `keep` and any instance a
+   * live connection still holds — a many-tabbed session is bounded, never cut off.
+   */
+  function enforcePerSessionCap(sid: string, keep: InstanceEntry): void {
+    if (maxInstancesPerSession == null) return;
+    const m = sessions.get(sid);
+    if (!m || m.size <= maxInstancesPerSession) return;
+    for (const entry of [...m.values()]) {
+      if (m.size <= maxInstancesPerSession) break;
+      if (entry === keep || entry.instance.subscriberCount > 0) continue;
+      evictEntry(entry);
     }
   }
 
@@ -437,7 +478,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     unattached.delete(entry);
   }
 
-  function scheduleEvictionIfIdle(sid: string, key: string, entry: InstanceEntry): void {
+  function scheduleEvictionIfIdle(entry: InstanceEntry): void {
     if (entry.instance.subscriberCount > 0 || entry.evictTimer || disposed) return;
     // A never-attached instance only needs to outlive its attach window (#61);
     // once adopted, it earns the full warm TTL. Either way, keep a
@@ -446,21 +487,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     const graceMs = Math.max(baseTtl, (entry.attach?.expires ?? 0) - Date.now());
     entry.evictTimer = setTimeout(() => {
       if (entry.instance.subscriberCount > 0) return;
-      const m = sessions.get(sid);
-      m?.delete(key);
-      if (m && m.size === 0) sessions.delete(sid); // prune the empty slice (#61)
-      byInstanceId.delete(entry.instance.id);
-      unattached.delete(entry);
-      if (entry.everAttached) {
-        void entry.instance.dispose(); // adopted → final write-through snapshot (§11)
-      } else {
-        // Never adopted (cookieless scan, #61): the snapshot is pure waste —
-        // drop it and delete the row a warm mount persisted during setup/load.
-        void entry.instance
-          .dispose(false)
-          .then(() => storage.delete(`${sid}:${key}`))
-          .catch(() => {});
-      }
+      evictEntry(entry);
     }, graceMs);
   }
 
@@ -511,7 +538,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       unsub();
       unsubs.delete(instanceId);
       const entry = byInstanceId.get(instanceId);
-      if (entry) scheduleEvictionIfIdle(sid, entry.key, entry);
+      if (entry) scheduleEvictionIfIdle(entry);
     };
 
     for (const entry of entries.values()) subscribeInstance(entry, true);
@@ -521,7 +548,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       releaseInstance,
       cleanup: () => {
         for (const unsub of unsubs.values()) unsub();
-        for (const [key, entry] of entries) scheduleEvictionIfIdle(sid, key, entry);
+        for (const entry of entries.values()) scheduleEvictionIfIdle(entry);
       },
     };
   }

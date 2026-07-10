@@ -779,6 +779,52 @@ describe("guard runs before setup — denied requests allocate nothing (#8)", ()
   });
 });
 
+describe("per-session instance cap (C)", () => {
+  const capMount = (h: ReturnType<typeof makeHandler>, sid: string, n: number) =>
+    h.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers: { cookie: `rpxd_sid=${sid}` },
+        body: JSON.stringify({ type: "mount", path: `/org/${n}/board` }),
+      }),
+    );
+  const capAlive = async (h: ReturnType<typeof makeHandler>, sid: string, instance: string) =>
+    (
+      await h.fetch(
+        new Request(`${base}/__rpxd/rpc`, {
+          method: "POST",
+          headers: { cookie: `rpxd_sid=${sid}` },
+          body: JSON.stringify({ v: V, instance, rpcId: "p", calls: [] }),
+        }),
+      )
+    ).status === 202;
+
+  it("evicts the oldest idle instance when a session exceeds its cap", async () => {
+    const handler = makeHandler({ maxInstancesPerSession: 3, warmTtlMs: 1000, attachTtlMs: 1000 });
+    const id1 = (await (await capMount(handler, "cap-s", 1)).json()).instance as string;
+    const id2 = (await (await capMount(handler, "cap-s", 2)).json()).instance as string;
+    await capMount(handler, "cap-s", 3);
+    expect(handler.instanceCount).toBe(3);
+    const id4 = (await (await capMount(handler, "cap-s", 4)).json()).instance as string;
+    expect(handler.instanceCount).toBe(3); // the 4th mount evicts the session's oldest
+    expect(await capAlive(handler, "cap-s", id1)).toBe(false); // oldest gone
+    expect(await capAlive(handler, "cap-s", id2)).toBe(true);
+    expect(await capAlive(handler, "cap-s", id4)).toBe(true);
+    await handler.dispose();
+  });
+
+  it("disables the per-session cap when null", async () => {
+    const handler = makeHandler({
+      maxInstancesPerSession: null,
+      warmTtlMs: 1000,
+      attachTtlMs: 1000,
+    });
+    for (let n = 1; n <= 4; n++) await capMount(handler, "nocap", n);
+    expect(handler.instanceCount).toBe(4);
+    await handler.dispose();
+  });
+});
+
 describe("signed session cookie — HMAC integrity (B2)", () => {
   const SECRET = "unit-test-secret";
 
