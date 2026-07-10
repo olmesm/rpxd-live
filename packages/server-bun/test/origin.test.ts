@@ -80,4 +80,19 @@ describe("ws upgrade origin gate (#52)", () => {
     expect(res?.status).toBe(403);
     expect(upgraded).toBe(false); // gated before the upgrade fn runs
   });
+
+  it("emits origin-rejected on a rejected upgrade (#8 observability)", async () => {
+    const events: string[] = [];
+    const handler = createRpxdHandler({
+      routes: [{ path: "/", def }],
+      onSecurityEvent: (e) => events.push(e.type),
+    });
+    const ws = wsTransport(handler);
+    await ws.handleUpgrade(
+      new Request(base, { headers: { origin: "http://evil.example" } }),
+      () => true,
+    );
+    expect(events).toContain("origin-rejected"); // WS rejection observed like SSE/POST
+    await handler.dispose();
+  });
 });

@@ -19,6 +19,7 @@ export {
   type RenderContext,
   type RouteRegistration,
   type RpxdHandlerOptions,
+  type SecurityEvent,
 } from "./handler.ts";
 export {
   matchHttpPath,
