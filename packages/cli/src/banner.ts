@@ -390,20 +390,25 @@ export function startBanner(opts: StartBannerOptions): BannerHandle {
   return {
     async finish(partial) {
       await animation;
-      unhook();
-      const info: BannerInfo = { ...partial, command: opts.command };
-      if (mode === "plain") {
-        stream.write(`${plainLines(info, env).join("\n")}\n`);
-        return;
+      try {
+        const info: BannerInfo = { ...partial, command: opts.command };
+        if (mode === "plain") {
+          stream.write(`${plainLines(info, env).join("\n")}\n`);
+          return;
+        }
+        const mark = wordmark(pickScale(stream.columns ?? 0));
+        const markWidth = (mark[0] as string).length;
+        if (!animate) {
+          const locked = mark.map((row) => colorizeRow(row, 0, markWidth, color));
+          stream.write(`${locked.join("\n")}\n`);
+        }
+        const networkUrl = info.networkUrl ?? detectNetworkUrl(info.port);
+        stream.write(`${infoLines({ ...info, networkUrl }, markWidth, color).join("\n")}\n`);
+      } finally {
+        // Buffered boot logs replay *below* the summary — the banner stays
+        // one intact block, logs beneath it.
+        unhook();
       }
-      const mark = wordmark(pickScale(stream.columns ?? 0));
-      const markWidth = (mark[0] as string).length;
-      if (!animate) {
-        const locked = mark.map((row) => colorizeRow(row, 0, markWidth, color));
-        stream.write(`${locked.join("\n")}\n`);
-      }
-      const networkUrl = info.networkUrl ?? detectNetworkUrl(info.port);
-      stream.write(`${infoLines({ ...info, networkUrl }, markWidth, color).join("\n")}\n`);
     },
     async abort() {
       aborted = true;

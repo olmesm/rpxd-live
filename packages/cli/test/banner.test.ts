@@ -239,6 +239,31 @@ describe("startBanner", () => {
     expect(logged.at(-1)).toEqual(["after"]); // console restored
   });
 
+  it("flushes buffered logs after the info block, not between wordmark and summary", async () => {
+    const order: string[] = [];
+    const stream = {
+      isTTY: true,
+      columns: 140,
+      write: (s: string) => void (strip(s).includes("localhost") && order.push("info")),
+    };
+    const fakeConsole = { log: () => void order.push("flushed") };
+    let noised = false;
+    const banner = startBanner({
+      command: "dev",
+      stream,
+      env: {},
+      sleep: async () => {
+        if (!noised) {
+          noised = true;
+          fakeConsole.log("boot noise");
+        }
+      },
+      consoleObj: fakeConsole as unknown as Console,
+    });
+    await banner.finish(info);
+    expect(order).toEqual(["info", "flushed"]);
+  });
+
   it("abort restores the cursor and prints nothing more", async () => {
     const { chunks, stream } = fakeStream();
     const banner = startBanner({ command: "dev", stream, env: {}, sleep: instant });
