@@ -142,10 +142,20 @@ declare module "@rpxd/core" {
 const PATH_CALL = /(\b(?:live|route)\s*\(\s*)(["'])((?:[^"'\\]|\\.)*)\2(\s*\))/;
 
 /**
+ * Characters that cannot be spliced raw between the existing quote characters
+ * of a `live()`/`route()` literal: a quote or backslash would corrupt (or, for
+ * a crafted filename, inject code into) the *user's* source file, and `${`
+ * would interpolate if the file ever uses a template literal. Paths come from
+ * filenames on disk, so they are as untrusted as {@link lit}'s inputs.
+ */
+const UNSPLICEABLE = /["'`\\]|\$\{/;
+
+/**
  * Maintain the in-file path literal (§7): the filename is truth, the
  * `live("...")` / `route("...")` literal is its typed mirror. Returns the
  * corrected source when the literal is missing/incorrect, or `null` when
- * nothing changed.
+ * nothing changed — including when `expectedPath` contains characters that
+ * can't be spliced into a quoted literal (see {@link UNSPLICEABLE}).
  *
  * @example
  * ```ts
@@ -156,6 +166,7 @@ const PATH_CALL = /(\b(?:live|route)\s*\(\s*)(["'])((?:[^"'\\]|\\.)*)\2(\s*\))/;
  * ```
  */
 export function ensurePathLiteral(source: string, expectedPath: string): string | null {
+  if (UNSPLICEABLE.test(expectedPath)) return null; // unspliceable path — leave the file alone
   const match = PATH_CALL.exec(source);
   if (!match) return null; // not a live/route file — nothing to maintain
   if (match[3] === expectedPath) return null;

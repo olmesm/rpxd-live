@@ -76,6 +76,18 @@ describe("ensurePathLiteral (§7: filename is truth)", () => {
     expect(ensurePathLiteral("live('/old')({})", "/new")).toBe("live('/new')({})");
   });
 
+  it("refuses paths that cannot be spliced into a quoted literal", () => {
+    // A file named `it's.tsx` derives "/it's" — splicing that between single
+    // quotes would write `live('/it's')` (invalid TS) into the user's file.
+    expect(ensurePathLiteral("live('/old')({})", "/it's")).toBeNull();
+    // An injection-shaped filename must not splice executable code.
+    expect(
+      ensurePathLiteral('export default route("/old").all(h);', '/x") || evil() || ("y'),
+    ).toBeNull();
+    expect(ensurePathLiteral('live("/old")({})', "/back\\slash")).toBeNull();
+    expect(ensurePathLiteral('live("/old")({})', "/tick`${evil}")).toBeNull();
+  });
+
   it("maintains route() literals too", () => {
     expect(ensurePathLiteral('export default route("/old").all(h);', "/api/auth/$")).toBe(
       'export default route("/api/auth/$").all(h);',
@@ -174,6 +186,21 @@ describe("codegen end-to-end", () => {
     const handlers = generateHandlersModule(httpEntries);
     expect(handlers).not.toContain('"/ev"il"');
     expect(handlers).toContain(JSON.stringify('/ev"il'));
+  });
+
+  it("leaves route files with unspliceable filenames un-rewritten", () => {
+    const root = makeProject();
+    const routes = join(root, "routes");
+    mkdirSync(routes);
+    const src = 'export default live("/old")({})(App);';
+    writeFileSync(join(routes, "it's.tsx"), src);
+    writeFileSync(join(routes, 'x") || evil() || ("y.tsx'), src);
+
+    runCodegen(root);
+
+    // literal maintenance must skip these, not corrupt the user's source
+    expect(readFileSync(join(routes, "it's.tsx"), "utf-8")).toBe(src);
+    expect(readFileSync(join(routes, 'x") || evil() || ("y.tsx'), "utf-8")).toBe(src);
   });
 
   it("scanRoutes ignores directories that look like route files", () => {
