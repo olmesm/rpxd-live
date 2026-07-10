@@ -11,8 +11,9 @@ _live-object lifecycle_ that runs `setup`, `guard`, and `load`.
 
 ```text
 handler.fetch(req)                          ← request pipeline
-  ├─ resolve session   (cookie → sid)
+  ├─ resolve session   (cookie → sid, signature verified)
   ├─ origin policy     (control plane only)      → 403
+  ├─ throttle          (opt-in, per key)         → 429
   ├─ authenticate                                → 403
   ├─ dispatch
   │    ├─ /__rpxd/stream        (SSE subscribe)
@@ -42,14 +43,19 @@ call — enters through the one handler `fetch` and passes the same outer stages
    SSR `GET` navigation and `route()` handlers are not gated (a top-level nav is
    legitimately cross-site). See the
    [wire protocol](/rpxd-live/concepts/wire-protocol/).
-3. **Authentication.** The optional `authenticate` hook runs once; a throw is a
+3. **Throttle.** An opt-in per-key token bucket (also before authentication, so a
+   flood can't amplify auth/mount work); over-limit HTTP requests get a `429`,
+   the SSE stream exempt. See
+   [session security](/rpxd-live/guides/routes-and-auth/#session-cookie-security).
+4. **Authentication.** The optional `authenticate` hook runs once; a throw is a
    `403`, and its return value is `ctx.session` for every reducer thereafter.
-4. **Dispatch.** By path: the control-plane endpoints, then any `route()` HTTP
+5. **Dispatch.** By path: the control-plane endpoints, then any `route()` HTTP
    route, otherwise a `GET` that matches a page runs the live-object lifecycle
    below. Anything unmatched is a `404`.
-5. **Error mapping.** A thrown [`redirect()`](/rpxd-live/guides/routes-and-auth/)
-   becomes a real `302`; a not-found becomes the `__404` page; any other throw
-   becomes the `__error` page (a `500`).
+6. **Error mapping.** A thrown [`redirect()`](/rpxd-live/guides/routes-and-auth/)
+   becomes a real `302`; a not-found becomes the `__404` page; any other
+   (non-`debugErrors`) throw becomes a generic `__error` page (a `500`) with the
+   detail logged server-side.
 
 ## The live-object lifecycle
 

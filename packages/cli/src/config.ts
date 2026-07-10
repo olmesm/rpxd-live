@@ -54,6 +54,13 @@ export interface RpxdConfig {
      * only for non-localhost HTTP dev. `bun run dev` already defaults it off.
      */
     cookie?: { secure?: boolean };
+    /**
+     * Secret for HMAC-signing the `rpxd_sid` cookie (B2) — a forged/unsigned
+     * cookie is then rejected as a fresh session. Falls back to
+     * `process.env.RPXD_SESSION_SECRET`. Unset → the sid is unsigned (the server
+     * warns once). Set one in production.
+     */
+    secret?: string;
   };
   /**
    * Cross-origin allowlist for the rpxd control plane (`/__rpxd/ws|stream|rpc|
