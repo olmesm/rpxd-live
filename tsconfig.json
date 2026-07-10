@@ -10,6 +10,8 @@
     "examples/*/routes/**/*",
     "examples/*/test-bun/**/*.ts",
     "examples/*/rpxd.config.ts",
+    "examples/*/rpxd-events.d.ts",
+    "examples/*/rpxd-events.test-d.ts",
     "examples/*/.rpxd/**/*.ts",
     "vitest.config.ts"
   ]

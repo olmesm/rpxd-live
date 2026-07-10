@@ -1,6 +1,7 @@
 import { live } from "@rpxd/core";
 
-interface Message {
+/** The `message.created` broadcast payload — registered in `rpxd-events.d.ts`. */
+export interface Message {
   id: string;
   text: string;
 }
@@ -23,7 +24,9 @@ export default live("/chat")
       ctx.broadcast("chat:lobby", "message.created", message, { self: true });
     }),
   )
-  .on("message.created", (state, message: Message) => {
+  // `message` is inferred as `Message` from the registered events map (§8) —
+  // no annotation needed once the event is declared in `rpxd-events.d.ts`.
+  .on("message.created", (state, message) => {
     state.messages.push(message);
   })
   .render(({ state, rpc }) => (

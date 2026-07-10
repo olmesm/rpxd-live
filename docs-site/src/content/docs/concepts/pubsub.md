@@ -42,6 +42,48 @@ export default live("/org/$orgId/board")
   });
 ```
 
+## Typed events
+
+Out of the box the `event` name is any `string` and the `payload` is unchecked —
+`broadcast` and `.on` accept anything, so nothing breaks before you opt in. To
+get event-name autocomplete and a type-checked payload across the whole app,
+augment `@rpxd/core`'s `Register` interface with an `events` map — event name →
+payload shape. There is **no codegen** for this (unlike routes): the map is a
+small hand-written declaration you keep in your `tsconfig`.
+
+```ts
+// rpxd-events.d.ts
+import type { Message } from "./routes/chat.tsx";
+
+declare module "@rpxd/core" {
+  interface Register {
+    events: {
+      "message.created": Message;
+      "typing": { userId: string };
+    };
+  }
+}
+```
+
+With that in place:
+
+```ts
+// the event name autocompletes; the payload is checked against Message
+ctx.broadcast("chat:lobby", "message.created", message);
+
+// message is inferred as Message — no annotation needed
+.on("message.created", (state, message) => {
+  state.messages.push(message);
+})
+```
+
+Only the **event** and **payload** are typed — the `topic` (arg 1) stays a
+free-form string, since channels are usually built from runtime ids
+(`` `org:${orgId}` ``). Adoption is incremental: an event you haven't registered
+keeps the permissive, untyped behaviour, so you can add entries to the map one at
+a time. Registering an event, by contrast, is enforced everywhere — a wrong
+payload shape or a typo'd registered name is a type error at the call site.
+
 ## Exclude-self by default
 
 A broadcast excludes its sender by default — the sender already applied the

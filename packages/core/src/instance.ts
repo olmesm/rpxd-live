@@ -652,7 +652,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * its broadcast are ordered before the reaction.
    */
   async #runEventHandler(
-    handler: EventHandler<S, PathParams<Path>, Session>,
+    // biome-ignore lint/suspicious/noExplicitAny: dispatched by event name — the payload shape is only known to the registered handler
+    handler: EventHandler<S, any, PathParams<Path>, Session>,
     payload: unknown,
   ): Promise<void> {
     const ctx = this.#makeCtx({});
