@@ -21,8 +21,8 @@ handler.fetch(req)                          ← request pipeline
   │    ├─ route()         any   (server HTTP route)
   │    └─ GET <page>            → mount + render
   │            └─ live-object lifecycle          ← nested
-  │                 ├─ setup   (initial state + subscriptions)
   │                 ├─ guard   (access gate)      → redirect (302)
+  │                 ├─ setup   (initial state + subscriptions)
   │                 ├─ load    (URL loader)       → first patch renders, rest streams
   │                 └─ render  (SSR HTML + attach token)
   └─ catch → redirect (302) / not-found (404) / error (500)
@@ -54,15 +54,17 @@ call — enters through the one handler `fetch` and passes the same outer stages
 ## The live-object lifecycle
 
 A page mount — whether from an SSR `GET` or a `control` `mount` — runs the live
-object through its stages. The fluent chain (`setup → guard → load`) is the
-order they run in.
+object through its stages, in the order `guard → setup → load`. (The fluent
+chain is declared `.setup().guard().load()`, but on a **fresh** mount `guard`
+runs first, so a denied request never runs `setup` and allocates nothing.)
 
-1. **`setup`** — synchronous. Computes the initial state from `params` and
+1. **`guard`** — gates access, first. A deny throws `redirect()`, which the
+   pipeline maps to a `302` (SSR) or a client soft-navigation (runtime). Gate on
+   `session`/`params`, not on state — it runs before `setup` exists. Re-runs on
+   every URL change of a live instance.
+2. **`setup`** — synchronous. Computes the initial state from `params` and
    `session`, and wires any pubsub [subscriptions](/rpxd-live/concepts/pubsub/).
    Runs once per instance identity; a cold wake re-runs it.
-2. **`guard`** — gates access. A deny throws `redirect()`, which the pipeline
-   maps to a `302` (SSR) or a client soft-navigation (runtime). Gate on
-   `session`/`params`, not on state.
 3. **`load`** — the URL loader. Writes page state through `ctx.patchState`. The
    first patch renders and everything after it streams, so loader shape controls
    the first paint (see [SSR](/rpxd-live/concepts/ssr/)). Re-runs on every URL
