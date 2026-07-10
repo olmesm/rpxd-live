@@ -7,13 +7,21 @@
     "./node": "./src/node.ts"
   },
   "dependencies": {
-    "@rpxd/core": "workspace:*",
+    "@rpxd/core": "workspace:*"
+  },
+  "peerDependencies": {
     "better-sqlite3": "^12.0.0"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/bun": "^1.3.14",
     "@types/node": "^26.0.0",
+    "better-sqlite3": "^12.0.0",
     "typescript": "^5.9.0"
   }
 }
