@@ -56,3 +56,6 @@ Because coordination is by broadcast rather than shared memory, any node can
 host any session. There's no instance affinity to maintain — horizontal scaling
 falls out of the model. The bus lives in the storage adapter (memory for a
 single node, Redis for many).
+
+For load-balancer guidance, Redis wiring, and the in-process-throttle caveat,
+see [Scaling & multi-node](/rpxd-live/operations/scaling/).

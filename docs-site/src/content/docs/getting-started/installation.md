@@ -5,8 +5,10 @@ sidebar:
   order: 2
 ---
 
-rpxd runs on [Bun](https://bun.sh). The runtime uses `Bun.serve` (HTTP + WS on
-one port) and `bun:sqlite`; Vite runs on Bun for dev and build.
+rpxd is Bun-first; Node ≥ 24 is supported via `@rpxd/adapter-node` — see
+[Running on Node](/rpxd-live/operations/node/). On the default runtime the server
+uses `Bun.serve` (HTTP + WS on one port) and `bun:sqlite`; Vite runs on Bun for
+dev and build.
 
 :::note[Status]
 The `@rpxd/*` packages are not yet published to npm. Work from a clone of the

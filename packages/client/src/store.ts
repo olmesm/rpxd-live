@@ -190,6 +190,7 @@ export class LiveStore<S = unknown, Session = Record<string, unknown>> {
           pending: this.#pending.length > 0,
           inFlight: this.#pending.length,
           errors: this.#errors,
+          clearErrors: this.clearErrors,
         },
         status: this.#status,
         keyOf: this.keyOf,
@@ -213,11 +214,15 @@ export class LiveStore<S = unknown, Session = Record<string, unknown>> {
     this.#invalidate();
   }
 
-  /** Drop surfaced errors (e.g. after the UI showed them). */
-  clearErrors(): void {
+  /**
+   * Drop surfaced errors (e.g. after the UI showed them). Arrow field (like
+   * {@link keyOf}) so it can be handed out by reference into the `sync`
+   * render prop — `sync.clearErrors` — without losing `this`.
+   */
+  clearErrors = (): void => {
     this.#errors = [];
     this.#invalidate();
-  }
+  };
 
   /**
    * Invoke an rpc: validates client-side (pre-optimistic, §5), queues the

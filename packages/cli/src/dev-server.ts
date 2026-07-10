@@ -34,6 +34,7 @@ import {
   renderDevErrorPage,
   type ShellComponents,
 } from "./render.ts";
+import { instanceHandlerOptions } from "./start.ts";
 
 /** Options for {@link createDevServer}. */
 export interface DevServerOptions {
@@ -233,6 +234,7 @@ export async function createDevServer(
       return renderDevErrorPage(info.path, info.error);
     },
     defaultRateLimit: config.rateLimit,
+    ...instanceHandlerOptions(config), // dev honors instances.* + onSecurityEvent too
   });
 
   // Serialize reloads per route so two rapid saves whose imports resolve out

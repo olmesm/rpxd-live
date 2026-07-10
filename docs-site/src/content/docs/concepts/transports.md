@@ -64,11 +64,14 @@ stale attach token).
 
 ## Eviction
 
-When an instance's subscriber count reaches 0, it enters a warm TTL (~60s). If
-nothing reconnects, the instance is snapshotted to storage and dropped from
-memory. A later request **cold-wakes** it by re-running `mount` — snapshots are
-session continuity, not a cache (see
-[Persistence](/rpxd-live/concepts/persistence/)).
+When an instance's subscriber count reaches 0, it enters a warm TTL — 60s by
+default, configurable per-app via `instances.warmTtlMs`. If nothing
+reconnects before the TTL elapses, the instance is snapshotted to storage and
+dropped from memory. A later request **cold-wakes** it by re-running `mount`
+— snapshots are session continuity, not a cache (see
+[Persistence](/rpxd-live/concepts/persistence/)). The registry also caps how
+many instances it holds at all, independent of the TTL — see
+[Capacity caps as DoS hardening](/rpxd-live/operations/security/#capacity-caps-as-dos-hardening).
 
 ## Disconnect mid-handler
 

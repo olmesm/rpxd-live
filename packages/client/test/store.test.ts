@@ -120,6 +120,26 @@ describe("optimistic replay (§4)", () => {
     expect(store.snapshot().sync.errors[0]?.message).toBe("db down");
   });
 
+  it("dismisses sync.errors via the render-prop-exposed clearErrors", async () => {
+    const { store, sent } = makeStore(addMeta);
+    const p = store.call("add", { text: "doomed" });
+    await flushTick();
+
+    store.applyEnvelope({
+      seq: 2,
+      instance: "i1",
+      rpcId: sent[0]?.rpcId,
+      patches: [],
+      error: { name: "Error", message: "db down", rpc: "add" },
+    });
+    await expect(p).rejects.toThrow("db down"); // rejection semantics unchanged
+    expect(store.snapshot().sync.errors).toHaveLength(1);
+
+    // Dismiss through the same `sync` object a render prop hands the component.
+    store.snapshot().sync.clearErrors();
+    expect(store.snapshot().sync.errors).toEqual([]);
+  });
+
   it("drops a throwing replay silently", async () => {
     const { store } = makeStore(addMeta);
     void store.call("rename", { id: "nope", text: "x" }).catch(() => {});

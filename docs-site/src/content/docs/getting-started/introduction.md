@@ -75,6 +75,8 @@ export default live("/counter")
   one end to end.
 - [The fluent chain](/rpxd-live/guides/the-fluent-chain/) — the full
   `live().setup().load().rpc().render()` surface.
+- [How rpxd compares](/rpxd-live/getting-started/comparison/) — versus LiveView,
+  React Query + tRPC, Convex, and Next.js/Remix.
 
 :::note
 The normative specification lives in

@@ -19,7 +19,7 @@ framework writes through on every `patchState` flush and rpc completion.
 | --- | --- | --- |
 | `memory()` | `@rpxd/storage-memory` | default; single node, non-durable |
 | `session()` | `@rpxd/storage-session` | in-memory, TTL-expiring (default 30 min, configurable `ttlMs`) |
-| `sqlite()` | `@rpxd/storage-sqlite` | durable local (`bun:sqlite`) |
+| `sqlite()` | `@rpxd/storage-sqlite` | durable local — `bun:sqlite` on Bun; `sqliteNode()` from `@rpxd/storage-sqlite/node` (`better-sqlite3`) on Node |
 | `redis()` | `@rpxd/storage-redis` | multi-node — the bus spans nodes |
 
 ```ts
@@ -48,3 +48,6 @@ The same adapter carries pubsub. With `memory()` the bus is in-process; with
 `redis()` it spans nodes, which is what lets any node host any session (see
 [Pubsub](/rpxd-live/concepts/pubsub/)). Choosing a storage adapter therefore
 also chooses your multiplayer topology.
+
+For the multi-node wiring — Redis for both snapshots *and* the bus, and why no
+sticky sessions are needed — see [Scaling & multi-node](/rpxd-live/operations/scaling/).

@@ -15,6 +15,7 @@ import {
   createRpxdHandler,
   type HttpRouteRegistration,
   type RouteRegistration,
+  type RpxdHandlerOptions,
   type ServerAdapter,
   wsTransport,
 } from "@rpxd/server-bun";
@@ -67,6 +68,34 @@ function fileResponse(filePath: string, headers: Record<string, string>): Respon
   return new Response(body, {
     headers: { ...headers, "content-length": String(statSync(filePath).size) },
   });
+}
+
+/**
+ * Map the config's instance-registry tuning knobs and security-observability
+ * hook onto {@link RpxdHandlerOptions} (§14, #61 capacity caps, #8
+ * `SecurityEvent`s). Pulled out of {@link startApp} as its own function so the
+ * wiring is unit-testable without standing up a server — `config.instances`
+ * spreads straight through (undefined fields keep the handler's defaults) and
+ * `onSecurityEvent` rides along.
+ *
+ * @example
+ * ```ts
+ * instanceHandlerOptions({ instances: { warmTtlMs: 5000 } });
+ * // { warmTtlMs: 5000, onSecurityEvent: undefined }
+ * ```
+ */
+export function instanceHandlerOptions(
+  config: RpxdConfig,
+): Pick<
+  RpxdHandlerOptions,
+  | "warmTtlMs"
+  | "attachTtlMs"
+  | "unattachedTtlMs"
+  | "maxUnattachedInstances"
+  | "maxInstancesPerSession"
+  | "onSecurityEvent"
+> {
+  return { ...config.instances, onSecurityEvent: config.onSecurityEvent };
 }
 
 /**
@@ -170,6 +199,7 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     sessionSecret: config.session?.secret, // HMAC-signs the sid (B2); env fallback in handler
     defaultRateLimit: config.rateLimit,
     throttle: config.throttle,
+    ...instanceHandlerOptions(config),
     ...serverEntryModule.makeShellRenderers(shell),
     render: async (ctx) => {
       const route = components.get(ctx.path);

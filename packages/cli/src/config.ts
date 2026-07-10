@@ -2,6 +2,7 @@
  * `rpxd.config.ts` surface (§14): the only non-route file in userland.
  */
 import type { RateLimit, StorageAdapter } from "@rpxd/core";
+import type { RpxdHandlerOptions, SecurityEvent } from "@rpxd/server-bun";
 
 /** Transport selection (§11): SSE default, WS opt-in. */
 export interface TransportConfig {
@@ -86,6 +87,42 @@ export interface RpxdConfig {
    * In-process (single node) — for multi-node, rate-limit at the proxy/edge.
    */
   throttle?: { key: (req: Request) => string | null; limit: RateLimit };
+  /**
+   * Tuning knobs for the in-memory instance registry (§11): warm/attach TTLs
+   * and the capacity caps that bound memory under scan floods or a runaway
+   * session (#61 — see each field's doc on {@link RpxdHandlerOptions} for
+   * defaults and behavior). Forwarded straight through; omit a field to keep
+   * its handler default.
+   *
+   * @example
+   * ```ts
+   * export default defineConfig({
+   *   instances: { warmTtlMs: 5 * 60_000, maxUnattachedInstances: 200 },
+   * });
+   * ```
+   */
+  instances?: Pick<
+    RpxdHandlerOptions,
+    | "warmTtlMs"
+    | "attachTtlMs"
+    | "unattachedTtlMs"
+    | "maxUnattachedInstances"
+    | "maxInstancesPerSession"
+  >;
+  /**
+   * Observability hook for {@link SecurityEvent}s (#8) — a rejected
+   * cross-origin request, a throttle rejection, a capacity-driven instance
+   * eviction/rejection. Log or meter them; the runtime swallows any throw
+   * from the hook so it can't affect the request it observes.
+   *
+   * @example
+   * ```ts
+   * export default defineConfig({
+   *   onSecurityEvent: (e) => logger.warn("rpxd.security", e),
+   * });
+   * ```
+   */
+  onSecurityEvent?: (event: SecurityEvent) => void;
 }
 
 /**
