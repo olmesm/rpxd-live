@@ -220,6 +220,7 @@ export async function createDevServer(
     // to non-Secure unless the app opts in — otherwise a phone on the LAN never
     // gets a session (B1). Prod (`start`) keeps the Secure default.
     cookie: config.session?.cookie ?? { secure: false },
+    debugErrors: true, // dev: surface crash details to the client (#9)
     render: makeDevRender(vite, routeFiles, { rsc: config.rsc, shell }),
     ...ssrRuntime.makeShellRenderers(shell, { mode: "dev" }),
     // Dev overlay (§14): runtime errors render the framework page with the

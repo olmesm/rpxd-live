@@ -75,7 +75,7 @@ export function wsTransport(
       try {
         sessionData = await opts.authenticate(req, { sid });
       } catch (e) {
-        return new Response(e instanceof Error ? e.message : "forbidden", { status: 403 });
+        return new Response(handler.safeErrorMessage(e, "forbidden"), { status: 403 }); // #9
       }
     }
     const data: WsData = {
