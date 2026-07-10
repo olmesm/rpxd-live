@@ -49,11 +49,11 @@ export interface RenderContext {
 /**
  * A security-relevant event the runtime rejected or shed (#8) — an observability
  * seam for the app to log/meter (feeds the structured-logging epic #73). Fired
- * for a rejected cross-origin request, a throttle rejection, and a
- * capacity-driven instance eviction.
+ * for a rejected cross-origin request, a throttle rejection, a capacity-driven
+ * instance eviction, and a mount rejected at the per-session cap.
  */
 export interface SecurityEvent {
-  type: "origin-rejected" | "rate-limited" | "cap-evicted";
+  type: "origin-rejected" | "rate-limited" | "cap-evicted" | "cap-rejected";
   detail?: Record<string, unknown>;
 }
 
@@ -128,12 +128,15 @@ export interface RpxdHandlerOptions {
    */
   maxUnattachedInstances?: number | null;
   /**
-   * Cap on concurrent instances held for a **single session** (C). When a
-   * session exceeds it, its oldest *idle* (unsubscribed) instance is evicted to
-   * make room — bounding memory one abusive or many-tabbed session can pin,
-   * without dropping instances a live connection still holds. `null` disables.
-   * Default 32 (a session with that many simultaneous live routes is already
-   * pathological).
+   * Cap on concurrent instances held for a **single session** (C). A fresh
+   * mount at the cap first evicts the session's oldest *idle* (unsubscribed)
+   * instance to make room; when every held instance is subscribed to a live
+   * connection, the mount is **rejected** — `429` on the HTTP control/GET
+   * paths, an error envelope on WS — so joining mounts to an open stream can't
+   * pin unbounded instances. Instances a live connection holds are never
+   * dropped, and a warm re-mount of an already-held path still succeeds at the
+   * cap. `null` disables. Default 32 (a session with that many simultaneous
+   * live routes is already pathological).
    */
   maxInstancesPerSession?: number | null;
   /**
@@ -448,6 +451,21 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       await storage.delete(`${sid}:${pathname}`);
     }
 
+    // Hard per-session ceiling (C): reserve a slot *before* building. Idle
+    // (unsubscribed) instances are shed to make room; when a live connection
+    // holds every slot, the fresh mount is rejected — otherwise a loop of
+    // stream-joined mounts pins unbounded subscribed instances past the cap.
+    if (maxInstancesPerSession != null) {
+      const m = sessions.get(sid);
+      if (m && m.size >= maxInstancesPerSession) {
+        shedIdleInstances(m, maxInstancesPerSession);
+        if (m.size >= maxInstancesPerSession) {
+          emitSecurity("cap-rejected", { sid, path: pathname });
+          throw new SessionCapError();
+        }
+      }
+    }
+
     const match = matchRoute(
       opts.routes.map((r) => r.path),
       pathname,
@@ -458,6 +476,16 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     // Guard → setup → load, with cleanup on throw (#8). A deny or loader redirect
     // throws out before the instance is registered below.
     const instance = await buildInstance(sid, pathname, sessionData, route, match, search);
+
+    // A concurrent mount for the same key can register while we awaited
+    // `buildInstance` (both passed the warm-reuse check above). Two entries
+    // under one key would let the loser's eviction delete the winner's slot
+    // and snapshot row — dispose the just-built loser and adopt the winner.
+    const winner = entriesFor(sid).get(pathname);
+    if (winner) {
+      await instance.dispose(false); // no snapshot — the winner owns `${sid}:${pathname}`
+      return winner;
+    }
 
     const entry: InstanceEntry = {
       instance,
@@ -493,8 +521,13 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       entry.evictTimer = undefined;
     }
     const m = sessions.get(entry.sid);
-    m?.delete(entry.key);
-    if (m && m.size === 0) sessions.delete(entry.sid);
+    // Identity-guard the key-based deletes: a raced twin that lost the
+    // registry must not clobber the winner's slot or `${sid}:${key}` row.
+    const owner = m?.get(entry.key) === entry;
+    if (m && owner) {
+      m.delete(entry.key);
+      if (m.size === 0) sessions.delete(entry.sid);
+    }
     byInstanceId.delete(entry.instance.id);
     unattached.delete(entry);
     if (entry.everAttached) {
@@ -502,7 +535,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     } else {
       void entry.instance
         .dispose(false)
-        .then(() => storage.delete(`${entry.sid}:${entry.key}`))
+        .then(() => (owner ? storage.delete(`${entry.sid}:${entry.key}`) : undefined))
         .catch(() => {});
     }
   }
@@ -523,21 +556,33 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   }
 
   /**
-   * Cap instances held for one session (C): shed the session's oldest *idle*
-   * (unsubscribed) instances until within {@link
-   * RpxdHandlerOptions.maxInstancesPerSession}. Skips `keep` and any instance a
-   * live connection still holds — a many-tabbed session is bounded, never cut off.
+   * Shed a session's oldest *idle* (unsubscribed) instances until fewer than
+   * `limit` remain (C). Skips `keep` and any instance a live connection still
+   * holds — an instance is never dropped out from under a subscriber.
+   */
+  function shedIdleInstances(
+    m: Map<string, InstanceEntry>,
+    limit: number,
+    keep?: InstanceEntry,
+  ): void {
+    for (const entry of [...m.values()]) {
+      if (m.size < limit) break;
+      if (entry === keep || entry.instance.subscriberCount > 0) continue;
+      emitSecurity("cap-evicted", { reason: "per-session", sid: entry.sid, path: entry.key });
+      evictEntry(entry);
+    }
+  }
+
+  /**
+   * Cap instances held for one session (C): shed idle instances until within
+   * {@link RpxdHandlerOptions.maxInstancesPerSession}. Backstops the pre-build
+   * slot reservation in `mountInstance` when concurrent mounts race past it.
    */
   function enforcePerSessionCap(sid: string, keep: InstanceEntry): void {
     if (maxInstancesPerSession == null) return;
     const m = sessions.get(sid);
     if (!m || m.size <= maxInstancesPerSession) return;
-    for (const entry of [...m.values()]) {
-      if (m.size <= maxInstancesPerSession) break;
-      if (entry === keep || entry.instance.subscriberCount > 0) continue;
-      emitSecurity("cap-evicted", { reason: "per-session", sid, path: entry.key });
-      evictEntry(entry);
-    }
+    shedIdleInstances(m, maxInstancesPerSession + 1, keep);
   }
 
   /**
@@ -618,8 +663,14 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       subscribeInstance: (entry) => subscribeInstance(entry, false),
       releaseInstance,
       cleanup: () => {
-        for (const unsub of unsubs.values()) unsub();
-        for (const entry of entries.values()) scheduleEvictionIfIdle(entry);
+        // Re-arm from the live registry, not the connect-time `entries`
+        // capture: empty-slice pruning can orphan that map mid-connection, and
+        // a later mount registered in the fresh slice would never get a timer.
+        for (const [instanceId, unsub] of unsubs) {
+          unsub();
+          const entry = byInstanceId.get(instanceId);
+          if (entry) scheduleEvictionIfIdle(entry);
+        }
       },
     };
   }
@@ -862,6 +913,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
             isNew,
           );
         }
+        // The session is at its instance cap with every slot subscribed (C) —
+        // shed load like the throttle does, on both the control and GET paths.
+        if (e instanceof SessionCapError) {
+          return withSession(new Response(e.message, { status: 429 }), sid, isNew);
+        }
         if (e instanceof NotFoundError) {
           if (opts.renderNotFound) {
             return withSession(await opts.renderNotFound({ path: url.pathname }), sid, isNew);
@@ -924,8 +980,28 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           if (msg.type === "mount" && msg.path) {
             // The socket *is* the stream (§11): join the mount to it directly.
             // `subscribeInstance` is idempotent, so a warm re-mount is a no-op.
-            const entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
-            subscribeInstance(entry);
+            try {
+              const entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
+              subscribeInstance(entry);
+            } catch (e) {
+              // Answer denials on the socket (mirroring the `url` branch) —
+              // thrown out, they die in the transport's generic catch and the
+              // client waits forever.
+              const warm = sessions.get(sid)?.get(msg.path);
+              if (isRedirect(e)) {
+                send({
+                  seq: warm?.instance.seq ?? 0,
+                  instance: warm?.instance.id ?? "",
+                  redirect: e.location,
+                });
+              } else if (e instanceof SessionCapError) {
+                send({
+                  seq: 0,
+                  instance: "",
+                  error: { name: e.name, message: e.message },
+                });
+              } else throw e;
+            }
             return;
           }
           if (msg.type === "release" && msg.instance) {
@@ -1016,6 +1092,17 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
 class NotFoundError extends Error {
   constructor(pathname: string) {
     super(`No route matches ${pathname}`);
+  }
+}
+
+/**
+ * A fresh mount would exceed `maxInstancesPerSession` with every held slot
+ * subscribed (C) — mapped to `429` on HTTP, an error envelope on WS.
+ */
+class SessionCapError extends Error {
+  constructor() {
+    super("session instance cap exceeded");
+    this.name = "SessionCapError";
   }
 }
 
