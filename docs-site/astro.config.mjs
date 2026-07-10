@@ -68,6 +68,7 @@ export default defineConfig({
           label: "Getting started",
           items: [
             { label: "Introduction", slug: "getting-started/introduction" },
+            { label: "How rpxd compares", slug: "getting-started/comparison" },
             { label: "Installation", slug: "getting-started/installation" },
             { label: "Your first live object", slug: "getting-started/first-live-object" },
           ],
@@ -75,6 +76,10 @@ export default defineConfig({
         {
           label: "Guides",
           items: [{ autogenerate: { directory: "guides" } }],
+        },
+        {
+          label: "Operations",
+          items: [{ autogenerate: { directory: "operations" } }],
         },
         {
           label: "Concepts",

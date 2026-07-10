@@ -2,7 +2,7 @@
 title: HTTP routes & authentication
 description: Plain HTTP endpoints via route(), the authenticate hook, and enforcing auth by throwing redirect() from guard. Demonstrated with Better Auth over Prisma/SQLite.
 sidebar:
-  order: 6
+  order: 10
 ---
 
 Everything here is demonstrated end to end in `examples/kitchen-sink` (sign up /
@@ -16,11 +16,11 @@ Files under `routes/` come in two kinds, distinguished by what the file exports:
 
 | File            | Exports          | Serves                              |
 | --------------- | ---------------- | ----------------------------------- |
-| `*.tsx`         | `live(...)`      | a live object — SSR + stream (§1)   |
+| `*.tsx`         | `live(...)`      | a live object — SSR + stream        |
 | `*.ts`          | `route(...)`     | a plain HTTP request/response route |
 
 HTTP routes are matched **before** the SSR / `404` fallthrough. Both kinds get
-the same §7 treatment: the filename is truth, the in-file path literal is the
+the same [routing](/rpxd-live/guides/routing/) treatment: the filename is truth, the in-file path literal is the
 watcher-maintained mirror, and each gets an entry in `.rpxd/routes.gen.ts`
 (pages under `routeModules` / `routeTree`, HTTP routes under a separate
 `routeHandlers` map — HTTP routes are never navigable or SSR'd). Nothing about
@@ -77,9 +77,8 @@ place identity is resolved.
 `ctx.session`, which routes turn into a `Scope` (`scopeFrom`) and thread into
 `domain/`. See
 [App structure](/rpxd-live/guides/domain-layer/#scope--who-is-acting) for the
-`Scope` type. With an auth library this is where its session lookup lands (the
-shipped example uses a sync `auth.getSession(req)`; a library like Better Auth
-exposes an async `auth.api.getSession({ headers })` — same seam):
+`Scope` type. With an auth library this is where its session lookup lands — the
+shipped example uses Better Auth's async `auth.api.getSession({ headers })`:
 
 ```ts
 // rpxd.config.ts
@@ -120,7 +119,7 @@ route.
    That config already exists in the library, in `auth.ts`, and it moves fast.
    Wrapping it buys nothing and breaks every release.
 
-2. **The framework maintains the mirror, not the logic.** The §7 watcher may own
+2. **The framework maintains the mirror, not the logic.** The routing watcher may own
    a route's *derived* bits — its path literal, its `routes.gen.ts` entry —
    because those are projections of the filename, safe to rewrite. It must never
    own `auth.ts`, the scope shape, or a handler body: those are yours to edit,
@@ -299,7 +298,7 @@ files:
 
 ```
 my-app/
-├── routes/                 # web edge — file-based (§7)
+├── routes/                 # web edge — file-based
 │   ├── __root.tsx          #   HTML shell + providers
 │   ├── __404.tsx
 │   ├── __error.tsx         #   setup/guard rejection / 403

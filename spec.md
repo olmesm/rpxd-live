@@ -78,8 +78,10 @@ Client-side optimistic functions replayed over confirmed state — never merged 
 
 - Model: `confirmed` (server truth) + pending fn queue; `view = replay(pending, confirmed)`
 - Ack → apply patch to confirmed, drop fn; error → drop fn (free rollback); replay throws → drop silently
-- Optimistic fns: **sync, pure, identity-based lookups** (`find(id)`, never index — Biome rule)
-- Creates: `ctx.tempId` placeholder
+- Optimistic fns: **sync, pure, identity-based lookups** (`find(id)`, never
+  index — a convention documented in TSDoc; a custom Biome rule is deferred
+  (needs flow analysis beyond GritQL plugins today, see CLAUDE.md))
+- Creates: `ctx.tempId()` placeholder
 - **Id linking by position matching**: runtime records where tempId lands in the optimistic patches (path + sub-path — any field name, nested ok); matches the corresponding `add` op in ack patches; reads the same sub-path → `idMap: { tempId → realId }`. Client-side only; `ctx.resolveId()` escape hatch for unmatched shapes
 - **`keyOf(id)`** render prop applies the map at render: returns original tempId for optimistically-created rows, else id unchanged → stable React keys, no remount, no wire rewriting
 
@@ -148,7 +150,7 @@ Per-session instances coordinated by broadcast; persistence layer carries the bu
 ## 9. Persistence Adapters
 Write-through snapshots behind a small interface; also hosts the pubsub bus.
 
-- `StorageAdapter`: `get/set` of `{ state, seq, version }` + pubsub; adapters: `memory()` (default), `session()`, `sqlite()` (via `bun:sqlite`; Node adapter uses `better-sqlite3`), `redis()`
+- `StorageAdapter`: `get/set/delete` of `{ state, session, seq, version }` + pubsub — `session` is restored on cold wake alongside `state`; adapters: `memory()` (default), `session()`, `sqlite()` (via `bun:sqlite`; Node adapter uses `better-sqlite3`), `redis()`
 - Write-through on every patchState flush / rpc completion
 - **Snapshots = session continuity only**; cold wake always re-runs `setup`+`load` (avoids missed-broadcast staleness)
 - Version tag mismatch → discard, re-setup (no migrations)
@@ -220,7 +222,7 @@ rpxd.config.ts
 
 - **Runtime: Bun primary** — `Bun.serve` (HTTP + WS one port), `bun:sqlite`
 - **Node runtime (Node ≥ 24)**: `@rpxd/adapter-node` mirrors the Bun adapter over `node:http` + `ws`; `rpxd start` selects it automatically off-Bun. Node's unflagged TypeScript stripping runs the source directly (the runtime is kept erasable — no parameter properties/enums), and `@rpxd/storage-sqlite/node` swaps `bun:sqlite` for `better-sqlite3`
-- **`ServerAdapter` seam from day one**: `serve` / `stream` (SSE) / `ws?` / `env` — web-standard `Request`/`Response`/`ReadableStream` internally, no Bun types past the boundary → the Node adapter is ~130 lines of `node:http` bridging
+- **`ServerAdapter` seam from day one**: `serve` / `stream` (SSE) / `ws?` / `env` — web-standard `Request`/`Response`/`ReadableStream` internally, no Bun types past the boundary → the Node adapter is a small `node:http` bridge
 - **Vite = dev server + bundler, running on Bun**: `rpxd dev` = one Bun process, Vite in middleware mode (HMR, Fast Refresh, codegen watcher) + rpxd runtime, one port. `rpxd build` = `vite build` (client + SSR bundles); `rpxd start` = pure Bun, no Vite at runtime
 - rpxd Vite plugin owns: route codegen (§7), reducer HMR (§15), RSC wiring (§16)
 - DB is userland (`db.ts` import); framework never touches it
@@ -232,10 +234,10 @@ rpxd.config.ts
 ## 16. RSC Fields (experimental flag)
 Server-rendered component subtrees as opaque state values; Flight is the serialization, patches the transport.
 
-- `rsc(<Component />)` in `load`/reducers → Flight string → opaque state field; heavy deps (markdown, shiki) never ship to client
+- `rsc(<Component />)` in `load`/reducers → `RscField` marker (`{ $rsc: string }`) carrying a Flight payload → opaque state field; heavy deps (markdown, shiki) never ship to client
 - Client deserializes marked fields on patch apply/snapshot; `{state.body}` renders hydrated subtree
 - Patches replace the whole field (no Flight diffing); React reconciles
-- Works through storage, SSR, reconnect unchanged — it's just a string in state
+- Works through storage, SSR, reconnect unchanged — it's just an opaque marker value in state
 - Built on `@vitejs/plugin-rsc` (TanStack's approach — integrate, don't own the bundler layer)
 - Constraints: RSC fields never optimistic; not for keystroke-frequency updates; `'use client'` islands hydrate via plugin manifest
 - **Isolation**: `rsc: false` is the default; RSC fields are strictly opt-in, so nothing in the core runtime depends on the bundler integration
@@ -263,13 +265,15 @@ rpxd/
     storage-session/
     vite-plugin/     # codegen, HMR, RSC wiring
     cli/             # rpxd dev/build/start
+    rsc/             # RSC fields (§16): rsc(), RscField marker
+    testing/         # testLive(route) harness
   examples/
     kitchen-sink/             # demo app — Playwright runs against this
   e2e/               # Playwright: SSR attach, reconnect, optimistic, multiplayer, streaming
 ```
 
 - **Bun workspaces** (no turborepo/nx — `bun run --filter` covers it)
-- **Biome** — lint + format, single root config; home for custom rules (§4 identity-based lookups)
+- **Biome** — lint + format, single root config; would be the home for custom rules (the §4 identity-based-lookups rule is deferred — see §4)
 - **Vitest** — unit tests: reducers/queue/replay per package
 - **Playwright** — e2e against `examples/kitchen-sink`; the demo doubles as the acceptance suite for §1–§12
 - **Latest TS** (5.9+), latest deps, `"type": "module"` throughout

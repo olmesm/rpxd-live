@@ -2,7 +2,7 @@
 title: Pagination
 description: Cursor and offset pagination built on the `load` loader — page/cursor in the URL, prev/next via nav.patch, replace-window with keepPreviousData.
 sidebar:
-  order: 9
+  order: 5
 ---
 
 Pagination is a [loader (`load`)](/rpxd-live/guides/loading-data/) that reads a
@@ -45,7 +45,7 @@ export default live("/issues")
 ```
 
 Awaiting the data before the first `patchState` makes the first page part of
-the initial document (crawlable, §12). Each "Next" is a `nav.patch({ cursor })`
+the initial document (crawlable — see [SSR](/rpxd-live/concepts/ssr/)). Each "Next" is a `nav.patch({ cursor })`
 — the URL changes, the loader reruns, the window replaces.
 
 ## Offset-based (jump-to-page + totals)

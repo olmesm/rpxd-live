@@ -13,6 +13,10 @@ hero:
       link: https://github.com/olmesm/rpxd-live
       icon: external
       variant: minimal
+banner:
+  content: |
+    Pre-1.0: the packages aren't on npm yet and APIs may still change.
+    Build from <a href="https://github.com/olmesm/rpxd-live">the GitHub repo</a>.
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
@@ -28,6 +32,39 @@ on top for instant feedback.
 The whole contract is inferred from a single fluent chain — no manual
 annotations, no generated client, no glue.
 
+## One page, one object
+
+Here is a multiplayer project board — the whole page. `setup` subscribes to
+the org channel and declares the state shape; `load` fills it from your
+database; the `create` rpc writes, then broadcasts to every other session; `on`
+applies that broadcast; `render` is plain React. The state shape, the `create`
+payload type, and the client `rpc.create` facade are all inferred from this one
+chain — there is no API layer, no client store, no cache to keep in sync.
+
+```tsx
+// routes/org.$orgId.board.tsx — one live object per page, fully inferred
+export default live("/org/$orgId/board")
+  .setup((ctx) => {
+    ctx.subscribe(`org:${ctx.params.orgId}`);
+    return { projects: [] as Project[] }; // sync skeleton — data loads in `load`
+  })
+  .load(async (_url, ctx) => {
+    const projects = await db.project.findMany({ where: { orgId: ctx.params.orgId } });
+    ctx.patchState((s) => { s.projects = projects; });
+  })
+  .rpc("create", (r) =>
+    r.input(z.object({ name: z.string() })).handler(async ({ name }, ctx) => {
+      const p = await db.project.create({ data: { orgId: ctx.params.orgId, name } });
+      ctx.patchState((s) => { s.projects.push(p); });
+      ctx.broadcast(`org:${ctx.params.orgId}`, "project.created", p);
+    }),
+  )
+  .on("project.created", (state, p) => { state.projects.push(p); })
+  .render(({ state, rpc, sync, keyOf }) => (
+    <ul>{state.projects.map((p) => <li key={keyOf(p.id)}>{p.name}</li>)}</ul>
+  ));
+```
+
 <CardGrid stagger>
   <Card title="One fluent chain" icon="seti:typescript">
     `live().setup().load().rpc().render()`. State locks the shape, rpcs lock the
@@ -36,8 +73,9 @@ annotations, no generated client, no glue.
   </Card>
   <Card title="Patches, not payloads" icon="random">
     Handlers mutate state through `ctx.patchState`; rpxd diffs it with Immer
-    and streams the minimal patch. The client applies it — and replays your
-    optimistic update on top.
+    and streams the minimal patch. The client replays your optimistic update on
+    top — errors just drop the replayed function, so rollback is free and merge
+    conflicts are impossible.
   </Card>
   <Card title="SSE or WebSocket" icon="rocket">
     The same live object runs over Server-Sent Events or WebSocket — the
@@ -48,3 +86,24 @@ annotations, no generated client, no glue.
     and an RSC render path. The framework never touches your database.
   </Card>
 </CardGrid>
+
+## A token stream is O(delta) on the wire
+
+Because string-suffix growth diffs to an `append` op that carries only the new
+text, an LLM loop that appends tokens streams the *delta*, not the whole answer
+so far — the wire cost is O(delta) per token, not O(total). Streaming is just a
+`for await` loop over `ctx.patchState`:
+
+```ts
+.rpc("ask", (r) =>
+  r.input(z.object({ prompt: z.string() })).handler(async ({ prompt }, ctx) => {
+    ctx.patchState((s) => { s.answer = ""; s.thinking = true; });
+    for await (const delta of llm.stream(prompt, { signal: ctx.signal })) {
+      ctx.patchState((s) => { s.answer += delta; }); // → append op, O(delta)
+    }
+    ctx.patchState((s) => { s.thinking = false; });
+  }),
+);
+```
+
+See [Async handlers & streaming](/rpxd-live/guides/async-handlers-streaming/).

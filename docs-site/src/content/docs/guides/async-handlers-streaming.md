@@ -2,7 +2,7 @@
 title: Async handlers & streaming
 description: Handlers are plain async functions; patchState is the only write; awaits never block the instance. How token streams become O(delta) on the wire.
 sidebar:
-  order: 2
+  order: 8
 ---
 
 Handlers are plain `async (payload, ctx)` functions. The one rule: **all state
@@ -11,10 +11,10 @@ fresh draft. Every flush produces exactly one patch envelope.
 
 ## Awaits never block the instance
 
-A per-instance FIFO queue serializes *mutations* (patchState flushes, `on`
-handlers, `params`) — last-write-wins by ordering. But handlers never hold the
-queue across an `await`: other rpcs, broadcasts, and `params` run freely while a
-handler waits. Concurrency is the default, with no flag.
+A per-instance FIFO queue serializes *mutations* (patchState flushes, broadcast
+publishes, and `on`-event delivery) — last-write-wins by ordering. But handlers
+never hold the queue across an `await`: other rpcs, broadcasts, and events run
+freely while a handler waits. Concurrency is the default, with no flag.
 
 `ctx.state` is a live, read-only view: reads after an `await` see current state.
 Writes to it throw — use `ctx.patchState`.

@@ -18,6 +18,10 @@
  */
 export const PROTOCOL_VERSION = 1;
 
+// WIRE CONTRACT — the Envelope / Patch / RpcBatch shapes below are documented in
+// docs-site/src/content/docs/concepts/wire-protocol.md and pinned by
+// packages/core/test/protocol-conformance.test.ts. Change all three together.
+
 /**
  * A single state mutation, as produced by Immer's `produceWithPatches`.
  * Paths starting with `"$session"` target the session slice instead of page

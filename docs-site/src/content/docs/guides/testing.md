@@ -44,12 +44,12 @@ error.
 | Member | What it gives you |
 | --- | --- |
 | `t.state` / `t.session` | Live getters onto server-confirmed state and the session slice. |
-| `t.rpc.*` | The typed rpc facade (§5). Each call is one batch; the promise resolves on ack and **rejects** with the ack error on a handler throw, validation failure, or unknown rpc. |
+| `t.rpc.*` | The typed [rpc facade](/rpxd-live/guides/the-fluent-chain/). Each call is one batch; the promise resolves on ack and **rejects** with the ack error on a handler throw, validation failure, or unknown rpc. |
 | `t.call(name, payload)` | Untyped escape hatch, same semantics as `t.rpc.*`. |
-| `t.envelopes` | Every envelope emitted since mount, in order — the wire as a client would see it (§2). |
+| `t.envelopes` | Every envelope emitted since mount, in order — [the wire](/rpxd-live/concepts/wire-protocol/) as a client would see it. |
 | `t.settled()` | Resolves once in-flight rpcs, scheduled patch flushes, and the mutation queue have drained. Await it before asserting on streamed or broadcast-driven state. |
-| `t.navigate(search)` | Runs `guard` then `load` with new search params (§7), awaiting the stream to settle. |
-| `t.broadcast(topic, event, payload)` | Injects a broadcast as if a **peer** instance published it (§8) — exclude-self semantics behave exactly as in production. |
+| `t.navigate(search)` | Runs `guard` then `load` with new search params (see [routing](/rpxd-live/guides/routing/)), awaiting the stream to settle. |
+| `t.broadcast(topic, event, payload)` | Injects a broadcast as if a **peer** instance published it ([pubsub](/rpxd-live/concepts/pubsub/)) — exclude-self semantics behave exactly as in production. |
 | `t.dispose()` | Aborts in-flight `ctx.signal` and tears the instance down. |
 
 Options: `testLive(route, { params, session, search, storage, id })` — typed
@@ -73,7 +73,8 @@ expect(t.state.todos).toHaveLength(0);
 
 ### Streaming handlers
 
-For a handler that flushes mid-flight (§3), drive it and await `settled()`, then
+For a handler that flushes mid-flight (see
+[async handlers & streaming](/rpxd-live/guides/async-handlers-streaming/)), drive it and await `settled()`, then
 assert on the final state or on the chunk envelopes the flushes produced:
 
 ```ts
@@ -158,7 +159,9 @@ Pick the tier that matches the surface under test:
 
 ## Scaffolded tests
 
-`rpxd scaffold` writes a `testLive` route test alongside every resource by
-default (pass `--no-test` to skip it) — see
-[CLI generators](/rpxd-live/guides/cli-generators/). The generated test is a
-real starting point you own, not a placeholder.
+`rpxd scaffold` writes a test alongside every resource by default (pass
+`--no-test` to skip it) — see
+[CLI generators](/rpxd-live/guides/cli-generators/). A `--kind page` resource
+(the default) gets a `testLive` route test; a `--kind http` resource has no
+rpcs, so it gets a plain domain test instead. The generated test is a real
+starting point you own, not a placeholder.

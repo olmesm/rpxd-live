@@ -10,7 +10,7 @@
  * non-suspending trees, and resolving Flight client references (§16)
  * suspends — which `renderToString` cannot do.
  */
-import type { LiveRoute } from "@rpxd/core";
+import type { LiveRoute, SyncState } from "@rpxd/core";
 import { configureRscRuntime, flightStream, hydrateRscFields } from "@rpxd/rsc/client";
 import type { RenderContext } from "@rpxd/server-bun";
 import { createElement, type FunctionComponent, type ReactElement, type ReactNode } from "react";
@@ -31,7 +31,9 @@ function serverRenderProps(ctx: RenderContext, rsc: boolean) {
   return {
     state: rsc ? hydrateRscFields(ctx.state) : ctx.state,
     session: ctx.session ?? {},
-    sync: { pending: false, inFlight: 0, errors: [] },
+    // `satisfies` pins this to the real SyncState — the render call erases
+    // prop types (FunctionComponent<object>), so drift wouldn't fail tsc.
+    sync: { pending: false, inFlight: 0, errors: [], clearErrors: () => {} } satisfies SyncState,
     status: "connecting" as const,
     keyOf: (id: string | number) => String(id),
     // rpcs fire from event handlers — inert during SSR

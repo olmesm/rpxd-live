@@ -66,7 +66,7 @@ first load. `throw redirect(...)` to deny; return to allow. `ctx` is
 `{ params, session, signal }` — no `patchState`, because a guard decides access,
 it doesn't write state.
 
-### `.load(async ({ params, search }, ctx) => void, opts?)`
+### `.load(async ({ params, search }, ctx) => void)`
 
 The **URL-keyed loader** — the single place URL-dependent data loads. Runs once
 after `setup` (first paint) and again on every `nav.patch`. A search change
@@ -134,8 +134,9 @@ Plain React. Props are fully typed:
 | `state` | current view (confirmed + optimistic replay) |
 | `session` | the value your `authenticate` hook returned |
 | `rpc` | exact-keyed facade — `rpc.create({ name })`; wrong name/payload won't compile |
-| `sync` | `{ pending, errors }` — in-flight + failed rpcs |
-| `nav` | `navigate(to, params)` and `patch(search)` |
+| `sync` | `{ pending, inFlight, errors }` — in-flight count + failed rpcs; each error is `{ name, message, rpc? }` |
+| `status` | connection status — `"connecting" \| "live" \| "reconnecting" \| "error"` |
+| `nav` | `navigate(to, { params?, search? })` and `patch(search)` |
 | `keyOf` | maps a temp id to a stable React key across optimistic → confirmed |
 
 ## Why zero annotations

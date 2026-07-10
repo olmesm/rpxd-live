@@ -802,6 +802,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     });
   }
 
+  // WIRE CONTRACT — the control-plane messages (mount/resync/url/release) and
+  // the `?attach&seq` adoption below are documented in
+  // docs-site/src/content/docs/concepts/wire-protocol.md and pinned by
+  // packages/core/test/protocol-conformance.test.ts. Change all three together.
   async function handleControl(req: Request, sid: string, sessionData: unknown) {
     const msg = (await readJsonCapped(req, maxBodyBytes)) as
       | { type: "mount"; path: string; search?: Record<string, string>; stream?: string }

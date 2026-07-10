@@ -103,6 +103,8 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
         }>();
         expectTypeOf(props.rpc.importCsv).parameter(0).toEqualTypeOf<{ url: string }>();
         expectTypeOf(props.rpc.create).returns.toEqualTypeOf<Promise<void>>();
+        // sync.errors is dismissable from the render prop (§1 gap fix).
+        expectTypeOf(props.sync.clearErrors).toEqualTypeOf<() => void>();
         return null;
       });
 
@@ -207,5 +209,6 @@ describe("RenderProps stays explicitly usable", () => {
     type Props = RenderProps<{ n: number }, Record<string, unknown>, { bump: { by: number } }>;
     expectTypeOf<Props["rpc"]["bump"]>().parameter(0).toEqualTypeOf<{ by: number }>();
     expectTypeOf<Props["state"]>().toEqualTypeOf<{ n: number }>();
+    expectTypeOf<Props["sync"]["clearErrors"]>().toEqualTypeOf<() => void>();
   });
 });

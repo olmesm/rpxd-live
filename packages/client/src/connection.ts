@@ -2,6 +2,11 @@
  * LiveConnection (§11): wires a {@link LiveStore} to the server transport —
  * SSE downstream (`EventSource` auto-reconnect), HTTP POST upstream.
  * Connections are disposable; state is not.
+ *
+ * WIRE CONTRACT — the envelope/batch/control shapes and the connect + reconnect
+ * behavior here are documented in
+ * docs-site/src/content/docs/concepts/wire-protocol.md and pinned by
+ * packages/core/test/protocol-conformance.test.ts. Change all three together.
  */
 import { type Envelope, type RpcBatch, redirect } from "@rpxd/core";
 import { LiveStore, type RpcMeta } from "./store.ts";
@@ -10,17 +15,26 @@ import { LiveStore, type RpcMeta } from "./store.ts";
 export interface EventSourceLike {
   addEventListener(type: string, listener: (event: { data: string }) => void): void;
   close(): void;
+  /** 0 CONNECTING, 1 OPEN, 2 CLOSED — CLOSED on `error` means a refused connection (§11). */
+  readonly readyState?: number;
 }
 
 /** The slice of `WebSocket` the connection uses — injectable for tests (§11 ws opt-in). */
 export interface WebSocketLike {
-  addEventListener(type: string, listener: (event: { data?: unknown }) => void): void;
+  addEventListener(
+    type: string,
+    listener: (event: { data?: unknown; code?: number }) => void,
+  ): void;
   send(data: string): void;
   close(): void;
 }
 
 const WS_BACKOFF_BASE_MS = 1000;
 const WS_BACKOFF_CAP_MS = 30_000;
+/** `EventSource.readyState` CLOSED — an `error` in this state is a refused stream. */
+const ES_CLOSED = 2;
+/** WS policy-violation close code the server uses for an auth/origin rejection (§11, W7). */
+const WS_POLICY_CLOSE = 4403;
 
 /** A per-connection stream id — `crypto.randomUUID` where available, else a fallback. */
 function randomId(): string {
@@ -187,6 +201,17 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       if (this.store.status !== "live") this.store.setStatus("live");
     });
     source.addEventListener("error", () => {
+      // A refusal before we ever opened (auth/origin 403) closes the
+      // EventSource for good — readyState CLOSED with no prior `open`. That's
+      // terminal: close it so it can't native-reconnect into a 403 loop and
+      // settle on `error` (§11, W7). A drop *after* a successful open is
+      // transient — leave the EventSource to auto-reconnect (`reconnecting`).
+      if (!this.#everOpened && source.readyState === ES_CLOSED) {
+        source.close();
+        this.#source = undefined;
+        this.store.setStatus("error");
+        return;
+      }
       this.store.setStatus("reconnecting");
     });
   }
@@ -236,7 +261,23 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       const delay = window / 2 + Math.random() * (window / 2);
       setTimeout(() => this.#connectWs(), delay);
     };
-    socket.addEventListener("close", retry);
+    socket.addEventListener("close", (event) => {
+      // A browser WS client can't tell a refused upgrade (auth/origin 403)
+      // from a transient failure — both close pre-`open` with a generic code,
+      // and the HTTP status of a failed upgrade is never exposed. So a close
+      // without an explicit signal always backoff-reconnects (a server bounce
+      // on first load must not strand the page). The one terminal signal is
+      // the `4403` policy close code: a server that closes an *established*
+      // socket with it is saying "don't come back" (§11, W7).
+      if (event.code === WS_POLICY_CLOSE) {
+        if (this.#socket !== socket) return;
+        this.#socket = undefined;
+        this.#socketOpen = false;
+        this.store.setStatus("error");
+        return;
+      }
+      retry();
+    });
     socket.addEventListener("error", () => {
       this.store.setStatus("reconnecting");
     });

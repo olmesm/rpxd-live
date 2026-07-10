@@ -34,9 +34,9 @@ export default live("/doc")
 
 ## How it works
 
-- `rsc(<Subtree />)` serializes to a Flight payload string that rides
-  patches, snapshots, and storage like any other state — transport and
-  persistence are unchanged.
+- `rsc(<Subtree />)` serializes to an `RscField` marker (`{ $rsc: string }`)
+  carrying a Flight payload; it rides patches, snapshots, and storage like
+  any other state — transport and persistence are unchanged.
 - The package's `.` export is **conditional**: only the react-server graph
   (where handlers run under `rsc: true`) gets the serializer; every other
   bundle gets a small throwing stub, so the Flight runtime never leaks into

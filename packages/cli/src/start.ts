@@ -19,7 +19,12 @@ import {
   wsTransport,
 } from "@rpxd/server-bun";
 import type { FunctionComponent } from "react";
-import { applyConfigOverrides, type ConfigOverrides, type RpxdConfig } from "./config.ts";
+import {
+  applyConfigOverrides,
+  type ConfigOverrides,
+  instanceHandlerOptions,
+  type RpxdConfig,
+} from "./config.ts";
 import type { ShellAssets, ShellComponents, SsrRuntime } from "./render.ts";
 
 /** Options for {@link startApp}. */
@@ -170,6 +175,7 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     sessionSecret: config.session?.secret, // HMAC-signs the sid (B2); env fallback in handler
     defaultRateLimit: config.rateLimit,
     throttle: config.throttle,
+    ...instanceHandlerOptions(config),
     ...serverEntryModule.makeShellRenderers(shell),
     render: async (ctx) => {
       const route = components.get(ctx.path);

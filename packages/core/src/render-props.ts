@@ -19,6 +19,25 @@ export interface SyncState {
   pending: boolean;
   inFlight: number;
   errors: { name: string; message: string; rpc?: string }[];
+  /**
+   * Dismiss every surfaced error (a rejected `input` validation, a handler
+   * throw, an unknown rpc) — the component-side counterpart to letting an
+   * error-toast UI clear itself. Idempotent; a no-op when `errors` is already
+   * empty.
+   *
+   * @example
+   * ```tsx
+   * .render(({ sync }) => (
+   *   <>
+   *     {sync.errors.map((e, i) => <p key={i} role="alert">{e.message}</p>)}
+   *     {sync.errors.length > 0 && (
+   *       <button onClick={sync.clearErrors}>Dismiss</button>
+   *     )}
+   *   </>
+   * ))
+   * ```
+   */
+  clearErrors(): void;
 }
 
 /**

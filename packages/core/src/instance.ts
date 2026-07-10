@@ -18,7 +18,13 @@ import {
   type RpcDef,
   type RpcLongForm,
 } from "./live.ts";
-import type { Envelope, Patch, RpcBatch, RpcCall } from "./protocol.ts";
+import {
+  type Envelope,
+  type Patch,
+  PROTOCOL_VERSION,
+  type RpcBatch,
+  type RpcCall,
+} from "./protocol.ts";
 import { SerialQueue } from "./queue.ts";
 import { type RateLimit, RateLimitError, TokenBucket } from "./rate-limit.ts";
 import { isRedirect } from "./redirect.ts";
@@ -237,6 +243,25 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * Resent batches (same `rpcId`) are re-acked, not re-run.
    */
   async handleBatch(batch: RpcBatch): Promise<void> {
+    // Protocol-version gate (W1): the version rides each batch, so an
+    // incompatible client is rejected up front — before dedupe or any handler
+    // runs — through the same error-ack path an unknown rpc / validation
+    // failure uses. Confirmed state is left untouched.
+    if (batch.v !== PROTOCOL_VERSION) {
+      await this.#ackError(
+        batch.rpcId,
+        {
+          name: "ProtocolError",
+          message: `protocol v${batch.v} unsupported (server: v${PROTOCOL_VERSION})`,
+          rpc: "?",
+        },
+        "?",
+        undefined,
+        {},
+      );
+      return;
+    }
+
     const cached = this.#acks.get(batch.rpcId);
     if (cached) {
       for (const fn of this.#listeners) fn(cached);

@@ -24,7 +24,12 @@ import { fileToRoute, rpxd as rpxdVitePlugin, runCodegen, scanRoutes } from "@rp
 import rscFlightPlugin from "@vitejs/plugin-rsc";
 import { createServerModuleRunner, createServer as createViteServer } from "vite";
 import { WebSocketServer } from "ws";
-import { applyConfigOverrides, type ConfigOverrides, type RpxdConfig } from "./config.ts";
+import {
+  applyConfigOverrides,
+  type ConfigOverrides,
+  instanceHandlerOptions,
+  type RpxdConfig,
+} from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
 import { nodeRequestUrl } from "./http-bridge.ts";
 import { createLatestWinsReloader } from "./reload-serializer.ts";
@@ -233,6 +238,7 @@ export async function createDevServer(
       return renderDevErrorPage(info.path, info.error);
     },
     defaultRateLimit: config.rateLimit,
+    ...instanceHandlerOptions(config), // dev honors instances.* + onSecurityEvent too
   });
 
   // Serialize reloads per route so two rapid saves whose imports resolve out

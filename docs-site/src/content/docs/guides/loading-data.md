@@ -2,13 +2,15 @@
 title: Loading data
 description: The load loader — the single place URL-dependent data loads. Runs after setup and on every nav.patch, writes page state, latest-wins, streams by default.
 sidebar:
-  order: 8
+  order: 2
 ---
 
 `setup` sets up what's true regardless of the URL; **`load` is the loader** —
 the single place URL-dependent data loads. It runs once after `setup` (first
 paint) and again on every `nav.patch`, and it's the foundation every pattern in
-the next few guides builds on.
+[pagination](/rpxd-live/guides/pagination/), [infinite
+scroll](/rpxd-live/guides/infinite-scroll/), and [filtering &
+search](/rpxd-live/guides/filtering-and-search/) builds on.
 
 ```tsx
 export default live("/issues")

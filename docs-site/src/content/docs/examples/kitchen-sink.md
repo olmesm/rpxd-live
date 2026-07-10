@@ -1,6 +1,6 @@
 ---
 title: The kitchen-sink example
-description: A tour of examples/kitchen-sink — the demo app that doubles as the acceptance suite, exercising optimistic todos, token streaming, multiplayer chat, CSV import, auth, and an RSC doc page.
+description: A tour of examples/kitchen-sink — the demo app that doubles as the acceptance suite, exercising optimistic todos, token streaming, multiplayer chat, CSV import with onError repair, soft-reload navigation, auth, and an RSC doc page.
 sidebar:
   order: 1
 ---
@@ -40,10 +40,11 @@ locally with `bun run dev`.
 | `/` | `index.tsx` | optimistic todos — add / toggle, `keyOf`, user-scoped queries; URL-driven [filtering](/rpxd-live/guides/filtering-and-search/) via the `load` loader |
 | `/stream` | `stream.tsx` | streaming — `for await` + `append` patches (O(delta) wire), `ctx.abort` |
 | `/chat` | `chat.tsx` | multiplayer — pubsub broadcast, single-code-path `on` handler (`self: true`) |
-| `/import` | `import.tsx` | slow work — per-chunk `patchState`, `onError` repair |
+| `/import` | `import.tsx` | CSV import — pure `parseCsv` in `domain/`, per-row `patchState` progress, and `.onError` state repair that rides the error ack |
+| `/item/$id` | `item.$id.tsx` | tier-2 [soft reload](/rpxd-live/guides/routing/) — a `$id` path-param change reruns `setup`+`load` while the connection survives |
 | `/doc` | `doc.tsx` | an [RSC field](/rpxd-live/concepts/rsc/) — server-rendered markdown |
 | `/login` | `login.tsx` | auth forms (Better Auth email/password) |
-| `/account` | `account.tsx` | a [protected route](/rpxd-live/guides/routes-and-auth/#enforcing-auth--the-guard) — `throw redirect("/login")` |
+| `/account` | `account.tsx` | the [setup-redirect pattern](/rpxd-live/guides/routes-and-auth/#enforcing-auth--the-guard) — the page's state *is* the user, so it `throw redirect("/login")`s from `setup`, not a `guard` |
 | `/api/auth/*` | `api.auth.$.ts` | the [delegation route](/rpxd-live/guides/routes-and-auth/) — `route().all()` |
 | `/boom` | `boom.tsx` | the `__error` path — a deliberate setup crash |
 
@@ -56,10 +57,12 @@ examples/kitchen-sink/
 ├── routes/            # the edge — live objects + the auth route
 ├── domain/
 │   ├── scope.ts       # Scope + scopeFrom — client-safe, no db
+│   ├── import.ts      # pure parseCsv generator — no db, no rpxd
 │   └── todos.ts       # listTodos / addTodo / toggleTodo (the only db caller)
 ├── adapters/
 │   ├── db.ts          # the Prisma client + the Better Auth adapter
-│   └── auth.ts        # betterAuth(...) consuming that adapter
+│   ├── auth.ts        # betterAuth(...) consuming that adapter
+│   └── auth-client.ts # the Better Auth browser client (sign in/up/out only)
 ├── lib/components/     # 'use client' islands + the RSC markdown renderer
 ├── prisma/schema.prisma
 └── rpxd.config.ts

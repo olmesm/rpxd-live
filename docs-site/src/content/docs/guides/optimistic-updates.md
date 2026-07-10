@@ -32,14 +32,14 @@ Optimistic functions must be **synchronous, pure, and identity-based**:
 
 ```tsx
 .optimistic((s, { text }, ctx) => {
-  s.todos.push({ id: ctx.tempId, text, done: false }); // create → tempId
+  s.todos.push({ id: ctx.tempId(), text, done: false }); // create → tempId
 })
 ```
 
 - **Identity-based lookups.** Use `find(t => t.id === id)`, never an index —
   the queue may have reordered things. (This convention isn't enforced by
   tooling yet; it's documented here and in TSDoc.)
-- **Creates use `ctx.tempId`** as a placeholder id.
+- **Creates use `ctx.tempId()`** as a placeholder id.
 
 ## Id linking without remounting
 
