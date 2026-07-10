@@ -65,6 +65,8 @@ export interface DevServerOptions {
 /** A running dev shell. */
 export interface DevServer {
   port: number;
+  /** Resolved summary the CLI banner announces: transport/rsc and route count. */
+  info: { transport: "sse" | "ws"; rsc: boolean; routes: number };
   close(): Promise<void>;
 }
 
@@ -356,6 +358,11 @@ export async function createDevServer(
 
   return {
     port,
+    info: {
+      transport: config.transport?.kind ?? "sse",
+      rsc: config.rsc === true,
+      routes: routes.length + httpRoutes.length,
+    },
     async close() {
       await handler.dispose();
       for (const client of wss.clients) client.terminate();
