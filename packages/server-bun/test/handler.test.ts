@@ -6,6 +6,7 @@ import {
   redirect,
 } from "@rpxd/core";
 import { describe, expect, it } from "vitest";
+import { signSessionId } from "../src/cookie.ts";
 import { createRpxdHandler } from "../src/handler.ts";
 import { matchPath, matchRoute } from "../src/match.ts";
 
@@ -774,6 +775,67 @@ describe("guard runs before setup — denied requests allocate nothing (#8)", ()
     });
     await new Promise((r) => setTimeout(r, 30));
     expect(ghostReactions).toBe(0); // disposed on throw → unsubscribed → no ghost reaction
+    await handler.dispose();
+  });
+});
+
+describe("signed session cookie — HMAC integrity (B2)", () => {
+  const SECRET = "unit-test-secret";
+
+  it("signs the session cookie when a secret is configured", async () => {
+    const handler = makeHandler({ sessionSecret: SECRET });
+    const res = await handler.fetch(new Request(`${base}/org/7/board`));
+    const value = /rpxd_sid=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
+    expect(value).toContain("."); // <sid>.<mac>, not a bare sid
+    // …and it round-trips: presenting it back resolves the same, non-new session.
+    const back = handler.resolveSid(
+      new Request(base, { headers: { cookie: `rpxd_sid=${value}` } }),
+    );
+    expect(back.isNew).toBe(false);
+    await handler.dispose();
+  });
+
+  it("rejects a forged/unsigned cookie as a brand-new session", async () => {
+    const handler = makeHandler({ sessionSecret: SECRET });
+    const forged = handler.resolveSid(
+      new Request(base, { headers: { cookie: "rpxd_sid=attacker-chosen" } }),
+    );
+    expect(forged.isNew).toBe(true);
+    expect(forged.sid).not.toBe("attacker-chosen"); // can't pin a chosen sid (no fixation / namespace collision)
+    // A validly-signed sid is accepted verbatim.
+    const signed = signSessionId("real-sid", SECRET);
+    expect(
+      handler.resolveSid(new Request(base, { headers: { cookie: `rpxd_sid=${signed}` } })),
+    ).toEqual({ sid: "real-sid", isNew: false });
+    await handler.dispose();
+  });
+
+  it("leaves the sid unsigned when no secret is set (back-compat)", async () => {
+    const handler = makeHandler(); // no secret
+    const res = await handler.fetch(new Request(`${base}/org/7/board`));
+    const value = /rpxd_sid=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
+    expect(value).not.toContain("."); // bare uuid
+    expect(
+      handler.resolveSid(new Request(base, { headers: { cookie: "rpxd_sid=plain" } })),
+    ).toEqual({
+      sid: "plain",
+      isNew: false,
+    });
+    await handler.dispose();
+  });
+
+  it("treats an empty-string secret as unsigned (no write/read split)", async () => {
+    // "" must NOT enter verify mode (a public empty HMAC key would be forgeable);
+    // it collapses to the unsigned path, consistent on write and read.
+    const handler = makeHandler({ sessionSecret: "" });
+    const value =
+      /rpxd_sid=([^;]+)/.exec(
+        (await handler.fetch(new Request(`${base}/org/7/board`))).headers.get("set-cookie") ?? "",
+      )?.[1] ?? "";
+    expect(value).not.toContain("."); // written unsigned…
+    expect(
+      handler.resolveSid(new Request(base, { headers: { cookie: "rpxd_sid=plain" } })),
+    ).toEqual({ sid: "plain", isNew: false }); // …and read unsigned, not minted fresh
     await handler.dispose();
   });
 });
