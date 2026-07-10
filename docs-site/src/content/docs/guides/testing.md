@@ -13,8 +13,11 @@ mocked) behind a typed facade.
 
 ## The `testLive` harness
 
-`testLive(route)` mounts a route and hands back a typed handle. You call rpcs the
-way the component does, and assert on server-confirmed state or on the wire.
+`testLive(route)` mounts a route and hands back a typed handle. The mount runs
+the production lifecycle stages in order — `guard` → `setup` → `load` — and
+awaits the initial load, so a route's loader-populated state is there from the
+first assertion. You call rpcs the way the component does, and assert on
+server-confirmed state or on the wire.
 
 ```ts
 import { testLive } from "@rpxd/testing";
@@ -49,8 +52,9 @@ error.
 | `t.broadcast(topic, event, payload)` | Injects a broadcast as if a **peer** instance published it (§8) — exclude-self semantics behave exactly as in production. |
 | `t.dispose()` | Aborts in-flight `ctx.signal` and tears the instance down. |
 
-Options: `testLive(route, { params, session, storage, id })` — typed path params
-for the route literal, a session slice, and a shared `storage` + distinct `id`
+Options: `testLive(route, { params, session, search, storage, id })` — typed
+path params for the route literal, a session slice, the initial search params
+the mount's `guard` + `load` run with, and a shared `storage` + distinct `id`
 for multiplayer (below).
 
 ## Patterns
@@ -83,14 +87,23 @@ await p;
 
 ### URL loads and guards
 
-`navigate` runs the same `guard` → `load` a real navigation does, so you can
-assert what a loader writes — and give a protected route a `session` to get past
-its guard:
+The mount already ran `guard` → `load` with the initial `search`, so a loader's
+first write is assertable straight away — and `navigate` runs the same pair for
+a subsequent URL change. Give a protected route a `session` to get past its
+guard; a deny **rejects** the mount with the redirect the server would 302 to:
 
 ```ts
-const t = await testLive(accountRoute, { session: { sid: "s1", user } });
-await t.navigate({ filter: "done" });
-expect(t.state.filter).toBe("done");
+const t = await testLive(accountRoute, {
+  session: { sid: "s1", user },
+  search: { filter: "done" },
+});
+expect(t.state.filter).toBe("done"); // loader ran at mount
+
+await t.navigate({ filter: "open" }); // a later URL change
+expect(t.state.filter).toBe("open");
+
+// unauthenticated mount bounces, exactly like production
+await expect(testLive(accountRoute)).rejects.toMatchObject({ location: "/login" });
 ```
 
 ### Multiplayer

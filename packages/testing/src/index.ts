@@ -38,6 +38,12 @@ export interface TestLiveOptions<Path extends string, Session> {
   /** Session slice the instance mounts with. Defaults to `{}`. */
   session?: Session;
   /**
+   * Search params the mount's `guard` + `load` run with (§7) — the query
+   * string of the initial page load. Defaults to `{}`. Use `t.navigate()`
+   * for subsequent URL changes.
+   */
+  search?: SearchParams;
+  /**
    * Storage adapter — defaults to a fresh `memory()`. Share one adapter
    * between two `testLive` handles to test multiplayer over the pubsub bus.
    */
@@ -95,14 +101,19 @@ let instanceCounter = 0;
 let rpcCounter = 0;
 
 /**
- * Mount a route for testing (§17): real runtime, typed access.
+ * Mount a route for testing (§17): real runtime, typed access. The mount runs
+ * the production lifecycle stages in order — `guard` (against `opts.session`
+ * and `opts.search`) → `setup` → `load` — and awaits the initial load, so
+ * state is loader-populated when the promise resolves. A guard deny or loader
+ * redirect rejects with the `RedirectError` the server would map to a 302.
  *
  * @example
  * ```ts
  * import { testLive } from "@rpxd/testing";
  * import route from "../routes/index.tsx";
  *
- * const t = await testLive(route);
+ * const t = await testLive(route, { search: { filter: "done" } });
+ * expect(t.state.filter).toBe("done");        // the loader already ran
  * await t.rpc.add({ text: "milk" });          // typed payload, resolves on ack
  * expect(t.state.todos).toHaveLength(1);
  *
@@ -110,6 +121,9 @@ let rpcCounter = 0;
  * await t.settled();                          // streams, flushes, queue drained
  * expect(t.envelopes.at(-1)?.patches).toBeDefined();
  * await t.dispose();
+ *
+ * // a deny-all guard rejects the mount, like the server's 302
+ * await expect(testLive(adminRoute)).rejects.toMatchObject({ location: "/login" });
  * ```
  */
 export async function testLive<S, Path extends string, Session, Component>(
@@ -118,17 +132,46 @@ export async function testLive<S, Path extends string, Session, Component>(
 ): Promise<TestLive<S, Session, TestRpcFacade<Component>>> {
   const id = opts.id ?? `test-${++instanceCounter}`;
   const storage = opts.storage ?? memory();
+  const params = opts.params ?? ({} as PathParams<Path>);
+  const session = opts.session ?? ({} as Session);
+  const search = opts.search ?? {};
+
+  // Mount runs the same ordered lifecycle stages as the server's fresh mount
+  // (`buildInstance`, §12): guard → setup → load. Guard runs first — before
+  // the instance exists — so a denied mount allocates nothing; a deny
+  // (`throw redirect`) rejects this call, as the server maps it to a 302.
+  if (route.def.guard) {
+    await route.def.guard(
+      { params, search },
+      { params, session, signal: new AbortController().signal },
+    );
+  }
+
   const instance = await LiveInstance.create({
     id,
     def: route.def,
-    params: opts.params ?? ({} as PathParams<Path>),
-    session: opts.session ?? ({} as Session),
+    params,
+    session,
     storage,
     storageKey: `test:${route.path}:${id}`,
   });
 
   const envelopes: Envelope[] = [];
   instance.addListener((env) => envelopes.push(env));
+
+  if (route.def.load) {
+    try {
+      // Await the *whole* initial run (the server awaits only the first
+      // patch) so state is loader-populated and `settled()` is deterministic
+      // from the moment `testLive` resolves.
+      await instance.load(search);
+    } catch (e) {
+      // Loader bailed out (a redirect, §10): tear down so the subscriptions
+      // `setup` wired don't leak — mirrors the server's half-built disposal.
+      await instance.dispose(false);
+      throw e;
+    }
+  }
 
   const inflight = new Set<Promise<unknown>>();
 

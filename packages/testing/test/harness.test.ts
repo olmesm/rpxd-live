@@ -1,4 +1,4 @@
-import { live, memory } from "@rpxd/core";
+import { isRedirect, live, memory, redirect, type StorageAdapter } from "@rpxd/core";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { testLive } from "../src/index.ts";
@@ -163,6 +163,110 @@ describe("testLive: broadcast injection + search params", () => {
     expect(b.state.log).toEqual(["hi"]);
     await a.dispose();
     await b.dispose();
+  });
+});
+
+describe("testLive: mount lifecycle (guard → setup → load)", () => {
+  it("runs the loader at mount — initial state is loader-populated, no navigate()", async () => {
+    const route = live("/inbox")
+      .setup(() => ({ items: [] as string[], loaded: false }))
+      .load(async (_url, ctx) => {
+        await tick();
+        ctx.patchState((s) => {
+          s.items = ["a", "b"];
+          s.loaded = true;
+        });
+      })
+      .render(() => null);
+    const t = await testLive(route);
+    expect(t.state.loaded).toBe(true);
+    expect(t.state.items).toEqual(["a", "b"]);
+    // the loader's flush is on the wire, as a mounting client would see it
+    expect(t.envelopes.some((e) => e.patches?.some((p) => p.path[0] === "loaded"))).toBe(true);
+    await t.dispose();
+  });
+
+  it("mounts with the initial search params", async () => {
+    const route = live("/list")
+      .setup(() => ({ filter: "" }))
+      .load(({ search }, ctx) => {
+        ctx.patchState((s) => {
+          s.filter = search.filter ?? "all";
+        });
+      })
+      .render(() => null);
+    const t = await testLive(route, { search: { filter: "done" } });
+    expect(t.state.filter).toBe("done");
+    await t.dispose();
+  });
+
+  it("rejects with the redirect when the guard denies (§10)", async () => {
+    let setupRan = false;
+    const route = live("/admin")
+      .setup(() => {
+        setupRan = true;
+        return { secret: "s3cr3t" };
+      })
+      .guard((_url, ctx) => {
+        if (!(ctx.session as { user?: string }).user) throw redirect("/login");
+      })
+      .render(() => null);
+    await expect(testLive(route)).rejects.toSatisfy(
+      (e) => isRedirect(e) && e.location === "/login" && e.status === 302,
+    );
+    expect(setupRan).toBe(false); // a denied mount allocates nothing
+    const t = await testLive(route, { session: { user: "ada" } });
+    expect(t.state.secret).toBe("s3cr3t");
+    await t.dispose();
+  });
+
+  it("runs guard before setup, and setup before load", async () => {
+    const order: string[] = [];
+    const route = live("/gated")
+      .setup(() => {
+        order.push("setup");
+        return {};
+      })
+      .guard(({ search }) => {
+        order.push(`guard:${search.q ?? ""}`);
+      })
+      .load(() => {
+        order.push("load");
+      })
+      .render(() => null);
+    const t = await testLive(route, { search: { q: "x" } });
+    expect(order).toEqual(["guard:x", "setup", "load"]);
+    await t.dispose();
+  });
+
+  it("disposes the half-built instance when the loader redirects (no leaked subscription)", async () => {
+    const base = memory();
+    let active = 0;
+    const storage: StorageAdapter = {
+      ...base,
+      bus: {
+        publish: (msg) => base.bus.publish(msg),
+        subscribe: (topic, subscriberId, fn) => {
+          active++;
+          const unsub = base.bus.subscribe(topic, subscriberId, fn);
+          return () => {
+            active--;
+            unsub();
+          };
+        },
+      },
+    };
+    const route = live("/gone")
+      .setup((ctx) => {
+        ctx.subscribe("room:1");
+        return {};
+      })
+      .load(() => {
+        throw redirect("/away");
+      })
+      .render(() => null);
+    await expect(testLive(route, { storage })).rejects.toMatchObject({ location: "/away" });
+    expect(active).toBe(0); // setup's subscription was torn down with the instance
   });
 });
 
