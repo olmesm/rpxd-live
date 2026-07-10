@@ -1,8 +1,8 @@
 /**
- * Casing + (naive) inflection helpers for the scaffold generator. Casing is
- * delegated to es-toolkit (well-tested Unicode-aware word splitting); the
- * English-ish `s`/`es`/`y→ies` inflection is naive on purpose — irregular
- * nouns can be passed explicitly (`scaffold People Person people`).
+ * Casing helpers for the scaffold generator. Casing is delegated to es-toolkit
+ * (well-tested Unicode-aware word splitting). There is deliberately no
+ * inflection: the `<plural>` argument is always explicit, and guessing would
+ * break irregular nouns (`scaffold People Person people` must stay `people`).
  */
 import { camelCase as esCamelCase, kebabCase as esKebabCase, upperFirst } from "es-toolkit";
 
@@ -40,35 +40,6 @@ export function camelCase(input: string): string {
  */
 export function kebabCase(input: string): string {
   return esKebabCase(input);
-}
-
-/**
- * Naive pluralization (`box`→`boxes`, `city`→`cities`, `note`→`notes`).
- *
- * @example
- * ```ts
- * pluralize("note"); // "notes"
- * ```
- */
-export function pluralize(input: string): string {
-  if (/[^aeiou]y$/.test(input)) return `${input.slice(0, -1)}ies`;
-  if (/(s|x|z|ch|sh)$/.test(input)) return `${input}es`;
-  return `${input}s`;
-}
-
-/**
- * Naive singularization (inverse of {@link pluralize}).
- *
- * @example
- * ```ts
- * singularize("todos"); // "todo"
- * ```
- */
-export function singularize(input: string): string {
-  if (/ies$/.test(input)) return `${input.slice(0, -3)}y`;
-  if (/(ses|xes|zes|ches|shes)$/.test(input)) return input.slice(0, -2);
-  if (/s$/.test(input)) return input.slice(0, -1);
-  return input;
 }
 
 /** Columns every generated model already has — a user field can't reuse them. */
@@ -117,18 +88,18 @@ export function assertFieldName(name: string): string {
 }
 
 /**
- * Normalize a route/table plural segment: casing-cleaned and guaranteed plural,
- * idempotent whether the argument arrives singular or already plural (so it
- * never double-pluralizes). Chains {@link camelCase} → {@link singularize} →
- * {@link pluralize}.
+ * Normalize the route/table plural segment: casing-cleaned, nothing more. The
+ * argument is the user's explicitly supplied plural, so it is never
+ * re-inflected — naive rules would turn irregular plurals into `peoples` /
+ * `childrens` across every sink (file name, route literal, identifiers).
  *
  * @example
  * ```ts
  * routePlural("Todos");      // "todos"
- * routePlural("todo");       // "todos"
  * routePlural("blog posts"); // "blogPosts"
+ * routePlural("people");     // "people" — verbatim, never "peoples"
  * ```
  */
 export function routePlural(input: string): string {
-  return pluralize(singularize(camelCase(input)));
+  return camelCase(input);
 }

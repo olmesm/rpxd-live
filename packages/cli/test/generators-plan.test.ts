@@ -218,6 +218,42 @@ describe("planScaffold", () => {
     expect(ensurePathLiteral(routeFile.contents, entry?.path ?? "")).toBeNull();
   });
 
+  it("keeps an explicit irregular plural verbatim across every sink (People Person people)", () => {
+    const plan = planScaffold({
+      context: "People",
+      schema: "Person",
+      plural: "people",
+      fieldSpecs: ["name:string"],
+      features: noFeatures,
+    });
+    // file name, route literal, and identifiers must all agree on "people"
+    expect(paths(plan)).toEqual(["routes/people.tsx", "domain/people.ts", "test/people.test.ts"]);
+    const route = file(plan, "routes/people.tsx");
+    expect(route).toContain('live("/people")');
+    expect(route).toContain("listPeople(");
+    expect(route).not.toContain("peoples");
+    expect(file(plan, "domain/people.ts")).toContain("export async function listPeople(");
+  });
+
+  it("keeps an explicit irregular plural verbatim (Children Child children)", () => {
+    const plan = planScaffold({
+      context: "Children",
+      schema: "Child",
+      plural: "children",
+      fieldSpecs: ["name:string"],
+      features: noFeatures,
+    });
+    expect(paths(plan)).toEqual([
+      "routes/children.tsx",
+      "domain/children.ts",
+      "test/children.test.ts",
+    ]);
+    const route = file(plan, "routes/children.tsx");
+    expect(route).toContain('live("/children")');
+    expect(route).toContain("listChildren(");
+    expect(route).not.toContain("childrens");
+  });
+
   it("rejects an invalid context/schema name", () => {
     expect(() =>
       planScaffold({

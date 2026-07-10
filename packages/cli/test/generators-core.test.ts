@@ -5,14 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { applyPlan } from "../src/generators/apply.ts";
 import { detectFeatures } from "../src/generators/detect.ts";
 import { parseFields } from "../src/generators/fields.ts";
-import {
-  camelCase,
-  kebabCase,
-  pascalCase,
-  pluralize,
-  routePlural,
-  singularize,
-} from "../src/generators/names.ts";
+import { camelCase, kebabCase, pascalCase, routePlural } from "../src/generators/names.ts";
 
 describe("parseFields (field:type)", () => {
   it("maps every supported type to prisma + ts", () => {
@@ -140,21 +133,14 @@ describe("name helpers", () => {
     expect(camelCase("TodoItems")).toBe("todoItems");
     expect(kebabCase("TodoItems")).toBe("todo-items");
   });
-  it("pluralize / singularize (simple)", () => {
-    expect(pluralize("todo")).toBe("todos");
-    expect(pluralize("note")).toBe("notes");
-    expect(singularize("todos")).toBe("todo");
-  });
-
-  it("routePlural normalizes + guarantees plural, idempotently", () => {
-    // already-plural args stay put (no double-pluralize)
+  it("routePlural normalizes casing but never re-pluralizes the user's plural", () => {
     expect(routePlural("todos")).toBe("todos");
     expect(routePlural("Posts")).toBe("posts");
-    // singular args become plural
-    expect(routePlural("todo")).toBe("todos");
     // messy input → clean camelCase token
     expect(routePlural("blog posts")).toBe("blogPosts");
-    expect(routePlural("blog_post")).toBe("blogPosts");
+    // an explicitly supplied irregular plural is the plural — verbatim
+    expect(routePlural("people")).toBe("people");
+    expect(routePlural("children")).toBe("children");
   });
 });
 
