@@ -64,6 +64,14 @@ export interface RpxdHandlerOptions {
    * cross-site.
    */
   allowedOrigins?: AllowedOrigins;
+  /**
+   * Session-cookie attributes (B1). `secure` marks the `rpxd_sid` cookie
+   * `Secure` (HTTPS-only) — **default `true`**. Browsers still accept it on
+   * `http://localhost` (a secure context) and behind a TLS-terminating proxy;
+   * set `false` only for non-localhost HTTP dev, where the sid would otherwise
+   * ride cleartext. The dev server / scaffold wire this from `NODE_ENV`.
+   */
+  cookie?: { secure?: boolean };
   /** SSR renderer (§12). Defaults to a minimal HTML shell embedding the bootstrap payload. */
   render?: (ctx: RenderContext) => Response | Promise<Response>;
   /** Unmatched-URL page (§14 `__404`). Defaults to a plain-text 404. */
@@ -159,6 +167,8 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   const storage = opts.storage ?? memory();
   const warmTtlMs = opts.warmTtlMs ?? 60_000;
   const attachTtlMs = opts.attachTtlMs ?? 10_000;
+  // Secure session cookie by default (B1) — opt out only for non-localhost HTTP dev.
+  const cookieSecure = opts.cookie?.secure ?? true;
   // Un-attached instances only need to outlive their attach window (#61).
   const unattachedTtlMs = opts.unattachedTtlMs ?? attachTtlMs;
   const maxUnattachedInstances =
@@ -215,7 +225,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
 
   function withSession(res: Response, sid: string, isNew: boolean): Response {
     if (isNew) {
-      res.headers.append("set-cookie", `${SID_COOKIE}=${sid}; Path=/; HttpOnly; SameSite=Lax`);
+      // `Secure` by default (B1): browsers accept it on HTTPS and on
+      // `http://localhost` (a secure context); only non-localhost HTTP dev needs
+      // the `cookie.secure: false` opt-out. `HttpOnly` + `SameSite=Lax` always.
+      const attrs = `Path=/; HttpOnly; SameSite=Lax${cookieSecure ? "; Secure" : ""}`;
+      res.headers.append("set-cookie", `${SID_COOKIE}=${sid}; ${attrs}`);
     }
     return res;
   }

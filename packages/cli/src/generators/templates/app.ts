@@ -146,6 +146,9 @@ export default defineConfig({
       const s = await auth.api.getSession({ headers: req.headers });
       return { sid, user: s?.user ? { id: s.user.id, email: s.user.email } : undefined };
     },
+    // The \`rpxd_sid\` cookie is \`Secure\` in production and non-Secure under
+    // \`bun run dev\` (so LAN/HTTP dev still gets a session) — the CLI picks per
+    // command. Override here if you need to, e.g. \`cookie: { secure: false }\`.
   },
 });
 `
