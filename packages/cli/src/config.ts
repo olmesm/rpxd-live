@@ -48,6 +48,12 @@ export interface RpxdConfig {
    */
   session?: {
     authenticate?: (req: Request, ctx: { sid: string }) => unknown | Promise<unknown>;
+    /**
+     * Session-cookie attributes (B1). `secure` marks `rpxd_sid` `Secure` —
+     * default `true` (accepted on HTTPS and `http://localhost`). Set `false`
+     * only for non-localhost HTTP dev. `bun run dev` already defaults it off.
+     */
+    cookie?: { secure?: boolean };
   };
   /**
    * Cross-origin allowlist for the rpxd control plane (`/__rpxd/ws|stream|rpc|

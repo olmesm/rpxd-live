@@ -128,6 +128,28 @@ describe("SSR mount (§12)", () => {
     await handler.dispose();
   });
 
+  it("marks the session cookie Secure by default (B1)", async () => {
+    const handler = makeHandler();
+    const cookie = (await handler.fetch(new Request(`${base}/org/7/board`))).headers.get(
+      "set-cookie",
+    );
+    expect(cookie).toContain("rpxd_sid=");
+    expect(cookie).toContain("Secure");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Lax");
+    await handler.dispose();
+  });
+
+  it("omits Secure when cookie.secure is false (local-http dev opt-out)", async () => {
+    const handler = makeHandler({ cookie: { secure: false } });
+    const cookie = (await handler.fetch(new Request(`${base}/org/7/board`))).headers.get(
+      "set-cookie",
+    );
+    expect(cookie).toContain("rpxd_sid=");
+    expect(cookie).not.toContain("Secure");
+    await handler.dispose();
+  });
+
   it("streams by default: the awaited data is NOT in the first paint (§12)", async () => {
     interface FeedState {
       rows: string[];

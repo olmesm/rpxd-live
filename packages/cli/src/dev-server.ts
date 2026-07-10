@@ -216,6 +216,10 @@ export async function createDevServer(
     storage: config.storage,
     authenticate: config.session?.authenticate,
     allowedOrigins: config.allowedOrigins,
+    // Dev is served over HTTP (localhost or a LAN IP), so default the sid cookie
+    // to non-Secure unless the app opts in — otherwise a phone on the LAN never
+    // gets a session (B1). Prod (`start`) keeps the Secure default.
+    cookie: config.session?.cookie ?? { secure: false },
     render: makeDevRender(vite, routeFiles, { rsc: config.rsc, shell }),
     ...ssrRuntime.makeShellRenderers(shell, { mode: "dev" }),
     // Dev overlay (§14): runtime errors render the framework page with the
