@@ -3,9 +3,8 @@
  *
  * Handlers run off-queue (awaits never block the instance, §3); only
  * mutations serialize through the per-instance FIFO queue: patchState
- * flushes, `on` handlers, and the `params` reducer. Each flush is one
- * Immer draft → one patch envelope, with string-suffix growth
- * compiled to `append` ops (§2).
+ * flushes and `on` handlers. Each flush is one Immer draft → one patch
+ * envelope, with string-suffix growth compiled to `append` ops (§2).
  */
 import { createDraft, type Draft, enablePatches, finishDraft, setAutoFreeze } from "immer";
 import {
