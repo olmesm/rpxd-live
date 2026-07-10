@@ -1017,6 +1017,30 @@ describe("signed session cookie — HMAC integrity (B2)", () => {
     await handler.dispose();
   });
 
+  it("signs via the RPXD_SESSION_SECRET env var when no option is passed", async () => {
+    const prev = process.env.RPXD_SESSION_SECRET;
+    process.env.RPXD_SESSION_SECRET = "env-secret";
+    try {
+      const handler = makeHandler(); // no sessionSecret option → falls back to the env var
+      const value =
+        /rpxd_sid=([^;]+)/.exec(
+          (await handler.fetch(new Request(`${base}/org/7/board`))).headers.get("set-cookie") ?? "",
+        )?.[1] ?? "";
+      expect(value).toContain("."); // signed via env
+      expect(
+        handler.resolveSid(
+          new Request(base, {
+            headers: { cookie: `rpxd_sid=${signSessionId("s", "env-secret")}` },
+          }),
+        ),
+      ).toEqual({ sid: "s", isNew: false }); // verifies against the env secret
+      await handler.dispose();
+    } finally {
+      if (prev === undefined) delete process.env.RPXD_SESSION_SECRET;
+      else process.env.RPXD_SESSION_SECRET = prev;
+    }
+  });
+
   it("leaves the sid unsigned when no secret is set (back-compat)", async () => {
     const handler = makeHandler(); // no secret
     const res = await handler.fetch(new Request(`${base}/org/7/board`));

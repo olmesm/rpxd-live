@@ -221,6 +221,7 @@ export async function createDevServer(
     // gets a session (B1). Prod (`start`) keeps the Secure default.
     cookie: config.session?.cookie ?? { secure: false },
     sessionSecret: config.session?.secret, // HMAC-signs the sid (B2); env fallback in handler
+    throttle: config.throttle, // respect the configured throttle in dev too (#6)
     debugErrors: true, // dev: surface crash details to the client (#9)
     render: makeDevRender(vite, routeFiles, { rsc: config.rsc, shell }),
     ...ssrRuntime.makeShellRenderers(shell, { mode: "dev" }),
