@@ -16,6 +16,7 @@ import {
   type RpcBatch,
   type StorageAdapter,
 } from "@rpxd/core";
+import { readSid, SID_COOKIE, signSessionId } from "./cookie.ts";
 import { matchHttpRoute, matchRoute } from "./match.ts";
 import { type AllowedOrigins, originAllowed } from "./origin.ts";
 
@@ -72,6 +73,15 @@ export interface RpxdHandlerOptions {
    * ride cleartext. The dev server / scaffold wire this from `NODE_ENV`.
    */
   cookie?: { secure?: boolean };
+  /**
+   * Secret for HMAC-signing the `rpxd_sid` cookie (B2). When set, the sid is
+   * signed and verified — a forged or unsigned cookie is rejected as a fresh
+   * session, closing session fixation and `${sid}:${path}` namespace collision.
+   * Falls back to `process.env.RPXD_SESSION_SECRET`. When neither is set the sid
+   * is unsigned (pre-B2 behavior) and the handler warns once. Signing is
+   * integrity, not confidentiality — pair with the `Secure` cookie for the latter.
+   */
+  sessionSecret?: string;
   /** SSR renderer (§12). Defaults to a minimal HTML shell embedding the bootstrap payload. */
   render?: (ctx: RenderContext) => Response | Promise<Response>;
   /** Unmatched-URL page (§14 `__404`). Defaults to a plain-text 404. */
@@ -133,8 +143,6 @@ interface StreamHandle {
   cleanup: () => void;
 }
 
-const SID_COOKIE = "rpxd_sid";
-
 /**
  * Encode one envelope as an SSE event (the wire protocol guide framing).
  *
@@ -169,6 +177,12 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   const attachTtlMs = opts.attachTtlMs ?? 10_000;
   // Secure session cookie by default (B1) — opt out only for non-localhost HTTP dev.
   const cookieSecure = opts.cookie?.secure ?? true;
+  // HMAC-signed sid (B2): unforgeable when a secret is set. Falls back to env;
+  // unset or empty → unsigned + a one-time warning (the sid stays forgeable).
+  // `||` (not `??`) collapses an empty-string secret to `undefined` so the
+  // write, read, and warning paths all agree it means "unsigned".
+  const sessionSecret = opts.sessionSecret || process.env.RPXD_SESSION_SECRET || undefined;
+  if (!sessionSecret) warnUnsignedSid();
   // Un-attached instances only need to outlive their attach window (#61).
   const unattachedTtlMs = opts.unattachedTtlMs ?? attachTtlMs;
   const maxUnattachedInstances =
@@ -214,13 +228,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   }
 
   function sessionOf(req: Request): { sid: string; isNew: boolean } {
-    const cookie = req.headers.get("cookie") ?? "";
-    const found = cookie
-      .split(";")
-      .map((c) => c.trim())
-      .find((c) => c.startsWith(`${SID_COOKIE}=`));
-    if (found) return { sid: found.slice(SID_COOKIE.length + 1), isNew: false };
-    return { sid: crypto.randomUUID(), isNew: true };
+    return readSid(req, sessionSecret); // verify signature (B2) when a secret is set
   }
 
   function withSession(res: Response, sid: string, isNew: boolean): Response {
@@ -228,8 +236,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       // `Secure` by default (B1): browsers accept it on HTTPS and on
       // `http://localhost` (a secure context); only non-localhost HTTP dev needs
       // the `cookie.secure: false` opt-out. `HttpOnly` + `SameSite=Lax` always.
+      // The value is HMAC-signed when a secret is set (B2).
+      const value = sessionSecret ? signSessionId(sid, sessionSecret) : sid;
       const attrs = `Path=/; HttpOnly; SameSite=Lax${cookieSecure ? "; Secure" : ""}`;
-      res.headers.append("set-cookie", `${SID_COOKIE}=${sid}; ${attrs}`);
+      res.headers.append("set-cookie", `${SID_COOKIE}=${value}; ${attrs}`);
     }
     return res;
   }
@@ -836,6 +846,15 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       return originAllowed(req, opts.allowedOrigins);
     },
 
+    /**
+     * Resolve a request to its session id, verifying the signed cookie (B2).
+     * Shared with the WS transport so SSE/POST and the upgrade resolve the same
+     * sid from the same cookie.
+     */
+    resolveSid(req: Request): { sid: string; isNew: boolean } {
+      return readSid(req, sessionSecret);
+    },
+
     /** Test/introspection hook: number of live instances across sessions. */
     get instanceCount(): number {
       return byInstanceId.size;
@@ -852,4 +871,15 @@ class NotFoundError extends Error {
   constructor(pathname: string) {
     super(`No route matches ${pathname}`);
   }
+}
+
+let unsignedSidWarned = false;
+/** Warn once per process that the session cookie is unsigned (B2). */
+function warnUnsignedSid(): void {
+  if (unsignedSidWarned) return;
+  unsignedSidWarned = true;
+  console.warn(
+    "[rpxd] no session secret set — the rpxd_sid cookie is unsigned and forgeable. " +
+      "Set `sessionSecret` (or the RPXD_SESSION_SECRET env var) to sign it (B2).",
+  );
 }

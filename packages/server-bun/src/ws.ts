@@ -16,17 +16,6 @@ interface WsData {
   session: SocketSession | null;
 }
 
-const SID_COOKIE = "rpxd_sid";
-
-function sidOf(req: Request): string {
-  const cookie = req.headers.get("cookie") ?? "";
-  const found = cookie
-    .split(";")
-    .map((c) => c.trim())
-    .find((c) => c.startsWith(`${SID_COOKIE}=`));
-  return found ? found.slice(SID_COOKIE.length + 1) : crypto.randomUUID();
-}
-
 /**
  * Build the websocket handlers + upgrade hook for a serve adapter.
  *
@@ -80,7 +69,7 @@ export function wsTransport(
       return new Response("forbidden origin", { status: 403 });
     }
     const url = new URL(req.url);
-    const sid = sidOf(req);
+    const { sid } = handler.resolveSid(req); // shared signed-cookie resolution (B2)
     let sessionData: unknown = {};
     if (opts.authenticate) {
       try {
