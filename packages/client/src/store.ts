@@ -387,9 +387,18 @@ export class LiveStore<S = unknown, Session = Record<string, unknown>> {
     }
 
     // Ack → link ids (position matching + server escape hatch), drop the fn.
-    const matched = matchIdMap(op.lastPatches, env.patches ?? [], op.tempIds);
-    for (const [tempId, realId] of Object.entries({ ...matched, ...env.idMap })) {
-      this.#realToTemp.set(realId, tempId);
+    // The envelope is untrusted wire data and the op is already spliced out
+    // above, so a throw here (corrupt patches shape) must not escape — every
+    // pending op settles; id linking is best-effort and a resync restores
+    // truth for a frame this corrupt.
+    try {
+      const ackPatches = Array.isArray(env.patches) ? env.patches : [];
+      const matched = matchIdMap(op.lastPatches, ackPatches, op.tempIds);
+      for (const [tempId, realId] of Object.entries({ ...matched, ...env.idMap })) {
+        this.#realToTemp.set(realId, tempId);
+      }
+    } catch {
+      // linking skipped — keyOf falls back to real ids
     }
     for (const call of op.calls) call.resolve();
   }

@@ -44,6 +44,36 @@ const ConnectionContext = createContext<LiveConnection<unknown, Record<string, u
 );
 
 /**
+ * Detect a search-only navigation (§7). Wouter's location is pathname-only,
+ * so a navigation that changes just the query string moves the URL bar but
+ * never reruns the app shell's effect — `guard`/`load` would silently not
+ * rerun. Returns the target's full search record (to reconcile via
+ * `patchSearch`, tier 1) when `href` points at `currentPathname` with a
+ * different query; `null` when the pathname changes (the app shell owns
+ * those) or nothing changed at all.
+ *
+ * @example
+ * ```ts
+ * const patch = searchOnlyChange("/board?filter=done", "/board", "?filter=all");
+ * if (patch) connection.patchSearch(patch); // { filter: "done" }
+ * ```
+ */
+export function searchOnlyChange(
+  href: string,
+  currentPathname: string,
+  currentSearch: string,
+): Record<string, string> | null {
+  const [pathname = href, query = ""] = href.split("?");
+  if (pathname !== currentPathname) return null;
+  const target = new URLSearchParams(query);
+  const current = new URLSearchParams(currentSearch);
+  target.sort();
+  current.sort();
+  if (target.toString() === current.toString()) return null;
+  return Object.fromEntries(target) as Record<string, string>;
+}
+
+/**
  * Provides the active connection to `useNav()` (installed by the app shell).
  *
  * @example
@@ -80,6 +110,7 @@ export function Link<P extends RegisteredPath>(props: {
   className?: string;
 }) {
   const { to, params, search, ...rest } = props;
+  const connection = useContext(ConnectionContext);
   const href = buildHref(to, params as Record<string, string> | undefined, search);
   // Plain anchor (SSR-safe, no router context); soft navigation happens in
   // the click handler, which only ever runs in the browser (§7).
@@ -88,7 +119,12 @@ export function Link<P extends RegisteredPath>(props: {
       event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
     if (event.defaultPrevented || !plainLeftClick) return;
     event.preventDefault();
+    // A same-path search change is invisible to wouter (pathname-only
+    // location): push the history entry, then reconcile guard/load over the
+    // live connection (tier 1, §7) since the app shell's effect won't run.
+    const patch = searchOnlyChange(href, window.location.pathname, window.location.search);
     navigate(href);
+    if (patch) connection?.patchSearch(patch);
   };
   return <a href={href} onClick={onClick} {...rest} />;
 }
@@ -108,8 +144,17 @@ export type Nav = NavProp;
 export function useNav(): Nav {
   const connection = useContext(ConnectionContext);
   return {
-    navigate: (to, opts) =>
-      navigate(buildHref(to, opts?.params as Record<string, string> | undefined, opts?.search)),
+    navigate: (to, opts) => {
+      const href = buildHref(to, opts?.params as Record<string, string> | undefined, opts?.search);
+      // Same dead zone as `Link` (§7): a search-only target never reruns the
+      // app shell's effect, so reconcile it over the live connection.
+      const patch =
+        typeof window !== "undefined"
+          ? searchOnlyChange(href, window.location.pathname, window.location.search)
+          : null;
+      navigate(href);
+      if (patch) connection?.patchSearch(patch);
+    },
     patch: (search) => {
       if (typeof window !== "undefined") {
         const url = new URL(window.location.href);
