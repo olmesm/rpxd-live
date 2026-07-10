@@ -27,6 +27,7 @@ import { WebSocketServer } from "ws";
 import { applyConfigOverrides, type ConfigOverrides, type RpxdConfig } from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
 import { nodeRequestUrl } from "./http-bridge.ts";
+import { createLatestWinsReloader } from "./reload-serializer.ts";
 import {
   loadSsrRuntime,
   makeDevRender,
@@ -234,20 +235,20 @@ export async function createDevServer(
     defaultRateLimit: config.rateLimit,
   });
 
+  // Serialize reloads per route so two rapid saves whose imports resolve out
+  // of order don't leave the instance on the older def (#67).
+  const reloadRouteDef = createLatestWinsReloader<{ default: { def: unknown } }>((routePath, mod) =>
+    handler.updateRoute(routePath, mod.default.def as Parameters<typeof handler.updateRoute>[1]),
+  );
   onRouteFileChange = (file) => {
     if (!file.startsWith(routesDir)) return;
     const entry = fileToRoute(file.slice(routesDir.length + 1));
     if (!entry || entry.kind !== "page" || entry.path === null) return;
     const routePath = entry.path;
     routeFiles.set(routePath, entry.file);
-    void loadDefModule(entry.file)
-      .then((mod) => {
-        handler.updateRoute(
-          routePath,
-          mod.default.def as Parameters<typeof handler.updateRoute>[1],
-        );
-      })
-      .catch((e) => console.error("[rpxd] reducer HMR reload failed:", e));
+    void reloadRouteDef(routePath, () => loadDefModule(entry.file)).catch((e) =>
+      console.error("[rpxd] reducer HMR reload failed:", e),
+    );
   };
 
   // Dev-mode WS transport (§11, dev/prod parity): the `ws` package in
