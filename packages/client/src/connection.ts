@@ -262,12 +262,14 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       setTimeout(() => this.#connectWs(), delay);
     };
     socket.addEventListener("close", (event) => {
-      // A close before we ever opened is a refused upgrade (auth/origin 403 at
-      // the handshake — the socket never established); `4403` is an explicit
-      // policy close. Either is terminal: don't reconnect-loop, settle on
-      // `error` (§11, W7). A close after a live connection is a normal drop →
-      // backoff-reconnect.
-      if (!this.#everOpened || event.code === WS_POLICY_CLOSE) {
+      // A browser WS client can't tell a refused upgrade (auth/origin 403)
+      // from a transient failure — both close pre-`open` with a generic code,
+      // and the HTTP status of a failed upgrade is never exposed. So a close
+      // without an explicit signal always backoff-reconnects (a server bounce
+      // on first load must not strand the page). The one terminal signal is
+      // the `4403` policy close code: a server that closes an *established*
+      // socket with it is saying "don't come back" (§11, W7).
+      if (event.code === WS_POLICY_CLOSE) {
         if (this.#socket !== socket) return;
         this.#socket = undefined;
         this.#socketOpen = false;

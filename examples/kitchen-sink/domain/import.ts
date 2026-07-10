@@ -30,18 +30,20 @@ const cells = (line: string): string[] => line.split(",").map((c) => c.trim());
  * ```
  */
 export function* parseCsv(csv: string): Generator<CsvRow> {
+  // Keep original indices so a thrown error names the *physical* line the
+  // user sees in their file, not an index into a blank-line-filtered array.
   const lines = csv
     .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+    .map((line, index) => ({ line: line.trim(), lineNo: index + 1 }))
+    .filter(({ line }) => line.length > 0);
   if (lines.length === 0) throw new Error("csv has no header row");
 
-  const header = cells(lines[0] as string);
-  for (let i = 1; i < lines.length; i++) {
-    const values = cells(lines[i] as string);
+  const header = cells((lines[0] as { line: string }).line);
+  for (const { line, lineNo } of lines.slice(1)) {
+    const values = cells(line);
     if (values.length !== header.length) {
       throw new Error(
-        `row ${i} has ${values.length} column(s), expected ${header.length} (${header.join(", ")})`,
+        `line ${lineNo} has ${values.length} column(s), expected ${header.length} (${header.join(", ")})`,
       );
     }
     const row: CsvRow = {};

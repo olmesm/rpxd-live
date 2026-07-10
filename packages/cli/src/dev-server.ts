@@ -24,7 +24,12 @@ import { fileToRoute, rpxd as rpxdVitePlugin, runCodegen, scanRoutes } from "@rp
 import rscFlightPlugin from "@vitejs/plugin-rsc";
 import { createServerModuleRunner, createServer as createViteServer } from "vite";
 import { WebSocketServer } from "ws";
-import { applyConfigOverrides, type ConfigOverrides, type RpxdConfig } from "./config.ts";
+import {
+  applyConfigOverrides,
+  type ConfigOverrides,
+  instanceHandlerOptions,
+  type RpxdConfig,
+} from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
 import { nodeRequestUrl } from "./http-bridge.ts";
 import { createLatestWinsReloader } from "./reload-serializer.ts";
@@ -34,7 +39,6 @@ import {
   renderDevErrorPage,
   type ShellComponents,
 } from "./render.ts";
-import { instanceHandlerOptions } from "./start.ts";
 
 /** Options for {@link createDevServer}. */
 export interface DevServerOptions {

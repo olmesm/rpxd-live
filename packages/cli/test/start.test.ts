@@ -9,7 +9,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import type { RpxdConfig } from "../src/config.ts";
-import { instanceHandlerOptions } from "../src/start.ts";
+import { instanceHandlerOptions } from "../src/config.ts";
 
 describe("instanceHandlerOptions (RpxdConfig -> RpxdHandlerOptions wiring)", () => {
   it("forwards configured instance tuning knobs", () => {

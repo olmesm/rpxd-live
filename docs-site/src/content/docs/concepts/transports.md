@@ -46,9 +46,12 @@ protocol-version mismatch is rejected per rpc batch with an error ack, not by
 failing the connection — see the
 [wire protocol](/rpxd-live/concepts/wire-protocol/).)
 
-On SSE a refusal shows up as the `EventSource` closing before it ever opens; on
-WS as the upgrade being refused before `open` (or an explicit `4403` policy
-close). Either way the client stops retrying and settles on `error`.
+On SSE a refusal shows up as the `EventSource` closing before it ever opens —
+the client stops retrying and settles on `error`. A WS client can't observe the
+HTTP status of a failed upgrade (a 403 and a server mid-restart close
+identically before `open`), so on WS a pre-`open` close always backoff-retries;
+the one terminal WS signal is a server closing an established socket with the
+`4403` policy code.
 
 ## Reconnect
 

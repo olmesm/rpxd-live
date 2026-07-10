@@ -158,10 +158,12 @@ type Control =
   `live → reconnecting → live` and never becomes `error`. (A protocol-version
   mismatch is a per-batch error ack, not a connection-fatal state.)
 - Authentication happens once at connect (cookie/token via config hook); every
-  reducer sees the resulting `ctx.session`. A refusal (403) is terminal: SSE sees
-  its `EventSource` close before any `open` (→ `error`, no retry); WS sees the
-  upgrade refused before `open` (→ `error`; an explicit policy close code `4403`
-  is treated the same).
+  reducer sees the resulting `ctx.session`. A refusal (403) is terminal on SSE:
+  the `EventSource` closes before any `open` (→ `error`, no retry). A WS client
+  can't observe the HTTP status of a failed upgrade — a refusal and a transient
+  failure close identically before `open` — so a WS pre-`open` close
+  backoff-retries; the one terminal WS signal is a `4403` policy close on an
+  established socket.
 - The control plane (`/__rpxd/ws|stream|rpc|control`) is **same-origin by
   default** — checked before authentication. The same-origin policy does not
   apply to WebSocket handshakes, so an Origin check is the defense against

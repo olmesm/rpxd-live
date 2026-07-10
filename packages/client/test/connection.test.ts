@@ -370,17 +370,33 @@ describe("ws transport (§11 opt-in)", () => {
     expect(redirects).toEqual(["/403"]);
   });
 
-  it("a refused ws upgrade (close before open, or 4403 policy close) goes terminal error (W7)", () => {
+  it("a 4403 policy close goes terminal error, no retry (W7)", () => {
     vi.useFakeTimers();
     const { conn, socket } = makeWsConnection();
     const ws = socket();
     const before = FakeWebSocket.instances.length;
-    // The upgrade was refused (auth/origin 403) — the socket closes before it
-    // ever opened; a 4403 policy close is the same signal.
+    // The server closed with the explicit policy code — the one "don't come
+    // back" signal a WS client can actually observe.
     ws.emit("close", undefined, 4403);
     expect(conn.store.snapshot().status).toBe("error");
     vi.advanceTimersByTime(60_000);
     expect(FakeWebSocket.instances.length).toBe(before); // no reconnect scheduled
+    conn.close();
+    vi.useRealTimers();
+  });
+
+  it("a pre-open close without a policy code backoff-retries — a server bounce on first load must not strand the page", () => {
+    vi.useFakeTimers();
+    const { conn, socket } = makeWsConnection();
+    const ws = socket();
+    const before = FakeWebSocket.instances.length;
+    // Transient failure on the very first connect (e.g. server mid-restart):
+    // the socket closes before `open` with a generic code. A browser client
+    // can't distinguish this from a refused upgrade, so it must keep trying.
+    ws.emit("close", undefined, 1006);
+    expect(conn.store.snapshot().status).toBe("reconnecting");
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(before); // reconnect scheduled
     conn.close();
     vi.useRealTimers();
   });

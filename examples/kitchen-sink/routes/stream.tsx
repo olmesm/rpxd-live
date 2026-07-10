@@ -1,4 +1,5 @@
 import { live } from "@rpxd/core";
+import { sleep } from "../lib/sleep";
 
 /**
  * Streaming demo (§3): a handler grows a string with `s.answer += delta` inside
@@ -8,7 +9,6 @@ import { live } from "@rpxd/core";
  * keep the e2e stable; `stop` aborts mid-stream via `ctx.abort` + `ctx.signal`.
  */
 const TOKENS = "the quick brown fox jumps over the lazy dog".split(" ");
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // The token source as an async generator — stands in for a real LLM's streamed
 // response (the async-handlers guide's `for await` shape). Deterministic here

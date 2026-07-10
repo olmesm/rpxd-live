@@ -1,6 +1,7 @@
 import { live } from "@rpxd/core";
 import { z } from "zod";
 import { type CsvRow, parseCsv } from "../domain/import";
+import { sleep } from "../lib/sleep";
 
 /**
  * CSV import demo (§3, §5) — streaming progress *and* `.onError` recovery in one
@@ -18,17 +19,14 @@ import { type CsvRow, parseCsv } from "../domain/import";
  */
 
 const SAMPLE = "task,note\nitem-1,write the failing test\nitem-2,make it pass\nitem-3,refactor";
-// row 3 ("oops-no-note") is one column short of the `task,note` header, so the
+// line 4 ("oops-no-note") is one column short of the `task,note` header, so the
 // generator throws on it — after the first two rows have already imported.
 const SAMPLE_WITH_BAD_ROW =
   "task,note\nitem-1,write the failing test\nitem-2,make it pass\noops-no-note\nitem-3,refactor";
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 export default live("/import")
   .setup(() => ({
-    rows: [] as CsvRow[],
-    imported: 0,
+    rows: [] as CsvRow[], // the row count is derived — rows.length, one fact, one field
     importing: false,
     error: null as string | null,
   }))
@@ -38,17 +36,15 @@ export default live("/import")
       .handler(async ({ csv }, ctx) => {
         ctx.patchState((s) => {
           s.rows = [];
-          s.imported = 0;
           s.importing = true;
           s.error = null;
         });
         // Lazy iteration: a malformed row throws here, mid-loop, so the rows
-        // before it have already been imported (and counted).
+        // before it have already been imported.
         for (const row of parseCsv(csv)) {
           await sleep(120); // artificial — makes the per-row progress visible
           ctx.patchState((s) => {
             s.rows.push(row);
-            s.imported += 1;
           });
         }
         ctx.patchState((s) => {
@@ -56,12 +52,12 @@ export default live("/import")
         });
       })
       // THE demonstration: when the handler throws (a poison row), this sync
-      // mutator repairs state and its patches ride the error ack (§5). `err` is
+      // mutator repairs state and its patches ride the error ack. `err` is
       // the serialized ack error (`{ name, message, rpc }`), not the raw throw.
       .onError((s, err) => {
         s.importing = false;
         const message = (err as { message?: string })?.message ?? String(err);
-        s.error = `import failed after ${s.imported} rows: ${message}`;
+        s.error = `import failed after ${s.rows.length} rows: ${message}`;
       }),
   )
   .render(({ state, rpc, sync }) => (
@@ -111,7 +107,7 @@ export default live("/import")
           {state.error}
         </p>
       )}
-      <p data-testid="count">imported {state.imported} rows</p>
+      <p data-testid="count">imported {state.rows.length} rows</p>
       <ul data-testid="items">
         {state.rows.map((row, i) => (
           // Rows have no natural id (raw CSV) — index key is fine for a
