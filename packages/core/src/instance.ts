@@ -319,7 +319,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * projection before its first `await`) renders immediately; one that `await`s
    * before patching blocks the first paint until that patch lands (crawlable,
    * data-complete). A `redirect` thrown before the first patch propagates (302 /
-   * soft-nav); one thrown after is mid-stream, handled as a background run.
+   * soft-nav); one thrown after is mid-stream — ignored, with a server-side log
+   * (redirect before the first patch to navigate; per-URL denies belong in `guard`).
    */
   async loadForRender(search: Record<string, string | undefined>): Promise<void> {
     if (!this.#def.load || this.#disposed) return;
@@ -330,9 +331,18 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     // this call is about to overwrite (concurrent reconciles share the instance).
     this.#renderGate?.gate.resolve();
     this.#renderGate = { gate, runId };
-    // The remainder streams after the gate opens; a late throw/redirect is
-    // reported inside #runLoad, so swallow the background rejection here.
-    void this.#runLoad(search).catch(() => {});
+    // The remainder streams after the gate opens. #runLoad logs data throws and
+    // rejects the gate with a pre-first-patch redirect (delivered to the await
+    // below); the only rejection left here is a redirect thrown *after* the
+    // first patch — no awaiter can map it, so log the drop instead of hiding it.
+    void this.#runLoad(search).catch((e: unknown) => {
+      if (isRedirect(e) && !gate.rejected) {
+        console.error(
+          "[rpxd] load redirect after first patch ignored — redirect before the first patch to navigate (§12):",
+          e.location,
+        );
+      }
+    });
     await gate.promise;
   }
 
@@ -715,6 +725,8 @@ interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
   reject: (reason?: unknown) => void;
+  /** Whether `reject` ran — i.e. the rejection was delivered to the awaiter (§12). */
+  readonly rejected: boolean;
 }
 
 function makeDeferred<T>(): Deferred<T> {
@@ -724,7 +736,18 @@ function makeDeferred<T>(): Deferred<T> {
     resolve = res;
     reject = rej;
   });
-  return { promise, resolve, reject };
+  let rejected = false;
+  return {
+    promise,
+    resolve,
+    reject: (reason?: unknown) => {
+      rejected = true;
+      reject(reason);
+    },
+    get rejected() {
+      return rejected;
+    },
+  };
 }
 
 /**

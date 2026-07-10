@@ -159,7 +159,7 @@ Connection authenticated once; context flows to every reducer.
 
 - Authenticate at connect (cookie/token) via config hook → `ctx.session` everywhere
 - **Authorization is `guard`** (§7): runs before `load` on every URL change — path *and* search — so it re-checks on `nav.patch` too (a spoofed `?cursor=…`/`?userId=…` can't expose data). `throw redirect` denies → 302 (full load) / soft-nav (patch). `setup` may also `throw redirect` for a coarse identity fail-fast, but per-URL authz belongs in `guard`
-- `load` may `throw redirect` as well; a redirect thrown in `setup`/`guard`/`load` is control-flow (→ route), distinct from a data throw (→ `sync.errors`)
+- `load` may `throw redirect` as well — honored **before its first patch** (§12); after it the run is mid-stream and the redirect is ignored (logged server-side). A redirect thrown in `setup`/`guard`/`load` is control-flow (→ route), distinct from a data throw (→ `sync.errors`)
 - Handler throws: draft discarded, ack rejected, `onError` runs if declared (§5), `sync.errors` populated
 - **DB writes are userland's transaction responsibility** (documented)
 - Per-session rate limiting (token bucket), configurable per rpc — buckets are per rpc *per instance*; with per-session instances (§1) that is per session per route, a finer grain than a shared per-session pool

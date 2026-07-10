@@ -358,6 +358,35 @@ describe("loadForRender render gate (§12)", () => {
     gates.first?.(); // let the superseded run drain
   });
 
+  it("logs a redirect thrown after the first patch instead of dropping it silently (§12)", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+        setup: () => initial(),
+        load: async (_url, ctx) => {
+          ctx.patchState(((s) => {
+            s.log.push("chrome");
+          }) as Mut);
+          await gate("lateRedirect"); // held until the first patch has flushed
+          throw redirect("/too-late");
+        },
+      };
+      const { inst } = await make(def);
+      await inst.loadForRender({}); // resolves at the first patch
+      gates.lateRedirect?.(); // the loader now throws its redirect mid-stream
+      await tick();
+      await tick();
+      // The dropped redirect leaves a server-side trace, and nothing crashed.
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringContaining("redirect after first patch"),
+        expect.anything(),
+      );
+      expect(inst.state.log).toEqual(["chrome"]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("an unrelated flush during an await-first load does not open the render gate", async () => {
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
