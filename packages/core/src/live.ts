@@ -64,11 +64,11 @@ export interface RpcCtx<Params, Session> {
    * (§8). Excludes the sending instance unless `{ self: true }`.
    *
    * **Typesafety is opt-in.** Out of the box `event` is any `string` and
-   * `payload` is unchecked. To autocomplete event names and type-check payloads,
+   * `payload` is `unknown`. To autocomplete event names and type-check payloads,
    * augment the {@link Register} interface with an `events` map — event name →
    * payload shape — in a `.d.ts` covered by your `tsconfig`. There is no
-   * codegen: the map is maintained by hand, and unregistered events stay
-   * permissive.
+   * codegen: the map is maintained by hand. Unregistered events keep an
+   * `unknown` payload (not `any`) — a nudge to register them.
    *
    * @example Opt in to typed events — e.g. `rpxd-events.d.ts`
    * ```ts
@@ -262,7 +262,7 @@ export type RpcDef<S, Params, Session> =
 /**
  * Broadcast event handler (§8): a sync mutator run in response to a topic event.
  * `Payload` is the registered shape for the event (see {@link RpcCtx.broadcast}),
- * or `any` for an unregistered event.
+ * or `unknown` for an unregistered event.
  */
 export type EventHandler<S, Payload, Params, Session> = (
   state: Draft<S>,
@@ -357,7 +357,7 @@ export interface LiveBuilder<S, Path extends string, Session, R> {
    * Broadcast handler (§8): a sync mutator run in response to a topic event.
    * `payload` is typed from the same `Register["events"]` map that types
    * {@link RpcCtx.broadcast} — see that method to opt into typed events. Until an
-   * event is registered its `payload` is `any`.
+   * event is registered its `payload` is `unknown`.
    *
    * @example
    * ```ts

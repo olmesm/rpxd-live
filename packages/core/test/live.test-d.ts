@@ -219,9 +219,9 @@ describe("typed broadcasts (§8)", () => {
       )
       .on("some.unregistered.event", (state, payload) => {
         expectTypeOf(state).toEqualTypeOf<Draft<{ log: string[] }>>();
-        // no registration for this event → payload stays permissive (`any`),
-        // so existing annotated handlers keep compiling.
-        expectTypeOf(payload).toBeAny();
+        // no registration for this event → payload is `unknown` (strict by
+        // default), nudging you to register it before use.
+        expectTypeOf(payload).toEqualTypeOf<unknown>();
       })
       .render(() => null);
   });
@@ -231,8 +231,8 @@ describe("typed broadcasts (§8)", () => {
     expectTypeOf<string>().toMatchTypeOf<EventName>();
     // …and RegisteredEvent is always a string subtype.
     expectTypeOf<RegisteredEvent>().toMatchTypeOf<string>();
-    // an unregistered event resolves to the permissive `any`.
-    expectTypeOf<EventPayload<"totally.unregistered">>().toBeAny();
+    // an unregistered event resolves to `unknown`, not `any`.
+    expectTypeOf<EventPayload<"totally.unregistered">>().toEqualTypeOf<unknown>();
   });
 });
 

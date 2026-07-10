@@ -16,9 +16,11 @@ void _registered;
 const _wrong: EventPayload<"message.created"> = { id: "m-1", body: "hi" };
 void _wrong;
 
-// …while an unregistered event stays permissive (`any`).
-type UnregisteredPayload = EventPayload<"never.registered">;
-const _unregistered: UnregisteredPayload = { whatever: true };
+// …while an unregistered event resolves to exactly `unknown` (strict by
+// default) — not `any`, so the payload can't be used without narrowing.
+type IsAny<T> = 0 extends 1 & T ? true : false;
+type IsUnknown<T> = IsAny<T> extends true ? false : unknown extends T ? true : false;
+const _unregistered: IsUnknown<EventPayload<"never.registered">> = true;
 void _unregistered;
 
 // The registered event name is offered for autocomplete on the open `EventName`.

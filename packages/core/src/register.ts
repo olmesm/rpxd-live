@@ -10,8 +10,7 @@ type Routes = Register extends { routes: infer R } ? R : Record<string, never>;
 /** All registered route paths — falls back to `string` before codegen runs. */
 export type RegisteredPath = [keyof Routes] extends [never] ? string : keyof Routes & string;
 
-// biome-ignore lint/suspicious/noExplicitAny: the default map keeps unregistered events fully permissive (today's behavior) so existing `.on` handlers keep compiling
-type Events = Register extends { events: infer E } ? E : Record<string, any>;
+type Events = Register extends { events: infer E } ? E : Record<string, unknown>;
 
 /**
  * All registered broadcast event names (§8) — the keys of the `events` map an
@@ -30,10 +29,8 @@ export type EventName = RegisteredEvent | (string & {});
 
 /**
  * Payload type for a broadcast event `K` (§8) — the shape registered for `K` in
- * {@link Register}'s `events` map, or `any` for an event that isn't registered
- * (unregistered events stay permissive, exactly as before events were typed).
+ * {@link Register}'s `events` map, or `unknown` for an event that isn't
+ * registered. `unknown` (not `any`) is deliberate: it nudges you to register the
+ * event, since an unregistered payload can't be used without a narrowing check.
  */
-export type EventPayload<K extends string> = K extends keyof Events
-  ? Events[K]
-  : // biome-ignore lint/suspicious/noExplicitAny: an unregistered event is untyped — `any` keeps it permissive and preserves existing annotated handlers
-    any;
+export type EventPayload<K extends string> = K extends keyof Events ? Events[K] : unknown;

@@ -154,8 +154,11 @@ describe("testLive: broadcast injection + search params", () => {
       ctx.subscribe("room:1");
       return { log: [] as string[], filter: "all" };
     })
-    .on("user.joined", (state, p: { name: string }) => {
-      state.log.push(`joined:${p.name}`);
+    // "user.joined" isn't in Register["events"], so its payload is `unknown`
+    // (strict by default) — narrow it at the boundary.
+    .on("user.joined", (state, p) => {
+      const { name } = p as { name: string };
+      state.log.push(`joined:${name}`);
     })
     .load(async ({ search }, ctx) => {
       ctx.patchState((s) => {
@@ -192,8 +195,9 @@ describe("testLive: broadcast injection + search params", () => {
           ctx.broadcast("chat", "msg", { text });
         }),
       )
-      .on("msg", (state, p: { text: string }) => {
-        state.log.push(p.text);
+      // unregistered event → `unknown` payload; narrow at the boundary.
+      .on("msg", (state, p) => {
+        state.log.push((p as { text: string }).text);
       })
       .render(({ rpc }) => ({ rpc }) as unknown);
 
