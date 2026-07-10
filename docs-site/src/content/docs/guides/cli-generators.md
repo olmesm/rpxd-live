@@ -83,7 +83,7 @@ map to TypeScript and Prisma:
 
 | Flag             | Effect                                                          |
 | ---------------- | -------------------------------------------------------------- |
-| `--kind http`    | Emit a `route()` endpoint (`routes/<plural>.ts`) instead of a page |
+| `--kind http`    | Emit a `route()` endpoint (`routes/api.<plural>.ts`, served at `/api/<plural>`) instead of a page |
 | `--no-protected` | Make the page public (see below)                               |
 | `--protected`    | Force the guard → `/login` gate (auth apps only)               |
 | `--no-test`      | Skip the test                                                  |
