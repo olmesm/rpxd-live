@@ -6,7 +6,12 @@
  *
  * @packageDocumentation
  */
-export { type CreateInstanceOptions, LiveInstance, SESSION_PREFIX } from "./instance.ts";
+export {
+  type CreateInstanceOptions,
+  DEFAULT_MAX_BATCH_CALLS,
+  LiveInstance,
+  SESSION_PREFIX,
+} from "./instance.ts";
 export {
   type BroadcastOptions,
   type EventHandler,

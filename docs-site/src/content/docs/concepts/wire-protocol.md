@@ -86,6 +86,27 @@ type RpcBatch = {
 - Streaming rpcs push their mid-handler `patchState` flushes as ordinary non-ack
   envelopes; the ack (with `rpcId`) rides the final flush at handler completion
   (or `error` on throw). `sync.pending` spans call → ack.
+- A batch carrying more than `maxBatchCalls` calls (default 256) is rejected
+  wholesale — no call runs — with a `PayloadTooLargeError` ack. See
+  [Ingress limits](#ingress-limits).
+
+## Ingress limits
+
+The runtime caps attacker-controllable ingress so a single request can't
+exhaust server memory/CPU (a §11 requirement). Both caps are enforced in the
+shared request handler, so the Bun and Node adapters behave identically, and
+both are configurable on `createRpxdHandler`:
+
+- **`maxBodyBytes`** (default 1 MiB) — the max byte length of an rpc/control
+  request body or WS frame. Over HTTP an oversized body is rejected with `413`
+  before it's parsed (`Content-Length` is a fast-path hint; the streamed read is
+  the real guard). Over WS the oversized frame is dropped before `JSON.parse`.
+- **`maxBatchCalls`** (default 256) — the max calls in one rpc batch. An over-cap
+  batch is error-acked (`rpcId` preserved) without running any call.
+
+Both defaults sit far above any realistic client (batches are single-digit
+same-tick coalescing; rpc payloads are reducer inputs), so no ordinary app hits
+them. Raise either per-app if a workload legitimately needs to.
 
 ## Control messages (upstream)
 

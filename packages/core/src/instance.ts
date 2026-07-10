@@ -50,9 +50,23 @@ export interface CreateInstanceOptions<S, Path extends string, Session> {
   storageKey: string;
   /** Applied to rpcs that don't declare their own `rateLimit` (§10). */
   defaultRateLimit?: RateLimit;
+  /**
+   * Max calls a single rpc batch may carry before it's rejected wholesale with
+   * an error ack — no call runs (§11 ingress DoS guard). Defaults to
+   * {@link DEFAULT_MAX_BATCH_CALLS}.
+   */
+  maxBatchCalls?: number;
 }
 
 const ACK_CACHE_LIMIT = 64;
+
+/**
+ * Default cap on calls per rpc batch (§11 ingress DoS guard). Batches are
+ * client-side same-tick coalescing — realistic ones are single digits — so a
+ * few hundred is comfortable headroom while still bounding an attacker's
+ * `calls` array. Raise via `maxBatchCalls` for apps that legitimately burst.
+ */
+export const DEFAULT_MAX_BATCH_CALLS = 256;
 
 const READ_ONLY_HINT = "ctx.state is read-only — writes go through ctx.patchState(mut) (§3)";
 
@@ -103,6 +117,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   readonly #storageKey: string;
   readonly #version: string;
   readonly #defaultRateLimit: RateLimit | undefined;
+  readonly #maxBatchCalls: number;
 
   #state!: S;
   #session: Session;
@@ -146,6 +161,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     this.#storageKey = opts.storageKey;
     this.#version = opts.def.version ?? "1";
     this.#defaultRateLimit = opts.defaultRateLimit;
+    this.#maxBatchCalls = opts.maxBatchCalls ?? DEFAULT_MAX_BATCH_CALLS;
   }
 
   /**
@@ -224,6 +240,24 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     const cached = this.#acks.get(batch.rpcId);
     if (cached) {
       for (const fn of this.#listeners) fn(cached);
+      return;
+    }
+
+    // Ingress DoS guard (§11): reject an over-cap batch wholesale before running
+    // any call — an attacker's million-entry `calls` array never reaches a
+    // handler. The error rides the ack channel like any other rpc failure.
+    if (batch.calls.length > this.#maxBatchCalls) {
+      await this.#ackError(
+        batch.rpcId,
+        {
+          name: "PayloadTooLargeError",
+          message: `rpc batch of ${batch.calls.length} exceeds maxBatchCalls (${this.#maxBatchCalls})`,
+          rpc: "?",
+        },
+        "?",
+        undefined,
+        {},
+      );
       return;
     }
 
