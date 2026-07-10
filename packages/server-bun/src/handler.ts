@@ -88,6 +88,13 @@ export interface RpxdHandlerOptions {
   renderNotFound?: (info: { path: string }) => Response | Promise<Response>;
   /** setup/guard/load-rejection / crash page (§10, §14 `__error`). Defaults to plain text. */
   renderError?: (info: { path: string; error: unknown }) => Response | Promise<Response>;
+  /**
+   * Echo internal error messages in the fallback 500 body (#9). Default `false`
+   * — a crash returns a generic `"internal error"` (the full error is logged
+   * server-side), so stack/message details never leak to clients. The dev server
+   * sets this `true`. Only affects the plain-text fallback, not `renderError`.
+   */
+  debugErrors?: boolean;
   /** Warm TTL before an unsubscribed instance is snapshotted + evicted (§11). Default 60s. */
   warmTtlMs?: number;
   /** Pending-attach TTL for SSR adoption tokens (§12). Default 10s. */
@@ -192,6 +199,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   // write, read, and warning paths all agree it means "unsigned".
   const sessionSecret = opts.sessionSecret || process.env.RPXD_SESSION_SECRET || undefined;
   if (!sessionSecret) warnUnsignedSid();
+  const debugErrors = opts.debugErrors ?? false; // #9: hide internal errors from clients by default
   // Un-attached instances only need to outlive their attach window (#61).
   const unattachedTtlMs = opts.unattachedTtlMs ?? attachTtlMs;
   const maxUnattachedInstances =
@@ -221,6 +229,15 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   /** sessionId → client stream id → live SSE subscriber (§7 tier-2 late mount). */
   const streamRegistry = new Map<string, Map<string, StreamHandle>>();
   let disposed = false;
+
+  /**
+   * Client-safe error body (#9): the real message only in `debugErrors` mode,
+   * else a generic fallback — internals never leak to clients by default.
+   * Shared by the 403 (auth) and 500 (crash) paths and the WS upgrade.
+   */
+  function safeErrorMessage(e: unknown, fallback: string): string {
+    return debugErrors && e instanceof Error ? e.message : fallback;
+  }
 
   function registerStream(sid: string, streamId: string, handle: StreamHandle): void {
     let m = streamRegistry.get(sid);
@@ -697,7 +714,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         try {
           sessionData = await opts.authenticate(req, { sid });
         } catch (e) {
-          return new Response(e instanceof Error ? e.message : "forbidden", { status: 403 });
+          // Auth rejections are often intentional (logged-out) — don't log the
+          // noise, but hide any unexpected internal message from the client (#9).
+          return new Response(safeErrorMessage(e, "forbidden"), { status: 403 });
         }
       }
 
@@ -767,11 +786,15 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           }
           return new Response("not found", { status: 404 });
         }
-        // setup/load rejection → error route (§10)
+        // A real crash (not a redirect/not-found): log the detail server-side
+        // regardless of how it's rendered (#9), so it's never silently swallowed.
+        console.error("[rpxd] request failed:", e);
+        // setup/load rejection → error route (§10). The app's page owns disclosure.
         if (opts.renderError) {
           return withSession(await opts.renderError({ path: url.pathname, error: e }), sid, isNew);
         }
-        return new Response(e instanceof Error ? e.message : "internal error", { status: 500 });
+        // Fallback: a generic body so error/stack messages don't leak (unless debugErrors).
+        return new Response(safeErrorMessage(e, "internal error"), { status: 500 });
       }
     },
 
@@ -880,6 +903,14 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
      */
     resolveSid(req: Request): { sid: string; isNew: boolean } {
       return readSid(req, sessionSecret);
+    },
+
+    /**
+     * Client-safe error body (#9), shared with the WS transport so the upgrade's
+     * 403 hides internal messages the same way SSE/POST do.
+     */
+    safeErrorMessage(e: unknown, fallback: string): string {
+      return safeErrorMessage(e, fallback);
     },
 
     /** Test/introspection hook: number of live instances across sessions. */

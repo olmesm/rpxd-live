@@ -779,6 +779,47 @@ describe("guard runs before setup — denied requests allocate nothing (#8)", ()
   });
 });
 
+describe("error disclosure — generic 500 by default (#9)", () => {
+  const boomDef: LiveDefinition<{ ok: boolean }, "/boom", Record<string, unknown>> = {
+    setup: () => ({ ok: true }),
+    guard: () => {
+      throw new Error("secret internal detail");
+    },
+  };
+
+  it("returns a generic 500 body, not the internal error message", async () => {
+    const handler = createRpxdHandler({ routes: [{ path: "/boom", def: boomDef }] });
+    const res = await handler.fetch(new Request(`${base}/boom`, { headers: COOKIE }));
+    expect(res.status).toBe(500);
+    expect(await res.text()).toBe("internal error"); // no leak
+    await handler.dispose();
+  });
+
+  it("echoes the message when debugErrors is enabled (dev)", async () => {
+    const handler = createRpxdHandler({
+      routes: [{ path: "/boom", def: boomDef }],
+      debugErrors: true,
+    });
+    const res = await handler.fetch(new Request(`${base}/boom`, { headers: COOKIE }));
+    expect(res.status).toBe(500);
+    expect(await res.text()).toBe("secret internal detail");
+    await handler.dispose();
+  });
+
+  it("hides authenticate error messages in the 403 by default", async () => {
+    const handler = createRpxdHandler({
+      routes: [{ path: "/org/$orgId/board", def: boardDef }],
+      authenticate: () => {
+        throw new Error("db connection string leaked");
+      },
+    });
+    const res = await handler.fetch(new Request(`${base}/org/7/board`, { headers: COOKIE }));
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe("forbidden"); // no leak of the internal auth error
+    await handler.dispose();
+  });
+});
+
 describe("per-session instance cap (C)", () => {
   const capMount = (h: ReturnType<typeof makeHandler>, sid: string, n: number) =>
     h.fetch(
