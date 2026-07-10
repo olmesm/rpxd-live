@@ -15,6 +15,7 @@ import {
   type RouteMethod,
   type RpcBatch,
   type StorageAdapter,
+  TokenBucket,
 } from "@rpxd/core";
 import { readSid, SID_COOKIE, signSessionId } from "./cookie.ts";
 import { matchHttpRoute, matchRoute } from "./match.ts";
@@ -124,6 +125,24 @@ export interface RpxdHandlerOptions {
    * pathological).
    */
   maxInstancesPerSession?: number | null;
+  /**
+   * Opt-in request throttle (#6) — a token bucket per key, keyed by a function
+   * you provide so the framework never guesses client identity. `key(req)`
+   * returns the throttle key or `null` to skip this request. Over-limit HTTP
+   * requests (SSR GET, rpc/control POST) get `429`, checked before
+   * `authenticate`; the long-lived SSE stream is exempt (a 429 would break the
+   * native EventSource).
+   *
+   * The key **must derive from a trusted source** — a socket peer address or a
+   * proxy-set header. A raw `X-Forwarded-For` is client-spoofable, so an attacker
+   * rotating it gets a fresh bucket per request.
+   *
+   * Buckets are **in-process** (single-node); for multi-node, rate-limit at the
+   * proxy/edge. Coverage note: for `transport: ws()` apps this sees only the
+   * initial navigation — post-upgrade socket frames don't pass through `fetch`,
+   * so rate-limit the upgrade at the proxy. Omit to disable.
+   */
+  throttle?: { key: (req: Request) => string | null; limit: RateLimit };
   defaultRateLimit?: RateLimit;
 }
 
@@ -200,6 +219,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   const sessionSecret = opts.sessionSecret || process.env.RPXD_SESSION_SECRET || undefined;
   if (!sessionSecret) warnUnsignedSid();
   const debugErrors = opts.debugErrors ?? false; // #9: hide internal errors from clients by default
+  /** Throttle buckets, keyed by the app's `throttle.key(req)` (#6, in-process). */
+  const throttleBuckets = new Map<string, TokenBucket>();
+  /** Bound on distinct throttle keys held, so the limiter can't itself leak memory (#6). */
+  const MAX_THROTTLE_KEYS = 50_000;
   // Un-attached instances only need to outlive their attach window (#61).
   const unattachedTtlMs = opts.unattachedTtlMs ?? attachTtlMs;
   const maxUnattachedInstances =
@@ -707,6 +730,30 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         url.pathname === "/__rpxd/control";
       if (isControlPlane && !originAllowed(req, opts.allowedOrigins)) {
         return new Response("forbidden origin", { status: 403 });
+      }
+
+      // Throttle (#6): a per-key token bucket over the HTTP request paths (SSR
+      // GET, rpc/control POST), before authenticate so a flood can't amplify
+      // auth/mount work. The long-lived SSE stream is exempt — a native
+      // EventSource can't reconnect after a non-200, so a 429 there would
+      // permanently kill the live channel. `key(req) === null` skips a request.
+      if (opts.throttle && url.pathname !== "/__rpxd/stream") {
+        const k = opts.throttle.key(req);
+        if (k !== null) {
+          let bucket = throttleBuckets.get(k);
+          if (!bucket) {
+            // Bound the bucket map so the throttle can't itself leak memory under
+            // a key-rotating flood — drop the oldest (a reset bucket starts full,
+            // i.e. lenient, never a bypass of an active limit).
+            if (throttleBuckets.size >= MAX_THROTTLE_KEYS) {
+              const oldest = throttleBuckets.keys().next().value;
+              if (oldest !== undefined) throttleBuckets.delete(oldest);
+            }
+            bucket = new TokenBucket(opts.throttle.limit);
+            throttleBuckets.set(k, bucket);
+          }
+          if (!bucket.take()) return new Response("rate limited", { status: 429 });
+        }
       }
 
       let sessionData: unknown = {};

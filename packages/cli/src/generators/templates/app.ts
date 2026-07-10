@@ -155,7 +155,14 @@ export default defineConfig({
     : `import { defineConfig } from "@rpxd/cli";
 
 /** App config (§14). memory() storage + sse() transport are the defaults. */
-export default defineConfig({});
+export default defineConfig({
+  // Opt-in request throttle (#6) — key from a TRUSTED source (a proxy-set
+  // header or peer address; a raw x-forwarded-for is client-spoofable):
+  // throttle: {
+  //   key: (req) => req.headers.get("x-forwarded-for"),
+  //   limit: { capacity: 60, refillPerSec: 1 },
+  // },
+});
 `;
 
 const root = (auth: boolean): string => `import { Link } from "@rpxd/client";

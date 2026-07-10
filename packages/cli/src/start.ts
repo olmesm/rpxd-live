@@ -168,6 +168,7 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     allowedOrigins: config.allowedOrigins,
     cookie: config.session?.cookie, // Secure by default (B1); prod is HTTPS
     defaultRateLimit: config.rateLimit,
+    throttle: config.throttle,
     ...serverEntryModule.makeShellRenderers(shell),
     render: async (ctx) => {
       const route = components.get(ctx.path);
