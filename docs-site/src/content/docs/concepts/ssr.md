@@ -17,8 +17,10 @@ instance** rather than mounting again.
    see the [wire protocol](/rpxd-live/concepts/wire-protocol/)).
 3. Within the pending-attach TTL (~10s) the server **adopts** the SSR-warmed
    instance and resumes the stream from `seq`. No second mount.
-4. If the token expired, the server silently re-mounts and pushes a `full`
-   snapshot; the seq check covers any broadcasts that landed in the gap.
+4. If the token is expired or unknown, the server does **not** re-mount — it
+   resyncs the still-warm instance and pushes a `full` snapshot instead. No
+   second `guard`/`setup`/`load` run; the same instance just catches the
+   client up.
 
 ## Guarantees
 

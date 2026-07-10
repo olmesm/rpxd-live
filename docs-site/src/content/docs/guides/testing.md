@@ -158,7 +158,9 @@ Pick the tier that matches the surface under test:
 
 ## Scaffolded tests
 
-`rpxd scaffold` writes a `testLive` route test alongside every resource by
-default (pass `--no-test` to skip it) — see
-[CLI generators](/rpxd-live/guides/cli-generators/). The generated test is a
-real starting point you own, not a placeholder.
+`rpxd scaffold` writes a test alongside every resource by default (pass
+`--no-test` to skip it) — see
+[CLI generators](/rpxd-live/guides/cli-generators/). A `--kind page` resource
+(the default) gets a `testLive` route test; a `--kind http` resource has no
+rpcs, so it gets a plain domain test instead. The generated test is a real
+starting point you own, not a placeholder.

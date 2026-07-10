@@ -18,14 +18,15 @@ transport.
 
 ## How it works
 
-Wrap a component in `rsc(...)` inside `load` or a reducer. It becomes a Flight
-string — an opaque field in your state:
+Wrap a component in `rsc(...)` inside `load` or a reducer. It becomes an
+`RscField` marker (`{ $rsc: string }`) carrying a Flight payload — an opaque
+field in your state:
 
 ```tsx
 load: async (_url, ctx) => {
   const doc = await getDoc(ctx.params.slug);
   // Serialize before the mutator — patchState is sync by design.
-  const body = await rsc(<Markdown source={doc.raw} />); // → Flight string
+  const body = await rsc(<Markdown source={doc.raw} />); // → RscField marker
   ctx.patchState((s) => {
     s.doc = doc;
     s.body = body;
@@ -35,8 +36,8 @@ load: async (_url, ctx) => {
 
 On the client, marked fields are deserialized when a patch or snapshot applies,
 and `{state.body}` renders the hydrated subtree. To the rest of the system it's
-just a string in state — so it flows through storage, SSR, and reconnect
-unchanged.
+just an opaque marker value in state — so it flows through storage, SSR, and
+reconnect unchanged.
 
 ## Security: the `$rsc` key is reserved
 
@@ -67,5 +68,5 @@ brand for this marker is tracked as a follow-up in issue #95.
 RSC is built on
 [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react) — rpxd
 integrates it rather than owning the bundler layer. Enable it with `rsc: true`
-in `rpxd.config.ts`, or per-run with `rpxd dev --rsc` / `--no-rsc`. The todos
-example's `/doc` page is a live RSC field.
+in `rpxd.config.ts`, or per-run with `rpxd dev --rsc` / `--no-rsc`. The
+kitchen-sink example's `/doc` page is a live RSC field.

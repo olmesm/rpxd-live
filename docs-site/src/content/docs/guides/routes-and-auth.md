@@ -77,9 +77,8 @@ place identity is resolved.
 `ctx.session`, which routes turn into a `Scope` (`scopeFrom`) and thread into
 `domain/`. See
 [App structure](/rpxd-live/guides/domain-layer/#scope--who-is-acting) for the
-`Scope` type. With an auth library this is where its session lookup lands (the
-shipped example uses a sync `auth.getSession(req)`; a library like Better Auth
-exposes an async `auth.api.getSession({ headers })` — same seam):
+`Scope` type. With an auth library this is where its session lookup lands — the
+shipped example uses Better Auth's async `auth.api.getSession({ headers })`:
 
 ```ts
 // rpxd.config.ts

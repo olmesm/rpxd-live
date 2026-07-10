@@ -10,13 +10,15 @@ carry the [pubsub bus](/rpxd-live/concepts/pubsub/).
 
 ## The adapter interface
 
-A `StorageAdapter` does `get` / `set` of `{ state, seq, version }` plus pubsub.
-The framework writes through on every `patchState` flush and rpc completion.
+A `StorageAdapter` does `get` / `set` / `delete` of `{ state, session, seq,
+version }` plus pubsub. The `session` field is the value your `authenticate`
+hook returned — it's what's restored on cold wake, alongside `state`. The
+framework writes through on every `patchState` flush and rpc completion.
 
 | Adapter | Package | Use |
 | --- | --- | --- |
 | `memory()` | `@rpxd/storage-memory` | default; single node, non-durable |
-| `session()` | `@rpxd/storage-session` | per-session store |
+| `session()` | `@rpxd/storage-session` | in-memory, TTL-expiring (default 30 min, configurable `ttlMs`) |
 | `sqlite()` | `@rpxd/storage-sqlite` | durable local (`bun:sqlite`) |
 | `redis()` | `@rpxd/storage-redis` | multi-node — the bus spans nodes |
 

@@ -64,7 +64,7 @@ waits on the database.
 
 Add an `.optimistic()` function and the UI updates instantly, before the server
 answers. It's a pure, synchronous mutation replayed over confirmed state; the
-ack reconciles it and `ctx.tempId` bridges the client-generated id to the real
+ack reconciles it and `ctx.tempId()` bridges the client-generated id to the real
 one.
 
 ```tsx
@@ -72,7 +72,7 @@ one.
     r
       .input(z.object({ text: z.string().min(1) }))
       .optimistic((s, { text }, ctx) => {
-        s.todos.push({ id: ctx.tempId, text, done: false });
+        s.todos.push({ id: ctx.tempId(), text, done: false });
       })
       .handler(async ({ text }, ctx) => {
         const todo = await addTodo(scopeFrom(ctx.session), text);

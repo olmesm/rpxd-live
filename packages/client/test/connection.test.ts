@@ -7,6 +7,8 @@ class FakeEventSource implements EventSourceLike {
   static instances: FakeEventSource[] = [];
   listeners = new Map<string, ((e: { data: string }) => void)[]>();
   closed = false;
+  /** 0 CONNECTING, 1 OPEN, 2 CLOSED — mirrors the real EventSource. */
+  readyState = 0;
   constructor(public url: string) {
     FakeEventSource.instances.push(this);
   }
@@ -82,6 +84,31 @@ describe("LiveConnection (§11, §12)", () => {
 
     es.emit("error");
     expect(conn.store.snapshot().status).toBe("reconnecting");
+  });
+
+  it("a refused SSE stream (CLOSED before any open) goes terminal error, no retry (W7)", () => {
+    const { conn, source } = makeConnection(bootstrap);
+    conn.connect();
+    const es = source();
+    const before = FakeEventSource.instances.length;
+    // A 403 refusal closes the EventSource permanently: readyState CLOSED,
+    // no prior `open` event.
+    es.readyState = 2;
+    es.emit("error");
+    expect(conn.store.snapshot().status).toBe("error");
+    expect(es.closed).toBe(true); // closed so it can't native-reconnect into a loop
+    expect(FakeEventSource.instances.length).toBe(before); // nothing re-created
+  });
+
+  it("a drop AFTER a successful open goes reconnecting and keeps the source (regression)", () => {
+    const { conn, source } = makeConnection(bootstrap);
+    conn.connect();
+    const es = source();
+    es.emit("open"); // opened successfully first
+    es.readyState = 0; // EventSource is auto-reconnecting (CONNECTING)
+    es.emit("error");
+    expect(conn.store.snapshot().status).toBe("reconnecting");
+    expect(es.closed).toBe(false); // left open for native auto-reconnect
   });
 
   it("resends unacked batches on reconnect (server dedupes, §11)", async () => {
@@ -277,19 +304,19 @@ describe("LiveConnection (§11, §12)", () => {
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
-  listeners = new Map<string, ((e: { data?: unknown }) => void)[]>();
+  listeners = new Map<string, ((e: { data?: unknown; code?: number }) => void)[]>();
   sent: string[] = [];
   closed = false;
   constructor(public url: string) {
     FakeWebSocket.instances.push(this);
   }
-  addEventListener(type: string, fn: (e: { data?: unknown }) => void): void {
+  addEventListener(type: string, fn: (e: { data?: unknown; code?: number }) => void): void {
     const list = this.listeners.get(type) ?? [];
     list.push(fn);
     this.listeners.set(type, list);
   }
-  emit(type: string, data?: unknown): void {
-    for (const fn of this.listeners.get(type) ?? []) fn({ data });
+  emit(type: string, data?: unknown, code?: number): void {
+    for (const fn of this.listeners.get(type) ?? []) fn({ data, code });
   }
   send(data: string): void {
     this.sent.push(data);
@@ -341,6 +368,21 @@ describe("ws transport (§11 opt-in)", () => {
     // A WS runtime deny arrives as a redirect envelope → onRedirect (§10).
     ws.emit("message", JSON.stringify({ seq: 6, instance: "i1", redirect: "/403" }));
     expect(redirects).toEqual(["/403"]);
+  });
+
+  it("a refused ws upgrade (close before open, or 4403 policy close) goes terminal error (W7)", () => {
+    vi.useFakeTimers();
+    const { conn, socket } = makeWsConnection();
+    const ws = socket();
+    const before = FakeWebSocket.instances.length;
+    // The upgrade was refused (auth/origin 403) — the socket closes before it
+    // ever opened; a 4403 policy close is the same signal.
+    ws.emit("close", undefined, 4403);
+    expect(conn.store.snapshot().status).toBe("error");
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances.length).toBe(before); // no reconnect scheduled
+    conn.close();
+    vi.useRealTimers();
   });
 
   it("reconnects with backoff and resends unacked batches", async () => {

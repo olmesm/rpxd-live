@@ -8,6 +8,12 @@ sidebar:
 rpxd runs on [Bun](https://bun.sh). The runtime uses `Bun.serve` (HTTP + WS on
 one port) and `bun:sqlite`; Vite runs on Bun for dev and build.
 
+:::note[Status]
+The `@rpxd/*` packages are not yet published to npm. Work from a clone of the
+repo for now — `bunx @rpxd/cli` and the `@rpxd/*` imports below will work once
+publishing lands.
+:::
+
 ## Try the example
 
 The fastest way to see rpxd is the `kitchen-sink` example in the repo:
@@ -17,7 +23,8 @@ git clone https://github.com/olmesm/rpxd-live
 cd rpxd-live
 bun install
 cd examples/kitchen-sink
-bun run dev   # http://localhost:3000
+bun run setup   # prisma generate + db push — required before the first `dev`
+bun run dev     # http://localhost:3000
 ```
 
 That app exercises todos, chat (`/chat`), CSV import (`/import`), and an RSC
@@ -61,13 +68,13 @@ yours to edit.
 
 ```sh
 # a new app with auth + a database
-bunx rpxd init my-app
+bunx @rpxd/cli init my-app
 
 # a Todos resource: a live page at /todos plus domain/todos + a test
-bunx rpxd scaffold Todos Todo todos text:string done:boolean
+bunx @rpxd/cli scaffold Todos Todo todos text:string done:boolean
 
 # a protected resource served as an HTTP route instead of a page
-bunx rpxd scaffold Orders Order orders total:number --kind http --protected
+bunx @rpxd/cli scaffold Orders Order orders total:number --kind http --protected
 ```
 
 ## Project layout
@@ -98,7 +105,7 @@ Filenames are flat and map by dots: `org.$orgId.board.tsx` →
 `rpxd.config.ts` is the only non-route file:
 
 ```ts
-import { defineConfig } from "@rpxd/cli";
+import { defineConfig, sse } from "@rpxd/cli";
 import { sqlite } from "@rpxd/storage-sqlite";
 
 export default defineConfig({

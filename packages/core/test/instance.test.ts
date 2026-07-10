@@ -1047,3 +1047,33 @@ describe("id linking escape hatch (§4)", () => {
     expect(envelopes[0]?.idMap).toEqual({ "tmp-1": "real-9" });
   });
 });
+
+describe("protocol version check (W1)", () => {
+  it("rejects a batch whose version doesn't match with a ProtocolError ack, state untouched", async () => {
+    const { inst, envelopes } = await make(baseDef);
+    const before = structuredClone(inst.state);
+
+    await inst.handleBatch({
+      v: (PROTOCOL_VERSION + 1) as typeof PROTOCOL_VERSION,
+      instance: "i",
+      rpcId: "v2-batch",
+      calls: [{ rpc: "add", payload: { text: "should not run" } }],
+    });
+
+    const ack = envelopes.find((e) => e.rpcId === "v2-batch");
+    expect(ack).toBeDefined();
+    expect(ack?.error?.name).toBe("ProtocolError");
+    expect(ack?.error?.message).toContain(`server: v${PROTOCOL_VERSION}`);
+    // The handler never ran — confirmed state is exactly what it was.
+    expect(inst.state).toEqual(before);
+    expect(inst.state.todos).toHaveLength(0);
+  });
+
+  it("still acks a matching-version batch normally (regression)", async () => {
+    const { inst, envelopes } = await make(baseDef);
+    await inst.handleBatch(batch("add", { text: "milk" }, "v1-batch"));
+    const ack = envelopes.find((e) => e.rpcId === "v1-batch");
+    expect(ack?.error).toBeUndefined();
+    expect(inst.state.todos).toHaveLength(1);
+  });
+});

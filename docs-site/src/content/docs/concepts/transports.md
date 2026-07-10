@@ -24,9 +24,12 @@ API shape is unchanged.
 
 ```ts
 // rpxd.config.ts
-import { ws } from "@rpxd/server-bun";
+import { ws } from "@rpxd/cli";
 export default defineConfig({ transport: ws() });
 ```
+
+(`ws()` is the config helper from `@rpxd/cli`; `@rpxd/server-bun` exports the
+runtime `wsTransport` the server wires it to.)
 
 ## Status
 
@@ -36,15 +39,28 @@ The client exposes a connection status:
 connecting → live → reconnecting → error
 ```
 
-`error` is terminal, and only reached on protocol-version mismatch or auth
-rejection.
+`error` is terminal and reached only when the server **refuses** the connection
+— an auth or origin rejection at connect. A connection that opened and later
+dropped cycles `live → reconnecting → live`; it never becomes `error`. (A
+protocol-version mismatch is rejected per rpc batch with an error ack, not by
+failing the connection — see the
+[wire protocol](/rpxd-live/concepts/wire-protocol/).)
+
+On SSE a refusal shows up as the `EventSource` closing before it ever opens; on
+WS as the upgrade being refused before `open` (or an explicit `4403` policy
+close). Either way the client stops retrying and settles on `error`.
 
 ## Reconnect
 
-On reconnect the client re-attaches with its last seen `seq`; the server
-compares and pushes a `full` snapshot if the client is behind. Unacked
-optimistic rpcs are resent with their client-generated ids and the server
-dedupes. This path is identical on either transport.
+The SSE stream URL — including the SSR attach token and its `seq` — is fixed
+when the connection opens; `EventSource` auto-reconnects by re-requesting that
+same URL. The server does **no behind-comparison**: an attach adopts the warm
+instance only when the exact token+seq still match on the first subscribe (it
+does once, at SSR handoff), and every other subscribe — including every
+reconnect — gets an unconditional `full` snapshot. Unacked optimistic rpcs are
+resent with their client-generated ids and the server dedupes. This path is
+identical on either transport (WS reconnects resync the same way, without the
+stale attach token).
 
 ## Eviction
 
@@ -56,7 +72,10 @@ session continuity, not a cache (see
 
 ## Disconnect mid-handler
 
-If a connection drops while a handler is running, the runtime aborts
-`ctx.signal`; the handler winds down cooperatively (its `finally` blocks run)
-and no ack is sent. The client resends on reconnect and the dedupe window
-decides whether it re-runs.
+A dropped connection does **not** abort a running handler. The drop only
+unsubscribes the stream and re-arms the warm-TTL evict timer; the handler runs
+to completion and its ack is produced and **cached**. `ctx.signal` aborts later
+— at dispose/eviction after the warm TTL (or on an explicit `ctx.abort` / a
+superseding URL change), not on the disconnect. On reconnect the client resends
+the unacked batch and the dedupe window returns the cached ack without
+re-running it.

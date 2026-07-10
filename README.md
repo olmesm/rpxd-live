@@ -38,7 +38,9 @@ export default live("/org/$orgId/board")
 
 ```sh
 bun install
-cd examples/kitchen-sink && bun run dev   # http://localhost:3000 — todos, /chat, /import, /doc, /stream
+cd examples/kitchen-sink
+bun run setup   # prisma generate + db push — required before the first `dev`
+bun run dev     # http://localhost:3000 — todos, /chat, /import, /doc, /stream
 ```
 
 ## Packages

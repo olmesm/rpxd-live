@@ -7,10 +7,12 @@ sidebar:
 
 The `rpxd` CLI ships three generators alongside `dev`/`build`/`start`. They are
 **file scaffolders**: they write files and _print_ anything that touches a file
-you own (`rpxd.config.ts`, `package.json`, `prisma/schema.prisma`). They never
-patch those in place, and they never overwrite an existing file unless you pass
-`--force` — the framework maintains the mirror, not the logic (see
-[Routes & auth](/rpxd-live/guides/routes-and-auth/)).
+you own (`rpxd.config.ts`, `package.json`). They never patch those two in
+place, and they never overwrite an existing file unless you pass `--force` —
+the framework maintains the mirror, not the logic (see
+[Routes & auth](/rpxd-live/guides/routes-and-auth/)). `prisma/schema.prisma` is
+the one exception: when your app has a database, generators **append** models
+to it directly (append-only — existing models are never rewritten).
 
 ## Write one by hand first
 

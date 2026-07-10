@@ -2,6 +2,11 @@
  * WS transport glue (§11 `transport: ws()`): one duplex socket carrying the
  * same envelopes/batches as SSE+POST — the protocol is transport-agnostic,
  * only framing differs (the wire protocol guide).
+ *
+ * WIRE CONTRACT — the socket's envelope/batch/control framing and the
+ * `?attach&seq` upgrade adoption are documented in
+ * docs-site/src/content/docs/concepts/wire-protocol.md and pinned by
+ * packages/core/test/protocol-conformance.test.ts. Change all three together.
  */
 import type { SocketLike, WebSocketHandlers } from "./adapter.ts";
 import type { createRpxdHandler } from "./handler.ts";
