@@ -1,4 +1,4 @@
-import type { BroadcastMessage, LiveDefinition } from "@rpxd/core";
+import type { BroadcastMessage, LiveDefinition, RpxdEvent } from "@rpxd/core";
 import { LiveInstance } from "@rpxd/core";
 import { describe, expect, it, vi } from "vitest";
 import { type RedisLikeClient, redis } from "../src/index.ts";
@@ -127,6 +127,25 @@ describe("redis storage adapter", () => {
       JSON.stringify({ topic: "t", event: "e", payload: 1, senderId: "other", self: false }),
     );
     expect(seen).toHaveLength(1);
+  });
+
+  it("routes a failed publish() to an injected event sink as a storage event (#73)", async () => {
+    const events: RpxdEvent[] = [];
+    const client: RedisLikeClient = {
+      get: () => null,
+      set: () => {},
+      del: () => {},
+      publish: () => Promise.reject(new Error("redis down")),
+      subscribe: () => () => {},
+    };
+    const storage = redis(client);
+    storage.bus.setEmit?.((e) => events.push(e));
+    storage.bus.publish({ topic: "t", event: "e", payload: null, senderId: "s", self: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    const evt = events.find((e) => e.type === "redis-publish-failed");
+    expect(evt).toMatchObject({ category: "storage", level: "error" });
+    expect(evt?.detail).toMatchObject({ topic: "t" });
   });
 
   it("handles a failed publish() instead of leaking an unhandled rejection", async () => {

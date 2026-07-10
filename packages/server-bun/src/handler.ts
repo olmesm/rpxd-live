@@ -5,16 +5,19 @@
  * through any {@link ServerAdapter}.
  */
 import {
+  defaultEventSink,
   type Envelope,
   isRedirect,
   isSuperseded,
   type LiveDefinition,
   LiveInstance,
+  makeEmit,
   memory,
   type RateLimit,
   type RouteDefinition,
   type RouteMethod,
   type RpcBatch,
+  type RpxdEventSink,
   type StorageAdapter,
   TokenBucket,
 } from "@rpxd/core";
@@ -48,15 +51,13 @@ export interface RenderContext {
 }
 
 /**
- * A security-relevant event the runtime rejected or shed (#8) — an observability
- * seam for the app to log/meter (feeds the structured-logging epic #73). Fired
- * for a rejected cross-origin request, a throttle rejection, a capacity-driven
- * instance eviction, and a mount rejected at the per-session cap.
+ * The `security`-category event `type`s the runtime emits (#8, now part of the
+ * unified event sink #73) — a rejected cross-origin request, a throttle
+ * rejection, a capacity-driven instance eviction, and a mount rejected at the
+ * per-session cap. They reach the app as {@link RpxdEvent}s with
+ * `category: "security"` through {@link RpxdHandlerOptions.onEvent}.
  */
-export interface SecurityEvent {
-  type: "origin-rejected" | "rate-limited" | "cap-evicted" | "cap-rejected";
-  detail?: Record<string, unknown>;
-}
+type SecurityEventType = "origin-rejected" | "rate-limited" | "cap-evicted" | "cap-rejected";
 
 /** Options for {@link createRpxdHandler}. */
 export interface RpxdHandlerOptions {
@@ -159,11 +160,26 @@ export interface RpxdHandlerOptions {
    */
   throttle?: { key: (req: Request) => string | null; limit: RateLimit };
   /**
-   * Observability hook for {@link SecurityEvent}s (#8) — a rejected cross-origin
-   * request, a throttle rejection, a capacity eviction. Log or meter them; the
-   * runtime swallows any throw from the hook so it can't affect the request.
+   * The app's event sink (#73) — the single observability seam for every
+   * framework event: `security` rejections (cross-origin, throttle, capacity),
+   * `request` failures, recovered `instance` errors, and `storage` faults.
+   * Generalizes the former `onSecurityEvent` hook (#8); filter on
+   * `event.category === "security"` for the old behavior. The runtime swallows
+   * any throw from the sink so observability can't affect the request, and
+   * threads this same sink into every instance and the storage adapter. When
+   * omitted, events fall back to `defaultEventSink` (console).
+   *
+   * @example
+   * ```ts
+   * createRpxdHandler({
+   *   routes,
+   *   onEvent: (e) => {
+   *     if (e.category === "security") metrics.increment(`rpxd.sec.${e.type}`);
+   *   },
+   * });
+   * ```
    */
-  onSecurityEvent?: (event: SecurityEvent) => void;
+  onEvent?: RpxdEventSink;
   defaultRateLimit?: RateLimit;
   /**
    * Max bytes an rpc/control request body (or WS frame) may carry before it's
@@ -301,6 +317,12 @@ export function encodeSse(env: Envelope): string {
  */
 export function createRpxdHandler(opts: RpxdHandlerOptions) {
   const storage = opts.storage ?? memory();
+  // One wrapped sink (#73) for the handler's own events, threaded into every
+  // instance and the storage bus so the whole runtime reports through it. The
+  // wrap catches any throw from the app sink — observability never breaks a
+  // request. Falls back to the console sink when no `onEvent` is set.
+  const emit = makeEmit(opts.onEvent ?? defaultEventSink);
+  storage.bus.setEmit?.(emit);
   const warmTtlMs = opts.warmTtlMs ?? 60_000;
   const attachTtlMs = opts.attachTtlMs ?? 10_000;
   // Secure session cookie by default (B1) — opt out only for non-localhost HTTP dev.
@@ -373,16 +395,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     return debugErrors && e instanceof Error ? e.message : fallback;
   }
 
-  /** Fire a {@link SecurityEvent} (#8), swallowing any hook error — observability
-   * must never affect the request it observes. */
-  function emitSecurity(type: SecurityEvent["type"], detail?: Record<string, unknown>): void {
-    const fn = opts.onSecurityEvent;
-    if (!fn) return;
-    try {
-      fn({ type, detail });
-    } catch (e) {
-      console.error("[rpxd] onSecurityEvent hook threw:", e);
-    }
+  /** Fire a `security`-category event (#8) through the unified sink (#73). The
+   * `emit` wrapper swallows any throw from the app sink — observability must
+   * never affect the request it observes. */
+  function emitSecurity(type: SecurityEventType, detail?: Record<string, unknown>): void {
+    emit({ category: "security", type, level: "warn", detail });
   }
 
   function registerStream(sid: string, streamId: string, handle: StreamHandle): void {
@@ -501,6 +518,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       storageKey: `${sid}:${pathname}`,
       defaultRateLimit: opts.defaultRateLimit,
       maxBatchCalls: opts.maxBatchCalls,
+      emit,
     });
     try {
       if (route.def.load) await instance.loadForRender(search);
@@ -1042,9 +1060,15 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           }
           return new Response("not found", { status: 404 });
         }
-        // A real crash (not a redirect/not-found): log the detail server-side
+        // A real crash (not a redirect/not-found): report it server-side
         // regardless of how it's rendered (#9), so it's never silently swallowed.
-        console.error("[rpxd] request failed:", e);
+        emit({
+          category: "request",
+          type: "request-failed",
+          level: "error",
+          error: e,
+          detail: { path: url.pathname },
+        });
         // setup/load rejection → error route (§10). The app's page owns disclosure.
         if (opts.renderError) {
           return withSession(await opts.renderError({ path: url.pathname, error: e }), sid, isNew);
@@ -1196,11 +1220,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       return safeErrorMessage(e, fallback);
     },
 
-    /** Fire a {@link SecurityEvent} (#8) — shared with the WS transport so an
-     * upgrade rejection is observed the same as SSE/POST. */
-    emitSecurity(type: SecurityEvent["type"], detail?: Record<string, unknown>): void {
-      emitSecurity(type, detail);
-    },
+    /** The unified event sink (#73) — shared with the WS transport so upgrade
+     * rejections and socket-message faults report through the same seam as
+     * SSE/POST. Already wrapped, so a throw from the app sink is swallowed. */
+    emit,
 
     /** Test/introspection hook: number of live instances across sessions. */
     get instanceCount(): number {

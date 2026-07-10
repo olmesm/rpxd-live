@@ -9,7 +9,14 @@
  *
  * @packageDocumentation
  */
-import type { BroadcastMessage, PubSubBus, Snapshot, StorageAdapter } from "@rpxd/core";
+import {
+  type BroadcastMessage,
+  makeEmit,
+  type PubSubBus,
+  type RpxdEventSink,
+  type Snapshot,
+  type StorageAdapter,
+} from "@rpxd/core";
 
 /** The slice of a redis client rpxd needs. Sync returns are fine for fakes. */
 export interface RedisLikeClient {
@@ -57,9 +64,14 @@ class RedisBus implements PubSubBus {
   private readonly client: RedisLikeClient;
   private readonly prefix: string;
   private readonly channels = new Map<string, ChannelEntry>();
+  private emit: RpxdEventSink = makeEmit();
   constructor(client: RedisLikeClient, prefix: string) {
     this.client = client;
     this.prefix = prefix;
+  }
+
+  setEmit(emit: RpxdEventSink): void {
+    this.emit = makeEmit(emit);
   }
 
   publish(msg: BroadcastMessage): void {
@@ -69,7 +81,13 @@ class RedisBus implements PubSubBus {
     Promise.resolve(
       this.client.publish(`${this.prefix}bus:${msg.topic}`, JSON.stringify(msg)),
     ).catch((err) => {
-      console.error(`[rpxd] redis publish to "${msg.topic}" failed:`, err);
+      this.emit({
+        category: "storage",
+        type: "redis-publish-failed",
+        level: "error",
+        error: err,
+        detail: { topic: msg.topic },
+      });
     });
   }
 
@@ -101,7 +119,13 @@ class RedisBus implements PubSubBus {
           try {
             msg = JSON.parse(raw) as BroadcastMessage;
           } catch (err) {
-            console.error(`[rpxd] redis: dropped malformed message on "${topic}":`, err);
+            this.emit({
+              category: "storage",
+              type: "malformed-message-dropped",
+              level: "warn",
+              error: err,
+              detail: { topic },
+            });
             return;
           }
           // Snapshot: a subscriber unsubscribing mid-fan-out can't disturb iteration.
@@ -116,7 +140,13 @@ class RedisBus implements PubSubBus {
           else entry.unsub = u;
         })
         .catch((err) => {
-          console.error(`[rpxd] redis subscribe to "${topic}" failed:`, err);
+          this.emit({
+            category: "storage",
+            type: "redis-subscribe-failed",
+            level: "error",
+            error: err,
+            detail: { topic },
+          });
         });
     }
 

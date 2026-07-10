@@ -7,6 +7,7 @@
  * envelope, with string-suffix growth compiled to `append` ops (§2).
  */
 import { createDraft, type Draft, enablePatches, finishDraft, setAutoFreeze } from "immer";
+import { makeEmit, type RpxdEventSink } from "./events.ts";
 import {
   type EventHandler,
   type HandlerCtx,
@@ -62,6 +63,13 @@ export interface CreateInstanceOptions<S, Path extends string, Session> {
    * {@link DEFAULT_MAX_BATCH_CALLS}.
    */
   maxBatchCalls?: number;
+  /**
+   * App event sink (#73) for the instance's recovered errors — a failed load,
+   * a flush/broadcast/snapshot fault, a throwing `on` handler. The server
+   * injects its `onEvent`-derived emit; when omitted, the instance falls back
+   * to {@link defaultEventSink} (console) so standalone core keeps working.
+   */
+  emit?: RpxdEventSink;
 }
 
 const ACK_CACHE_LIMIT = 64;
@@ -124,6 +132,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   readonly #version: string;
   readonly #defaultRateLimit: RateLimit | undefined;
   readonly #maxBatchCalls: number;
+  /** App event sink (#73), wrapped so a throw from it never breaks a handler. */
+  readonly #emitEvent: RpxdEventSink;
 
   #state!: S;
   #session: Session;
@@ -168,6 +178,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     this.#version = opts.def.version ?? "1";
     this.#defaultRateLimit = opts.defaultRateLimit;
     this.#maxBatchCalls = opts.maxBatchCalls ?? DEFAULT_MAX_BATCH_CALLS;
+    this.#emitEvent = makeEmit(opts.emit);
   }
 
   /**
@@ -395,10 +406,13 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     // first patch — no awaiter can map it, so log the drop instead of hiding it.
     void this.#runLoad(search).catch((e: unknown) => {
       if (isRedirect(e) && !gate.rejected) {
-        console.error(
-          "[rpxd] load redirect after first patch ignored — redirect before the first patch to navigate (§12):",
-          e.location,
-        );
+        this.#emitEvent({
+          category: "instance",
+          type: "load-redirect-ignored",
+          level: "warn",
+          detail: { location: e.location },
+          error: e,
+        });
       }
     });
     await gate.promise;
@@ -441,7 +455,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
         this.#settleRenderGate(runId, e);
         throw e;
       }
-      if (!controller.signal.aborted) console.error("[rpxd] load failed:", e);
+      if (!controller.signal.aborted)
+        this.#emitEvent({ category: "instance", type: "load-failed", level: "error", error: e });
     } finally {
       this.#untrackAbort(LOAD_KEY, controller);
       // Run ended: if no patch ever opened the gate, render the setup skeleton.
@@ -513,7 +528,15 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
         // issued before the broadcast are committed before receivers react.
         void this.#queue
           .run(() => this.#storage.bus.publish(msg))
-          .catch((e) => console.error("[rpxd] broadcast publish failed:", e));
+          .catch((e) =>
+            this.#emitEvent({
+              category: "instance",
+              type: "broadcast-publish-failed",
+              level: "error",
+              error: e,
+              detail: { topic: msg.topic, event: msg.event },
+            }),
+          );
       },
       resolveId: (tempId, realId) => {
         idMap[tempId] = realId;
@@ -573,7 +596,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
         await this.#writeThrough();
       })
       .catch((e) => {
-        console.error("[rpxd] patchState flush failed:", e);
+        this.#emitEvent({ category: "instance", type: "flush-failed", level: "error", error: e });
       });
   }
 
@@ -640,7 +663,13 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
         .catch((e) => {
           // Broadcast handlers have no ack channel; a throw discards the
           // draft and is reported server-side only (§10).
-          console.error(`[rpxd] on["${msg.event}"] handler failed:`, e);
+          this.#emitEvent({
+            category: "instance",
+            type: "event-handler-failed",
+            level: "error",
+            error: e,
+            detail: { event: msg.event },
+          });
         });
     });
     this.#unsubs.set(topic, unsub);
@@ -729,7 +758,13 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
           await this.#writeThrough();
         });
       } catch (e) {
-        console.error(`[rpxd] onError for rpc "${rpcName}" threw:`, e);
+        this.#emitEvent({
+          category: "instance",
+          type: "on-error-threw",
+          level: "error",
+          error: e,
+          detail: { rpc: rpcName },
+        });
         patches = [];
       }
     }
@@ -774,7 +809,12 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
         version: this.#version,
       });
     } catch (e) {
-      console.error("[rpxd] snapshot write-through failed:", e);
+      this.#emitEvent({
+        category: "instance",
+        type: "snapshot-write-failed",
+        level: "error",
+        error: e,
+      });
     }
   }
 }

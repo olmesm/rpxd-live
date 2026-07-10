@@ -4,7 +4,7 @@
  * These cover the pure `originAllowed` predicate and the WS upgrade gate; the
  * SSE/POST paths are exercised in `handler.test.ts`.
  */
-import type { LiveDefinition } from "@rpxd/core";
+import type { LiveDefinition, RpxdEvent } from "@rpxd/core";
 import { describe, expect, it } from "vitest";
 import { createRpxdHandler } from "../src/handler.ts";
 import { originAllowed } from "../src/origin.ts";
@@ -81,18 +81,20 @@ describe("ws upgrade origin gate (#52)", () => {
     expect(upgraded).toBe(false); // gated before the upgrade fn runs
   });
 
-  it("emits origin-rejected on a rejected upgrade (#8 observability)", async () => {
-    const events: string[] = [];
+  it("emits a category:security origin-rejected on a rejected upgrade (#8, #73)", async () => {
+    const events: RpxdEvent[] = [];
     const handler = createRpxdHandler({
       routes: [{ path: "/", def }],
-      onSecurityEvent: (e) => events.push(e.type),
+      onEvent: (e) => events.push(e),
     });
     const ws = wsTransport(handler);
     await ws.handleUpgrade(
       new Request(base, { headers: { origin: "http://evil.example" } }),
       () => true,
     );
-    expect(events).toContain("origin-rejected"); // WS rejection observed like SSE/POST
+    const rejected = events.find((e) => e.type === "origin-rejected");
+    expect(rejected).toMatchObject({ category: "security", level: "warn" }); // observed like SSE/POST
+    expect(rejected?.detail).toMatchObject({ transport: "ws" });
     await handler.dispose();
   });
 });

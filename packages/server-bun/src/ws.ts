@@ -50,7 +50,7 @@ export function wsTransport(
     },
     message(socket: SocketLike, message: string) {
       void (socket.data as WsData).session?.message(message).catch((e) => {
-        console.error("[rpxd] ws message failed:", e);
+        handler.emit({ category: "request", type: "ws-message-failed", level: "error", error: e });
       });
     },
     close(socket: SocketLike) {
@@ -71,10 +71,15 @@ export function wsTransport(
     // policy so SSE/POST and WS enforce the same allowlist. Covers the dev-server
     // path too, which calls `prepare` directly.
     if (!handler.checkOrigin(req)) {
-      handler.emitSecurity("origin-rejected", {
-        origin: req.headers.get("origin"),
-        path: new URL(req.url).pathname,
-        transport: "ws",
+      handler.emit({
+        category: "security",
+        type: "origin-rejected",
+        level: "warn",
+        detail: {
+          origin: req.headers.get("origin"),
+          path: new URL(req.url).pathname,
+          transport: "ws",
+        },
       });
       return new Response("forbidden origin", { status: 403 });
     }

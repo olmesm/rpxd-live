@@ -17,6 +17,7 @@ import type { RouteDefinition } from "@rpxd/core";
 import {
   createRpxdHandler,
   type HttpRouteRegistration,
+  makeEmit,
   type RouteRegistration,
   wsTransport,
 } from "@rpxd/server-bun";
@@ -258,6 +259,11 @@ export async function createDevServer(
     ...instanceHandlerOptions(config), // dev honors instances.* + onSecurityEvent too
   });
 
+  // Dev-bridge transport events (#73): the node http/upgrade bridge below sits
+  // outside the handler, so route its recovered request/upgrade faults through
+  // the default (console) sink under the unified `request` taxonomy.
+  const emit = makeEmit();
+
   // Serialize reloads per route so two rapid saves whose imports resolve out
   // of order don't leave the instance on the older def (#67).
   const reloadRouteDef = createLatestWinsReloader<{ default: { def: unknown } }>((routePath, mod) =>
@@ -306,7 +312,7 @@ export async function createDevServer(
         client.on("close", () => wsGlue.websocket.close?.(socketLike));
       });
     })().catch((e) => {
-      console.error("[rpxd] ws upgrade failed:", e);
+      emit({ category: "request", type: "ws-upgrade-failed", level: "error", error: e });
       rawSocket.destroy();
     });
   });
@@ -324,7 +330,7 @@ export async function createDevServer(
         .fetch(webReq)
         .then((webRes) => writeWebResponse(res, webRes))
         .catch((e) => {
-          console.error("[rpxd] request failed:", e);
+          emit({ category: "request", type: "request-failed", level: "error", error: e });
           res.statusCode = 500;
           res.end("internal error");
         });
@@ -342,7 +348,7 @@ export async function createDevServer(
         .fetch(webReq)
         .then((webRes) => writeWebResponse(res, webRes))
         .catch((e) => {
-          console.error("[rpxd] request failed:", e);
+          emit({ category: "request", type: "request-failed", level: "error", error: e });
           res.statusCode = 500;
           res.end("internal error");
         });
