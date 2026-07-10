@@ -100,6 +100,26 @@ describe("parseFields (field:type)", () => {
     expect(() => parseFields(["full_name:string", "fullName:string"])).toThrow(/duplicate field/i);
   });
 
+  it("rejects a relation name that collides with a sibling scalar field", () => {
+    // `author_id:references:User` derives relation `author` — alongside
+    // `author:string` the model would carry both `author String` and
+    // `author User @relation(...)`, which Prisma rejects.
+    expect(() => parseFields(["author:string", "author_id:references:User"])).toThrow(
+      /duplicate field "author"/,
+    );
+    // order-independent: the scalar can arrive after the relation too
+    expect(() => parseFields(["author_id:references:User", "author:string"])).toThrow(
+      /duplicate field "author"/,
+    );
+  });
+
+  it("rejects two references fields deriving the same relation name", () => {
+    // `author` and `author_id` both derive fk `authorId` + relation `author`.
+    expect(() => parseFields(["author:references:User", "author_id:references:Person"])).toThrow(
+      /duplicate field/i,
+    );
+  });
+
   it("rejects a references relation name that collides with a generated column", () => {
     // owner_id -> fk `ownerId` (fine) but relation `owner`, which collides with
     // the always-present `owner` column.
