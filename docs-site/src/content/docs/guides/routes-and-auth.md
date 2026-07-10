@@ -214,6 +214,34 @@ The `Scope` carries **both**: `{ sid, user }`. Per-user data scopes by `user.id`
 `sid` stays the instance key. Keeping `Scope` a plain struct threaded into
 `domain/` (not the db on `ctx`) is what lets it hold two identities cleanly.
 
+## Session-cookie security
+
+The `rpxd_sid` cookie is always `HttpOnly` and `SameSite=Lax`, and hardened two
+more ways:
+
+- **`Secure` by default.** The cookie only rides HTTPS — plus `http://localhost`
+  (a secure context) and behind a TLS-terminating proxy. `bun run dev` turns it
+  off so LAN / plain-HTTP dev still gets a session; override anywhere with
+  `session.cookie.secure` in `rpxd.config.ts`.
+- **HMAC-signed when you set a secret.** Set `RPXD_SESSION_SECRET` (or
+  `session.secret`) and rpxd signs the sid, rejecting a forged or unsigned cookie
+  as a brand-new session — closing session fixation and the cross-session
+  storage-namespace collision (`sid` is the storage key). Without a secret the
+  sid is unsigned and the server warns once; set one in production. Signing is
+  integrity, not confidentiality — it pairs with the `Secure` cookie.
+
+Two more request-level guards, both configured in `rpxd.config.ts`:
+
+- **Throttle.** An opt-in per-key token bucket (`throttle`) — you supply the key
+  from a **trusted** source (a proxy-set header or peer address; a raw
+  `X-Forwarded-For` is spoofable). Over-limit HTTP requests get `429`; the
+  long-lived SSE stream is exempt. In-process, so multi-node deployments should
+  rate-limit at the proxy/edge.
+- **Error disclosure.** A crash returns a generic `500` (the real error logged
+  server-side), and a rejected auth a generic `403`, by default — internal
+  messages never reach the client. Set `debugErrors` (the dev server does) to
+  echo them locally.
+
 ## Cross-site protection — the origin policy
 
 The live control plane (`/__rpxd/ws`, `/__rpxd/stream`, `/__rpxd/rpc`,

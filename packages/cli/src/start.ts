@@ -167,6 +167,7 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     authenticate: config.session?.authenticate,
     allowedOrigins: config.allowedOrigins,
     cookie: config.session?.cookie, // Secure by default (B1); prod is HTTPS
+    sessionSecret: config.session?.secret, // HMAC-signs the sid (B2); env fallback in handler
     defaultRateLimit: config.rateLimit,
     throttle: config.throttle,
     ...serverEntryModule.makeShellRenderers(shell),
