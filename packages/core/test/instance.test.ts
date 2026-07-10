@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { LiveInstance } from "../src/instance.ts";
 import type { LiveDefinition, Mutator, SearchParams } from "../src/live.ts";
 import { type Envelope, PROTOCOL_VERSION, type RpcBatch } from "../src/protocol.ts";
 import { redirect } from "../src/redirect.ts";
 import { memory, type StorageAdapter } from "../src/storage.ts";
+import { isSuperseded } from "../src/supersede.ts";
 
 interface TodoState {
   todos: { id: string; text: string }[];
@@ -355,6 +356,35 @@ describe("loadForRender render gate (§12)", () => {
     await expect(first).resolves.toBeUndefined();
     await expect(second).resolves.toBeUndefined();
     gates.first?.(); // let the superseded run drain
+  });
+
+  it("logs a redirect thrown after the first patch instead of dropping it silently (§12)", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+        setup: () => initial(),
+        load: async (_url, ctx) => {
+          ctx.patchState(((s) => {
+            s.log.push("chrome");
+          }) as Mut);
+          await gate("lateRedirect"); // held until the first patch has flushed
+          throw redirect("/too-late");
+        },
+      };
+      const { inst } = await make(def);
+      await inst.loadForRender({}); // resolves at the first patch
+      gates.lateRedirect?.(); // the loader now throws its redirect mid-stream
+      await tick();
+      await tick();
+      // The dropped redirect leaves a server-side trace, and nothing crashed.
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringContaining("redirect after first patch"),
+        expect.anything(),
+      );
+      expect(inst.state.log).toEqual(["chrome"]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("an unrelated flush during an await-first load does not open the render gate", async () => {
@@ -844,7 +874,7 @@ describe("guard / authorize (§10)", () => {
     expect(seen).toEqual({ params: { id: "42" }, search: { q: "x" }, signal: true });
   });
 
-  it("swallows a superseded guard's throw (a signal-respecting AbortError never propagates)", async () => {
+  it("surfaces a superseded guard's throw as SupersededError (never the guard's own error)", async () => {
     let release: () => void = () => {};
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
@@ -863,8 +893,69 @@ describe("guard / authorize (§10)", () => {
     await tick();
     await inst.authorize({ q: "x" }); // newer call aborts the slow guard
     release();
-    // The superseded run's AbortError must be swallowed, not propagated.
-    await expect(slow).resolves.toBeUndefined();
+    // The superseded run rejects with the supersession marker — never its own
+    // AbortError (a spurious 500), and never a resolve (a spurious allow).
+    await expect(slow).rejects.toSatisfy(isSuperseded);
+  });
+
+  it("a superseded deny rejects with SupersededError — the caller never loads the denied URL", async () => {
+    let release: () => void = () => {};
+    const loaded: string[] = [];
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      guard: async ({ search }) => {
+        if (search.userId && search.userId !== "me") {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+          throw redirect("/403"); // slow deny — superseded mid-flight
+        }
+      },
+      load: async ({ search }, ctx) => {
+        loaded.push(search.userId ?? search.q ?? "?");
+        ctx.patchState(((s) => {
+          s.filter = search.userId ?? search.q;
+        }) as Mut);
+      },
+    };
+    const { inst } = await make(def);
+    // The transport's reconcile shape: authorize, then load only on an allow.
+    const stale = inst
+      .authorize({ userId: "other" })
+      .then(() => inst.load({ userId: "other" }))
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    await tick();
+    await inst.authorize({ q: "x" }); // newer URL supersedes the pending deny
+    release(); // the denied guard now throws — into a superseded run
+    // The stale run must not resolve into an allow: it rejects with the marker
+    // and the denied URL's loader never runs (the spoofed-?userId leak, §10).
+    expect(isSuperseded(await stale)).toBe(true);
+    expect(loaded).not.toContain("other");
+    await inst.idle();
+  });
+
+  it("an allow from a superseded run is stale too — rejects with SupersededError", async () => {
+    let release: () => void = () => {};
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      guard: async ({ search }) => {
+        if (search.slow) {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+          // resolves — an allow, but for a URL a newer call replaced
+        }
+      },
+    };
+    const { inst } = await make(def);
+    const slow = inst.authorize({ slow: "1" });
+    await tick();
+    await inst.authorize({ q: "x" });
+    release();
+    await expect(slow).rejects.toSatisfy(isSuperseded);
   });
 });
 

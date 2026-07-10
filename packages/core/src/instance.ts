@@ -3,9 +3,8 @@
  *
  * Handlers run off-queue (awaits never block the instance, §3); only
  * mutations serialize through the per-instance FIFO queue: patchState
- * flushes, `on` handlers, and the `params` reducer. Each flush is one
- * Immer draft → one patch envelope, with string-suffix growth
- * compiled to `append` ops (§2).
+ * flushes and `on` handlers. Each flush is one Immer draft → one patch
+ * envelope, with string-suffix growth compiled to `append` ops (§2).
  */
 import { createDraft, type Draft, enablePatches, finishDraft, setAutoFreeze } from "immer";
 import {
@@ -25,6 +24,7 @@ import { type RateLimit, RateLimitError, TokenBucket } from "./rate-limit.ts";
 import { isRedirect } from "./redirect.ts";
 import { validateInput } from "./standard-schema.ts";
 import type { StorageAdapter } from "./storage.ts";
+import { SupersededError } from "./supersede.ts";
 
 enablePatches();
 // Server state stays unfrozen: ctx.state's read-only proxy guards handler
@@ -262,9 +262,11 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * separate from `load` so the server can 302 *before* streaming/serving a
    * guarded page. A deny (`throw redirect`) — or any throw — propagates to the
    * caller. No-op when no `guard` is declared. A newer call aborts the prior
-   * guard's `signal` (latest-wins for slow async auth lookups); a throw from a
-   * run that a newer call already superseded is swallowed, so a signal-respecting
-   * guard's `AbortError` never reaches the transport as a spurious 500.
+   * guard's `signal` (latest-wins for slow async auth lookups); the superseded
+   * run then rejects with {@link SupersededError} — whatever its guard did.
+   * Resolving instead would turn a swallowed deny into an allow (the caller
+   * would proceed to load the denied URL), so supersession is explicit: callers
+   * catch it and bail quietly — the winning run owns the outcome.
    */
   async authorize(search: Record<string, string | undefined>): Promise<void> {
     const guard = this.#def.guard;
@@ -278,12 +280,16 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
         { params: this.#params, session: this.#session, signal: controller.signal },
       );
     } catch (e) {
-      // A newer URL claimed the guard (this controller was aborted): its result
-      // is stale, so drop any throw — including a signal-respecting guard's
-      // `AbortError`. The live run propagates its redirect/auth error normally.
-      if (controller.signal.aborted) return;
+      // A newer URL claimed the guard (this controller was aborted): its
+      // outcome is stale — a deny here must not be swallowed into a resolve
+      // (auth bypass), and a signal-respecting guard's `AbortError` must not
+      // reach the transport as a spurious 500. Reject with the marker instead.
+      if (controller.signal.aborted) throw new SupersededError();
       throw e;
     }
+    // An allow from a superseded run is equally stale: its caller must not
+    // load a URL the winning run never authorized.
+    if (controller.signal.aborted) throw new SupersededError();
   }
 
   /**
@@ -312,7 +318,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * projection before its first `await`) renders immediately; one that `await`s
    * before patching blocks the first paint until that patch lands (crawlable,
    * data-complete). A `redirect` thrown before the first patch propagates (302 /
-   * soft-nav); one thrown after is mid-stream, handled as a background run.
+   * soft-nav); one thrown after is mid-stream — ignored, with a server-side log
+   * (redirect before the first patch to navigate; per-URL denies belong in `guard`).
    */
   async loadForRender(search: Record<string, string | undefined>): Promise<void> {
     if (!this.#def.load || this.#disposed) return;
@@ -323,9 +330,18 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     // this call is about to overwrite (concurrent reconciles share the instance).
     this.#renderGate?.gate.resolve();
     this.#renderGate = { gate, runId };
-    // The remainder streams after the gate opens; a late throw/redirect is
-    // reported inside #runLoad, so swallow the background rejection here.
-    void this.#runLoad(search).catch(() => {});
+    // The remainder streams after the gate opens. #runLoad logs data throws and
+    // rejects the gate with a pre-first-patch redirect (delivered to the await
+    // below); the only rejection left here is a redirect thrown *after* the
+    // first patch — no awaiter can map it, so log the drop instead of hiding it.
+    void this.#runLoad(search).catch((e: unknown) => {
+      if (isRedirect(e) && !gate.rejected) {
+        console.error(
+          "[rpxd] load redirect after first patch ignored — redirect before the first patch to navigate (§12):",
+          e.location,
+        );
+      }
+    });
     await gate.promise;
   }
 
@@ -708,6 +724,8 @@ interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
   reject: (reason?: unknown) => void;
+  /** Whether `reject` ran — i.e. the rejection was delivered to the awaiter (§12). */
+  readonly rejected: boolean;
 }
 
 function makeDeferred<T>(): Deferred<T> {
@@ -717,7 +735,18 @@ function makeDeferred<T>(): Deferred<T> {
     resolve = res;
     reject = rej;
   });
-  return { promise, resolve, reject };
+  let rejected = false;
+  return {
+    promise,
+    resolve,
+    reject: (reason?: unknown) => {
+      rejected = true;
+      reject(reason);
+    },
+    get rejected() {
+      return rejected;
+    },
+  };
 }
 
 /**

@@ -111,7 +111,8 @@ export function matchHttpPath(routePath: string, pathname: string): Record<strin
 /**
  * Find the first matching HTTP route in a table. Static routes beat params,
  * and catch-all routes are tried last, so `/api/health` wins over
- * `/api/$rest` wins over `/api/$`.
+ * `/api/$rest` wins over `/api/$`. Rank ties break on fixed-segment count,
+ * so `/api/auth/$` beats `/api/$` regardless of registration order.
  *
  * @example
  * ```ts
@@ -121,7 +122,10 @@ export function matchHttpPath(routePath: string, pathname: string): Record<strin
 export function matchHttpRoute(paths: string[], pathname: string): RouteMatch | null {
   const rank = (p: string) =>
     (p.endsWith("/$") || p === "/$" ? 1000 : 0) + (p.match(/\$/g)?.length ?? 0);
-  const sorted = [...paths].sort((a, b) => rank(a) - rank(b));
+  // More fixed (non-param) segments = a more specific prefix — the tie-breaker.
+  const fixedSegs = (p: string) =>
+    p.split("/").filter((s) => s !== "" && !s.startsWith("$")).length;
+  const sorted = [...paths].sort((a, b) => rank(a) - rank(b) || fixedSegs(b) - fixedSegs(a));
   for (const path of sorted) {
     const params = matchHttpPath(path, pathname);
     if (params) return { path, params };

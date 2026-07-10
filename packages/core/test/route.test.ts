@@ -74,4 +74,17 @@ describe("matchHttpRoute", () => {
       params: { $: "session" },
     });
   });
+
+  it("breaks catch-all ties by longer fixed prefix, in either registration order", () => {
+    for (const paths of [
+      ["/api/$", "/api/auth/$"],
+      ["/api/auth/$", "/api/$"],
+    ]) {
+      expect(matchHttpRoute(paths, "/api/auth/session")).toEqual({
+        path: "/api/auth/$",
+        params: { $: "session" },
+      });
+      expect(matchHttpRoute(paths, "/api/other")?.path).toBe("/api/$");
+    }
+  });
 });

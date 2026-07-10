@@ -42,6 +42,7 @@ export {
   type RouteObject,
   route,
 } from "./route.ts";
+export { isSuperseded, SupersededError } from "./supersede.ts";
 
 /**
  * Route registration merge point (§7): `.rpxd/routes.gen.ts` augments this

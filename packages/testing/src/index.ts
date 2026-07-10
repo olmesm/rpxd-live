@@ -9,6 +9,7 @@
  */
 import {
   type Envelope,
+  isSuperseded,
   LiveInstance,
   type LiveRoute,
   memory,
@@ -186,7 +187,14 @@ export async function testLive<S, Path extends string, Session, Component>(
       });
     },
     async navigate(search) {
-      await instance.authorize(search);
+      try {
+        await instance.authorize(search);
+      } catch (e) {
+        // A concurrent navigate superseded this guard run: the winning
+        // navigate owns the outcome — skip the stale URL's load quietly.
+        if (isSuperseded(e)) return;
+        throw e;
+      }
       await instance.load(search);
     },
     async settled() {
