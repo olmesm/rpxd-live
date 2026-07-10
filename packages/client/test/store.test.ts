@@ -202,6 +202,64 @@ describe("malformed frame robustness (§2)", () => {
     expect(resyncs.length).toBeGreaterThan(0); // recovered via resync
     await expect(p).resolves.toBeUndefined(); // settled, not wedged
   });
+
+  it("settles the rpc even when the corrupt frame reaches id linking (tempIds issued)", async () => {
+    const { store, sent, resyncs } = makeStore(addMeta);
+    const p = store.call("add", { text: "x" });
+    await flushTick();
+    // Rendering populates tempIds + lastPatches — the id-linking inputs.
+    expect(store.snapshot().state.todos[1]?.id).toMatch(/^__rpxd_tmp_/);
+
+    expect(() =>
+      store.applyEnvelope({
+        seq: 2,
+        instance: "i1",
+        rpcId: sent.at(-1)?.rpcId,
+        // biome-ignore lint/suspicious/noExplicitAny: intentionally malformed wire frame
+        patches: { length: 1 } as any,
+      }),
+    ).not.toThrow();
+    expect(resyncs.length).toBeGreaterThan(0); // recovered via resync
+    await expect(p).resolves.toBeUndefined(); // settled, not wedged
+  });
+
+  it("settles a stale ack whose patches are corrupt (tempIds issued)", async () => {
+    const { store, sent } = makeStore(addMeta);
+    const p = store.call("add", { text: "x" });
+    await flushTick();
+    expect(store.snapshot().state.todos[1]?.id).toMatch(/^__rpxd_tmp_/);
+
+    expect(() =>
+      store.applyEnvelope({
+        seq: 1, // stale
+        instance: "i1",
+        rpcId: sent.at(-1)?.rpcId,
+        // biome-ignore lint/suspicious/noExplicitAny: intentionally malformed wire frame
+        patches: { length: 1 } as any,
+      }),
+    ).not.toThrow();
+    await expect(p).resolves.toBeUndefined();
+    expect(store.confirmed.todos).toHaveLength(1); // stale patches never apply
+  });
+
+  it("settles a gap-seq ack whose patches are corrupt (tempIds issued)", async () => {
+    const { store, sent, resyncs } = makeStore(addMeta);
+    const p = store.call("add", { text: "x" });
+    await flushTick();
+    expect(store.snapshot().state.todos[1]?.id).toMatch(/^__rpxd_tmp_/);
+
+    expect(() =>
+      store.applyEnvelope({
+        seq: 5, // gap: expected 2
+        instance: "i1",
+        rpcId: sent.at(-1)?.rpcId,
+        // biome-ignore lint/suspicious/noExplicitAny: intentionally malformed wire frame
+        patches: { length: 1 } as any,
+      }),
+    ).not.toThrow();
+    expect(resyncs).toEqual([1]); // gap recovery still requested
+    await expect(p).resolves.toBeUndefined();
+  });
 });
 
 describe("seq handling (§2)", () => {
