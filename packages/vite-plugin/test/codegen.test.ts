@@ -85,6 +85,7 @@ describe("ensurePathLiteral (§7: filename is truth)", () => {
       ensurePathLiteral('export default route("/old").all(h);', '/x") || evil() || ("y'),
     ).toBeNull();
     expect(ensurePathLiteral('live("/old")({})', "/back\\slash")).toBeNull();
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal `${` is the attack under test
     expect(ensurePathLiteral('live("/old")({})', "/tick`${evil}")).toBeNull();
   });
 
