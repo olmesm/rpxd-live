@@ -10,6 +10,16 @@ type Routes = Register extends { routes: infer R } ? R : Record<string, never>;
 /** All registered route paths — falls back to `string` before codegen runs. */
 export type RegisteredPath = [keyof Routes] extends [never] ? string : keyof Routes & string;
 
+/**
+ * The target for {@link redirect} (§10): autocompletes {@link RegisteredPath}
+ * while still accepting any string. Unlike `Link`/`nav` — which take a path
+ * *pattern* plus typed `params` and build the href — a redirect target is a
+ * *final URL*. It may be dynamic (a value echoed back from the server), carry a
+ * query string, substitute `$param` segments, or point at a non-page path like
+ * `/403`, so it can't be locked to the pattern union.
+ */
+export type RedirectTarget = RegisteredPath | (string & {});
+
 type Events = Register extends { events: infer E } ? E : Record<string, unknown>;
 
 /**
