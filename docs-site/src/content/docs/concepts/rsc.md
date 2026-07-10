@@ -38,6 +38,22 @@ and `{state.body}` renders the hydrated subtree. To the rest of the system it's
 just a string in state — so it flows through storage, SSR, and reconnect
 unchanged.
 
+## Security: the `$rsc` key is reserved
+
+:::caution[Reserved `$rsc` key]
+`$rsc` is reserved for framework-produced Flight fields. **Never place
+user-controlled data into state in the shape `{ $rsc: string }`.**
+
+The client treats *any* state value shaped `{ $rsc: string }` as a trusted
+Flight payload and hands it straight to `createFromReadableStream` — the
+check is purely structural, not a forgeable brand. This is safe today because
+only app-authored values and genuine `rsc()` output ever reach state, and
+rpxd never decodes client input into state. But RSC/Flight deserialization
+has been a high-severity sink in other frameworks (see CVE-2025-55182), so
+treat `$rsc` as reserved as a defense-in-depth measure. A non-forgeable
+brand for this marker is tracked as a follow-up in issue #95.
+:::
+
 ## Constraints
 
 - **Never optimistic.** RSC fields can't be part of an optimistic update.

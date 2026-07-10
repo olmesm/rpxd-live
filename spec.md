@@ -239,6 +239,7 @@ Server-rendered component subtrees as opaque state values; Flight is the seriali
 - Built on `@vitejs/plugin-rsc` (TanStack's approach — integrate, don't own the bundler layer)
 - Constraints: RSC fields never optimistic; not for keystroke-frequency updates; `'use client'` islands hydrate via plugin manifest
 - **Isolation**: `rsc: false` is the default; RSC fields are strictly opt-in, so nothing in the core runtime depends on the bundler integration
+- **Reserved key**: `$rsc` is reserved for framework-produced Flight fields; the marker is structural (no brand), so app code must never put user-controlled data into state shaped `{ $rsc: string }` (non-forgeable brand tracked as issue #95)
 
 ```tsx
 load: async ({ params }, ctx) => {

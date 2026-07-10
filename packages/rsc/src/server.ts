@@ -22,6 +22,11 @@ export { isRscField, type RscField } from "./shared.ts";
  * Flight-serialize a component subtree into an opaque state field (§16).
  * Serialize before `ctx.patchState` — mutators are sync by design (§3).
  *
+ * The returned `{ $rsc: string }` shape is a reserved marker (see
+ * {@link RscField}): `rsc()` is the only sanctioned producer of it. Never
+ * construct or merge this shape from user-controlled data — the client
+ * treats any value matching it as a trusted Flight payload.
+ *
  * @example
  * ```tsx
  * const body = await rsc(<Markdown source={doc.raw} />);
