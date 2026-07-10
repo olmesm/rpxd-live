@@ -14,18 +14,24 @@ import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { nodeAdapter, writeChunk } from "../src/index.ts";
 
+/** A live (not-yet-departed) node response double with the flags `writeChunk` consults. */
+function fakeRes(overrides: Record<string, unknown>): ServerResponse {
+  return Object.assign(new EventEmitter(), {
+    destroyed: false,
+    writableEnded: false,
+    writable: true,
+    ...overrides,
+  }) as unknown as ServerResponse;
+}
+
 describe("writeChunk backpressure", () => {
   it("resolves immediately when the socket accepts the write", async () => {
-    const res = Object.assign(new EventEmitter(), {
-      write: () => true,
-    }) as unknown as ServerResponse;
+    const res = fakeRes({ write: () => true });
     await writeChunk(res, new Uint8Array([1])); // must not hang
   });
 
   it("waits for 'drain' when the socket signals backpressure", async () => {
-    const res = Object.assign(new EventEmitter(), {
-      write: () => false,
-    }) as unknown as ServerResponse;
+    const res = fakeRes({ write: () => false });
     let resolved = false;
     const p = writeChunk(res, new Uint8Array([1])).then(() => {
       resolved = true;
@@ -38,12 +44,28 @@ describe("writeChunk backpressure", () => {
   });
 
   it("stops waiting if the client goes away ('close')", async () => {
-    const res = Object.assign(new EventEmitter(), {
-      write: () => false,
-    }) as unknown as ServerResponse;
+    const res = fakeRes({ write: () => false });
     const p = writeChunk(res, new Uint8Array([1]));
     res.emit("close");
     await p; // resolves instead of leaking forever
+  });
+
+  it("resolves instead of parking when the response is already gone", async () => {
+    // The race: the client disconnected ('close' already fired) before this
+    // write, so waiting for 'drain'/'close' would wait forever.
+    const res = fakeRes({ write: () => false, destroyed: true, writable: false });
+    const settled = await Promise.race([
+      writeChunk(res, new Uint8Array([1])).then(() => true),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 200)),
+    ]);
+    expect(settled).toBe(true);
+  });
+
+  it("settles on 'error' while parked", async () => {
+    const res = fakeRes({ write: () => false });
+    const p = writeChunk(res, new Uint8Array([1]));
+    res.emit("error", new Error("boom"));
+    await p; // resolves instead of leaking (or crashing on an unhandled 'error')
   });
 });
 
@@ -164,6 +186,108 @@ describe("nodeAdapter", () => {
     // The server survived the bad upgrade.
     const res = await fetch(`http://localhost:${handle.port}/`);
     expect(res.status).toBe(200);
+  });
+
+  it("survives a client reset during the ws upgrade handshake gap", async () => {
+    const handler = createRpxdHandler({ routes: [{ path: "/", def }], warmTtlMs: 10 });
+    const ws = wsTransport(handler);
+    let arrived!: () => void;
+    const upgradeArrived = new Promise<void>((r) => {
+      arrived = r;
+    });
+    let release!: () => void;
+    const authGate = new Promise<void>((r) => {
+      release = r;
+    });
+    const uncaught: unknown[] = [];
+    const onUncaught = (e: unknown) => {
+      uncaught.push(e);
+    };
+    process.on("uncaughtException", onUncaught);
+    cleanups.push(() => {
+      process.off("uncaughtException", onUncaught);
+    });
+
+    const handle = nodeAdapter().serve({
+      port: 0,
+      websocket: ws.websocket,
+      fetch: async (req, upgrade) => {
+        if (new URL(req.url).pathname === "/__rpxd/ws") {
+          arrived();
+          await authGate; // slow authenticate — the client resets inside this gap
+        }
+        return (await ws.handleUpgrade(req, upgrade)) ?? handler.fetch(req);
+      },
+    });
+    cleanups.push(
+      () => handler.dispose(),
+      () => handle.stop(),
+    );
+    await handle.ready;
+
+    const client = net.connect(handle.port, "localhost", () => {
+      client.write(
+        `${[
+          "GET /__rpxd/ws HTTP/1.1",
+          "Host: localhost",
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+          "Sec-WebSocket-Version: 13",
+        ].join("\r\n")}\r\n\r\n`,
+      );
+    });
+    client.on("error", () => {}); // the reset below is deliberate
+    await upgradeArrived;
+    client.resetAndDestroy(); // RST mid-gap, before fetch has decided
+    await new Promise((r) => setTimeout(r, 100)); // let the RST reach the server socket
+    release();
+    await new Promise((r) => setTimeout(r, 100)); // let the post-gap upgrade/decline hit the dead socket
+
+    expect(uncaught).toEqual([]); // a client reset must never be an uncaughtException
+    const res = await fetch(`http://localhost:${handle.port}/`);
+    expect(res.status).toBe(200); // and the server is still alive
+  });
+
+  it("releases the response stream when the client disconnects mid-stream", async () => {
+    let cancelled!: () => void;
+    const streamReleased = new Promise<void>((r) => {
+      cancelled = r;
+    });
+    const chunk = new TextEncoder().encode("x".repeat(64 * 1024));
+    const handle = nodeAdapter().serve({
+      port: 0,
+      // SSE-shaped: an endless body that only stops when the consumer cancels.
+      fetch: () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.enqueue(chunk);
+            },
+            cancel() {
+              cancelled();
+            },
+          }),
+          { headers: { "content-type": "application/octet-stream" } },
+        ),
+    });
+    cleanups.push(() => handle.stop());
+    await handle.ready;
+
+    const client = net.connect(handle.port, "localhost", () => {
+      client.write("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    });
+    client.on("error", () => {});
+    await new Promise<void>((r) => client.once("data", () => r()));
+    client.destroy(); // vanish while chunks are in flight
+
+    // Without the disconnect check the write loop parks forever on a 'close'
+    // that already fired, and the body stream is never cancelled.
+    const released = await Promise.race([
+      streamReleased.then(() => true),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 3000)),
+    ]);
+    expect(released).toBe(true);
   });
 
   it("reads env through the seam", () => {

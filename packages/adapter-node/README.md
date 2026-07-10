@@ -6,9 +6,9 @@ web-standard (`Request`/`Response`/`ReadableStream`) with no Bun types past the
 adapter boundary, so this is ~130 lines: a `node:http` request bridge plus WS
 upgrades through the [`ws`](https://github.com/websockets/ws) package (noServer).
 
-Requires **Node ≥ 24** (stable, unflagged TypeScript execution). Works on Node
-22.18+ too, where type-stripping is also unflagged. The rpxd source is kept
-erasable (no parameter properties, enums, or runtime namespaces) so Node runs it
+Requires **Node ≥ 24** (stable, unflagged TypeScript execution — the floor CI
+tests against, and what `engines` enforces). The rpxd source is kept erasable
+(no parameter properties, enums, or runtime namespaces) so Node runs it
 directly with no build step and no `--experimental-transform-types`.
 
 ```ts

@@ -8,8 +8,8 @@
  * `writeWebResponse` bridge the dev server already uses. Pair it with
  * `@rpxd/storage-sqlite/node` (`better-sqlite3`) for durable snapshots.
  *
- * Requires Node ≥ 24 (stable, unflagged TypeScript execution); works on Node
- * 22.18+ where type-stripping is also unflagged.
+ * Requires Node ≥ 24 (stable, unflagged TypeScript execution) — the floor CI
+ * tests against, and what `engines` enforces.
  *
  * @packageDocumentation
  */
@@ -59,12 +59,19 @@ function toWebRequest(req: IncomingMessage, res: ServerResponse): Request | null
   }
 }
 
+/** The client is gone (or the response finished) — no write can succeed now. */
+function isGone(res: ServerResponse): boolean {
+  return res.destroyed || res.writableEnded || !res.writable;
+}
+
 /**
  * Write one chunk to the node response, awaiting `drain` when the socket
  * signals backpressure (`write` returns `false`). Without this, a slow SSE/
  * download client can't slow the producer and the stream buffers unboundedly
- * in server memory. Resolves early on `close` so a departed client can't leak
- * the wait forever.
+ * in server memory. Resolves early on `close`/`error` — or immediately when
+ * the response is already gone, since a departed client's `close` has already
+ * fired and would never wake the wait — so a disconnect can't leak the write
+ * loop forever.
  *
  * @example
  * ```ts
@@ -72,15 +79,17 @@ function toWebRequest(req: IncomingMessage, res: ServerResponse): Request | null
  * ```
  */
 export function writeChunk(res: ServerResponse, value: Uint8Array): Promise<void> {
-  if (res.write(value)) return Promise.resolve();
+  if (isGone(res) || res.write(value) || isGone(res)) return Promise.resolve();
   return new Promise<void>((resolve) => {
     const done = () => {
       res.off("drain", done);
       res.off("close", done);
+      res.off("error", done);
       resolve();
     };
     res.once("drain", done);
     res.once("close", done);
+    res.once("error", done);
   });
 }
 
@@ -103,9 +112,13 @@ async function writeWebResponse(res: ServerResponse, webRes: Response): Promise<
       const { done, value } = await reader.read();
       if (done) break;
       await writeChunk(res, value);
+      if (isGone(res)) break; // client went away — abandon the stream
     }
   } catch {
     // client went away mid-stream (SSE disconnects land here)
+  } finally {
+    // Cancel (not just release) so an abandoned body's source stops producing.
+    await reader.cancel().catch(() => {});
   }
   res.end();
 }
@@ -150,6 +163,11 @@ export function nodeAdapter(): ServerAdapter {
       if (websocket) {
         wss = new WebSocketServer({ noServer: true });
         server.on("upgrade", (req, socket, head) => {
+          // node:http removes its own error listener from the socket before
+          // emitting 'upgrade', so without ours a client reset during the
+          // async `fetch` gap below (origin check, slow authenticate) would be
+          // an unhandled 'error' → uncaughtException → dead process.
+          socket.on("error", () => socket.destroy());
           let webReq: Request;
           try {
             webReq = new Request(`http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`, {
@@ -183,7 +201,8 @@ export function nodeAdapter(): ServerAdapter {
               if (upgraded) return; // ws owns the connection now
               // fetch declined the upgrade (e.g. auth 403, or not our path).
               const status = res?.status ?? 400;
-              socket.write(`HTTP/1.1 ${status}\r\nconnection: close\r\n\r\n`);
+              if (!socket.destroyed)
+                socket.write(`HTTP/1.1 ${status}\r\nconnection: close\r\n\r\n`);
               socket.destroy();
             })
             .catch((e) => {
