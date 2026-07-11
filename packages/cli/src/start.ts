@@ -14,6 +14,7 @@ import {
   bunAdapter,
   createRpxdHandler,
   type HttpRouteRegistration,
+  makeDiagnosticEmit,
   type RouteRegistration,
   type ServerAdapter,
   wsTransport,
@@ -26,7 +27,7 @@ import {
   type RpxdConfig,
 } from "./config.ts";
 import type { ShellAssets, ShellComponents, SsrRuntime } from "./render.ts";
-import { runCloseSequence } from "./shutdown.ts";
+import { installUnhandledRejectionGuard, runCloseSequence } from "./shutdown.ts";
 
 /** Options for {@link startApp}. */
 export interface StartOptions {
@@ -98,6 +99,11 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     existsSync(configPath) ? ((await import(pathToFileURL(configPath).href)).default ?? {}) : {},
     opts.overrides,
   );
+
+  // Process-owner backstop (item 5): any FUTURE detached rejection (framework
+  // or app code — rpxd's own dispatch boundary is already total, #112) is
+  // reported through the app's configured sink rather than crashing silently.
+  installUnhandledRejectionGuard(makeDiagnosticEmit(config.onDiagnostic));
 
   // Route registry + SSR runtime from the server bundle — the bundle owns
   // rendering (§12); this process is pure transport.
