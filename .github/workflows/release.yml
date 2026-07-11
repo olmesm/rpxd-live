@@ -1,0 +1,119 @@
+name: Release
+
+# NOTE: this workflow is UNTESTED in this environment (no CI runner, no npm
+# registry access, no NPM_TOKEN available here). It is verified by inspection
+# only — the accompanying local pieces (`.changeset/config.json`, the
+# `release-exports-rsc.ts` rewrite, `bun run build`) were exercised directly
+# instead; see the PR description. The maintainer should dry-run the very
+# first publish (e.g. `bun publish --dry-run` from a package dir, or by
+# watching the Actions log closely on the first real run) before trusting it
+# unattended.
+#
+# Flow (standard Changesets "PR then publish" model):
+#   1. A push to main with one or more `.changeset/*.md` files present opens
+#      (or updates) a "Version Packages" PR — via `changesets/action`'s
+#      `version` command (`bun run version-packages`, i.e. `changeset
+#      version`). That PR bumps `packages/*/package.json` versions, rewrites
+#      `workspace:*` internal deps (per `updateInternalDependencies: patch`
+#      in .changeset/config.json), writes per-package CHANGELOG.md, and
+#      deletes the consumed changesets.
+#   2. Merging that PR is itself a push to main with no changesets left, which
+#      is `changesets/action`'s signal to run the `publish` command below
+#      instead of opening a PR.
+#
+# Deliberately `bun publish`, not `changeset publish`: publishing needs the
+# zshy dist build (`bun run build`) plus the rsc dist-exports rewrite
+# (`scripts/release-exports-rsc.ts` — rsc opts out of zshy's exports rewrite
+# via `noEdit: true`; see that script's header) to land in each package's
+# `exports` before anything ships, and it needs `workspace:*` internal deps
+# rewritten to concrete versions. `bun publish` does the workspace-range
+# rewrite itself at publish time and picks up whatever `exports` is on disk
+# in that (throwaway, CI-only) checkout — `changeset publish` assumes a
+# plain `npm publish`/no build-rewrite shape that doesn't fit this repo.
+#
+# `bun publish` does not create git tags or GitHub releases the way
+# `changeset publish` does — the maintainer should create those manually
+# (tag `@rpxd/<pkg>@<version>` per published package, or a single release
+# note referencing the merged Version Packages PR) after a successful run.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release:
+    name: Version or Publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # changesets/action inspects .changeset/*.md on this push:
+      #  - changesets present  -> runs `version` and opens/updates the
+      #    "Version Packages" PR (no publish attempted).
+      #  - no changesets left  -> this push IS a merged Version Packages PR;
+      #    runs `publish` below.
+      #
+      # The `publish` command: build (zshy rewrites 11 packages' exports
+      # ->dist as a side effect), rewrite rsc's exports ->dist by hand
+      # (noEdit), write the npm auth token, then loop every `packages/*`
+      # dir and `bun publish` the ones that aren't `"private": true`
+      # (currently all 12 `@rpxd/*` packages). `bun publish` itself rewrites
+      # `workspace:*` internal deps to the just-versioned concrete numbers.
+      #
+      # NPM_TOKEN is only required at the point of an actual publish (not on
+      # every push — most pushes just update the Version PR), so a missing
+      # secret degrades to a loud skip instead of a hard failure; that keeps
+      # this workflow safe to land before npm publishing is fully wired up.
+      #
+      # --provenance: not added. As of the pinned bun 1.3.11, `bun publish`'s
+      # supported flags (--access, --tag, --otp, --dry-run, --gzip-level) do
+      # not document --provenance/npm-style provenance attestation support —
+      # unconfirmed either way in this environment (no registry access to
+      # test against). If the maintainer confirms bun added it, add
+      # `--provenance` to the `bun publish` line below (id-token: write is
+      # already granted above for exactly this).
+      - name: Version Packages PR / Publish
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: bun run version-packages
+          publish: |
+            bun run build
+            bun scripts/release-exports-rsc.ts
+            if [ -z "$NPM_TOKEN" ]; then
+              echo "::warning::NPM_TOKEN is not set — skipping npm publish. Add the secret to enable publishing."
+              exit 0
+            fi
+            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+            for dir in packages/*/; do
+              pkg="${dir}package.json"
+              is_private=$(bun -e "console.log(JSON.parse(require('fs').readFileSync('${pkg}','utf-8')).private === true)")
+              if [ "$is_private" = "true" ]; then
+                echo "skip (private): ${dir}"
+                continue
+              fi
+              name=$(bun -e "console.log(JSON.parse(require('fs').readFileSync('${pkg}','utf-8')).name)")
+              echo "publishing ${name}"
+              (cd "${dir}" && bun publish --access public)
+            done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
