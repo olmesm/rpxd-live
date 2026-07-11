@@ -32,6 +32,7 @@ const make = (def: LiveDefinition<never, never, never>, path: string) =>
     routes: [{ path, def: def as never }],
     authenticate: (req, { sid }) => ({ sid, user: req.headers.get("x-user") ?? undefined }),
     warmTtlMs: 10,
+    cookie: { sign: false }, // fixed literal cookies below need a stable, unsigned sid
   });
 
 describe("redirect() from setup", () => {

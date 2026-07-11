@@ -57,20 +57,28 @@ describe("rpxd start (pure Bun, no Vite)", () => {
   });
 
   it("runs the live wire end-to-end in production mode", async () => {
-    const html = await (await fetch(`${base()}/`, { headers: { cookie: COOKIE } })).text();
+    // S1: session cookies are signed by default now (dev/test runs get an
+    // ephemeral per-process secret — see `scripts/test-preload.ts`), so a
+    // fixed literal cookie no longer identifies a stable session across
+    // requests. Round-trip the real `Set-Cookie` from the first response
+    // instead, like a real client would.
+    const firstRes = await fetch(`${base()}/`, { headers: { cookie: COOKIE } });
+    const sessionCookie =
+      /rpxd_sid=[^;]+/.exec(firstRes.headers.get("set-cookie") ?? "")?.[0] ?? COOKIE;
+    const html = await firstRes.text();
     const boot = JSON.parse(
       /<script id="__rpxd" type="application\/json">(.*?)<\/script>/s.exec(html)?.[1] as string,
     );
 
     const streamRes = await fetch(
       `${base()}/__rpxd/stream?attach=${boot.attachToken}&seq=${boot.seq}`,
-      { headers: { cookie: COOKIE } },
+      { headers: { cookie: sessionCookie } },
     );
     const reader = (streamRes.body as ReadableStream<Uint8Array>).getReader();
 
     const rpcRes = await fetch(`${base()}/__rpxd/rpc`, {
       method: "POST",
-      headers: { cookie: COOKIE, "content-type": "application/json" },
+      headers: { cookie: sessionCookie, "content-type": "application/json" },
       body: JSON.stringify({
         v: 1,
         instance: boot.instance,

@@ -41,6 +41,38 @@ function makeHandler(
     ? Partial<O & object>
     : never = {},
 ) {
+  // S1: signing is on by default, and vitest runs NODE_ENV=development (see
+  // vitest.config.ts), so a bare handler now gets an ephemeral per-instance
+  // secret — a fixed literal cookie header (the `COOKIE` constant most tests
+  // below use to simulate an existing session across requests) would no
+  // longer verify and would mint a fresh session every call. The vast
+  // majority of this suite tests unrelated behavior (streaming, control,
+  // throttling, eviction…) and never configures signing itself, so default
+  // this helper to the explicit unsigned escape hatch, preserving their
+  // pre-S1 behavior. A test exercising signing explicitly opts back in via
+  // `sessionSecret` or its own `cookie` override — either bypasses this default.
+  const explicitSigning = "sessionSecret" in overrides || "cookie" in overrides;
+  return createRpxdHandler({
+    routes: [{ path: "/org/$orgId/board", def: boardDef }],
+    warmTtlMs: 15,
+    attachTtlMs: 60,
+    ...(explicitSigning ? {} : { cookie: { sign: false as const } }),
+    ...overrides,
+  });
+}
+
+/**
+ * The fail-closed secret guard (S1) and the sign-by-default ephemeral path are
+ * about exactly what happens with NEITHER `sessionSecret` nor `cookie.sign`
+ * configured — the one case `makeHandler` deliberately papers over above for
+ * the rest of this suite's convenience. Those tests construct through this
+ * instead, so they see the handler's true, unconfigured default.
+ */
+function makeBareHandler(
+  overrides: Parameters<typeof createRpxdHandler>[0] extends infer O
+    ? Partial<O & object>
+    : never = {},
+) {
   return createRpxdHandler({
     routes: [{ path: "/org/$orgId/board", def: boardDef }],
     warmTtlMs: 15,
@@ -969,6 +1001,7 @@ describe("un-attached instance cleanup — no residual growth (#61 follow-up)", 
       storage,
       warmTtlMs: 500,
       attachTtlMs: 10,
+      cookie: { sign: false }, // fixed literal cookie below needs a stable, unsigned sid
     });
     await handler.fetch(
       new Request(`${base}/org/7/board`, { headers: { cookie: "rpxd_sid=leak-x" } }),
@@ -1020,6 +1053,7 @@ describe("un-attached instance cleanup — no residual growth (#61 follow-up)", 
       storage,
       warmTtlMs: 25,
       attachTtlMs: 5,
+      cookie: { sign: false }, // fixed literal cookie below needs a stable, unsigned sid
     });
     const cookie = { cookie: "rpxd_sid=keep-x" };
     await handler.fetch(
@@ -1386,8 +1420,11 @@ describe("signed session cookie — HMAC integrity (B2)", () => {
     }
   });
 
-  it("leaves the sid unsigned when no secret is set (back-compat)", async () => {
-    const handler = makeHandler(); // no secret
+  it("leaves the sid unsigned when cookie.sign is explicitly false (back-compat escape hatch)", async () => {
+    // S1: no-secret no longer means unsigned (dev auto-signs via an ephemeral
+    // secret) — the unsigned read/write path is now only reachable through the
+    // explicit `cookie: { sign: false }` opt-out.
+    const handler = makeHandler({ cookie: { sign: false } });
     const res = await handler.fetch(new Request(`${base}/org/7/board`));
     const value = /rpxd_sid=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
     expect(value).not.toContain("."); // bare uuid
@@ -1400,10 +1437,11 @@ describe("signed session cookie — HMAC integrity (B2)", () => {
     await handler.dispose();
   });
 
-  it("treats an empty-string secret as unsigned (no write/read split)", async () => {
+  it("treats an empty-string secret + cookie.sign:false as unsigned (no write/read split)", async () => {
     // "" must NOT enter verify mode (a public empty HMAC key would be forgeable);
-    // it collapses to the unsigned path, consistent on write and read.
-    const handler = makeHandler({ sessionSecret: "" });
+    // it collapses to "no secret configured", and — combined with the explicit
+    // sign:false opt-out — reaches the unsigned path, consistent on write and read.
+    const handler = makeHandler({ sessionSecret: "", cookie: { sign: false } });
     const value =
       /rpxd_sid=([^;]+)/.exec(
         (await handler.fetch(new Request(`${base}/org/7/board`))).headers.get("set-cookie") ?? "",
@@ -1412,6 +1450,26 @@ describe("signed session cookie — HMAC integrity (B2)", () => {
     expect(
       handler.resolveSid(new Request(base, { headers: { cookie: "rpxd_sid=plain" } })),
     ).toEqual({ sid: "plain", isNew: false }); // …and read unsigned, not minted fresh
+    await handler.dispose();
+  });
+
+  it("signs the sid by default in dev when no secret is configured — dev is no longer forgeable (S1)", async () => {
+    // vitest runs with NODE_ENV=development (vitest.config.ts). `makeHandler`
+    // defaults to the unsigned escape hatch for the rest of this suite's
+    // convenience (see its comment), so use `makeBareHandler` here — no
+    // cookie/sessionSecret option at all, the true unconfigured default —
+    // which now gets an ephemeral in-memory secret and signs, closing the
+    // dev/prod divergence where S1 previously ran dev unsigned.
+    const handler = makeBareHandler();
+    const res = await handler.fetch(new Request(`${base}/org/7/board`));
+    const value = /rpxd_sid=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
+    expect(value).toContain("."); // <sid>.<mac>, signed even with no configured secret
+    // A forged/unsigned cookie is rejected as a brand-new session, not trusted verbatim.
+    const forged = handler.resolveSid(
+      new Request(base, { headers: { cookie: "rpxd_sid=attacker-chosen" } }),
+    );
+    expect(forged.isNew).toBe(true);
+    expect(forged.sid).not.toBe("attacker-chosen");
     await handler.dispose();
   });
 });
@@ -1432,33 +1490,51 @@ describe("fail-closed secret guard (S1)", () => {
     return undefined;
   }
 
-  it("throws mentioning RPXD_SESSION_SECRET when NODE_ENV is unset and no secret is configured", () => {
+  it("throws mentioning RPXD_SESSION_SECRET and cookie.sign:false when NODE_ENV is unset and no secret is configured", () => {
     withNodeEnv(undefined, () => {
-      expect(() => makeHandler()).toThrow(/RPXD_SESSION_SECRET/);
+      expect(() => makeBareHandler()).toThrow(/RPXD_SESSION_SECRET/);
+      expect(() => makeBareHandler()).toThrow(/sign:\s*false/);
     });
   });
 
   it('throws when NODE_ENV is "production" and no secret is configured', () => {
     withNodeEnv("production", () => {
-      expect(() => makeHandler()).toThrow(/RPXD_SESSION_SECRET/);
+      expect(() => makeBareHandler()).toThrow(/RPXD_SESSION_SECRET/);
     });
   });
 
   it('throws when NODE_ENV is "staging" (proves isDev, not isProd) and no secret is configured', () => {
     withNodeEnv("staging", () => {
-      expect(() => makeHandler()).toThrow(/RPXD_SESSION_SECRET/);
+      expect(() => makeBareHandler()).toThrow(/RPXD_SESSION_SECRET/);
     });
   });
 
-  it('constructs and warns once when NODE_ENV is "development" and no secret is configured', async () => {
-    // warnUnsignedSid dedupes once per module instance, and earlier tests in
-    // this file already tripped it (constructing with no secret) — reset the
-    // module registry and re-import fresh so the one-time warning is
-    // observable here rather than already-consumed.
+  it("does NOT throw in production when no secret is configured but cookie.sign is explicitly false", () => {
+    // The explicit escape hatch: an app that deliberately doesn't want rpxd to
+    // sign can still boot in prod without RPXD_SESSION_SECRET.
+    withNodeEnv("production", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        expect(() => makeHandler({ cookie: { sign: false } })).not.toThrow();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
+  it('constructs and SIGNS (ephemeral secret) when NODE_ENV is "development" and no secret is configured — no throw, no "unsigned" warning', async () => {
+    // S1 fix: dev with no configured secret used to run unsigned + warn; now it
+    // signs via an ephemeral in-memory secret, so dev exercises the same signing
+    // path as prod. `warnUnsignedSid` no longer fires for this case — only for
+    // explicit `cookie: { sign: false }` — so assert it's never called with the
+    // "unsigned" wording. Reset the module registry so the one-time
+    // ephemeral-secret log is observable here rather than already-consumed by
+    // an earlier test in this file.
     await withNodeEnv("development", async () => {
       vi.resetModules();
       const { createRpxdHandler: freshCreateRpxdHandler } = await import("../src/handler.ts");
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const info = vi.spyOn(console, "info").mockImplementation(() => {});
       try {
         const handler = freshCreateRpxdHandler({
           routes: [{ path: "/org/$orgId/board", def: boardDef }],
@@ -1466,10 +1542,18 @@ describe("fail-closed secret guard (S1)", () => {
           attachTtlMs: 60,
         });
         expect(handler).toBeDefined();
-        expect(warn).toHaveBeenCalledTimes(1);
+        const unsignedWarnings = warn.mock.calls.filter((args) =>
+          args.some((a) => typeof a === "string" && a.includes("unsigned")),
+        );
+        expect(unsignedWarnings).toHaveLength(0); // never the old "unsigned sid" warning
+        // signs the sid (the ephemeral-secret path, not the unsigned one)
+        const res = await handler.fetch(new Request(`${base}/org/7/board`));
+        const value = /rpxd_sid=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1] ?? "";
+        expect(value).toContain(".");
         await handler.dispose();
       } finally {
         warn.mockRestore();
+        info.mockRestore();
       }
     });
   });

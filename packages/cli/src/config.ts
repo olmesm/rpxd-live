@@ -50,16 +50,21 @@ export interface RpxdConfig {
   session?: {
     authenticate?: (req: Request, ctx: { sid: string }) => unknown | Promise<unknown>;
     /**
-     * Session-cookie attributes (B1). `secure` marks `rpxd_sid` `Secure` —
+     * Session-cookie attributes (B1, S1). `secure` marks `rpxd_sid` `Secure` —
      * default `true` (accepted on HTTPS and `http://localhost`). Set `false`
      * only for non-localhost HTTP dev. `bun run dev` already defaults it off.
+     *
+     * `sign` controls HMAC-signing the cookie — default `true` (always
+     * signed: an ephemeral secret in dev when `secret` is unset, a configured
+     * one required in production). Set `false` to explicitly run unsigned.
      */
-    cookie?: { secure?: boolean };
+    cookie?: { secure?: boolean; sign?: boolean };
     /**
-     * Secret for HMAC-signing the `rpxd_sid` cookie (B2) — a forged/unsigned
+     * Secret for HMAC-signing the `rpxd_sid` cookie (B2, S1) — a forged/unsigned
      * cookie is then rejected as a fresh session. Falls back to
-     * `process.env.RPXD_SESSION_SECRET`. Unset → the sid is unsigned (the server
-     * warns once). Set one in production.
+     * `process.env.RPXD_SESSION_SECRET`. Unset in development → an ephemeral
+     * in-memory secret (dev/prod fidelity); unset in production → refuses to
+     * start (set one, or opt out with `cookie: { sign: false }`).
      */
     secret?: string;
   };
