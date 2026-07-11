@@ -24,6 +24,17 @@ export interface CloseSteps {
  * Run graceful-shutdown steps in the one correct order: stop new work, **flush
  * snapshots** (needs storage open), run the app's `onShutdown`, then close
  * storage. Extracted so the ordering invariant is unit-testable.
+ *
+ * @example
+ * ```ts
+ * app.close = () =>
+ *   runCloseSequence({
+ *     stop: () => server.stop(),
+ *     dispose: () => registry.disposeAll(),
+ *     onShutdown: config.onShutdown,
+ *     closeStorage: () => storage.close?.(),
+ *   });
+ * ```
  */
 export async function runCloseSequence(steps: CloseSteps): Promise<void> {
   await steps.stop();
@@ -32,6 +43,18 @@ export async function runCloseSequence(steps: CloseSteps): Promise<void> {
   await steps.closeStorage?.();
 }
 
+/**
+ * Options for {@link installShutdownHandlers} — override the exit function,
+ * the grace-period timeout, and the progress logger.
+ *
+ * @example
+ * ```ts
+ * installShutdownHandlers(app.close, {
+ *   timeoutMs: 30_000, // match the container's terminationGracePeriodSeconds
+ *   log: (m) => logger.info(m),
+ * });
+ * ```
+ */
 export interface ShutdownOptions {
   /** Process exit (injected in tests). Defaults to `process.exit`. */
   exit?: (code: number) => void;
