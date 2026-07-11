@@ -19,8 +19,12 @@ describe("prod error hardening (§10)", () => {
     const html = await res?.text();
     expect(html).not.toContain("hunter2");
     expect(html).toMatch(/ref: [0-9a-f]{8}/);
-    // the real error went to the server log, tagged with the same ref
-    const logged = log.mock.calls.flat().map(String).join(" ");
+    // the real error went to the server log (via the event sink, #73), tagged
+    // with the same ref — the ref now rides the event's structured `detail`.
+    const logged = log.mock.calls
+      .flat()
+      .map((a) => (a instanceof Error ? a.message : typeof a === "string" ? a : JSON.stringify(a)))
+      .join(" ");
     expect(logged).toContain("hunter2");
     const ref = /ref: ([0-9a-f]{8})/.exec(html ?? "")?.[1] as string;
     expect(logged).toContain(ref);

@@ -7,6 +7,12 @@
  * @packageDocumentation
  */
 export {
+  defaultEventSink,
+  makeEmit,
+  type RpxdEvent,
+  type RpxdEventSink,
+} from "./events.ts";
+export {
   type CreateInstanceOptions,
   DEFAULT_MAX_BATCH_CALLS,
   LiveInstance,

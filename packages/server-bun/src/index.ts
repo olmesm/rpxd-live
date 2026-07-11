@@ -4,6 +4,16 @@
  *
  * @packageDocumentation
  */
+
+// Re-export the unified event-sink API (#73) so adapter/CLI packages that
+// already depend on server-bun can report `request`-category events without a
+// direct @rpxd/core runtime dependency.
+export {
+  defaultEventSink,
+  makeEmit,
+  type RpxdEvent,
+  type RpxdEventSink,
+} from "@rpxd/core";
 export {
   bunAdapter,
   type ServeHandle,
@@ -19,7 +29,6 @@ export {
   type RenderContext,
   type RouteRegistration,
   type RpxdHandlerOptions,
-  type SecurityEvent,
 } from "./handler.ts";
 export {
   matchHttpPath,

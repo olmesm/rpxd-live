@@ -8,10 +8,11 @@ import {
   type LiveDefinition,
   memory,
   type PROTOCOL_VERSION,
+  type RpxdEvent,
   redirect,
 } from "@rpxd/core";
 import { describe, expect, it } from "vitest";
-import { createRpxdHandler, type SecurityEvent } from "../src/handler.ts";
+import { createRpxdHandler } from "../src/handler.ts";
 
 interface BoardState {
   items: string[];
@@ -73,10 +74,10 @@ const alive = async (h: ReturnType<typeof makeHandler>, sid: string, instance: s
 
 describe("per-session cap — a hard ceiling even when every instance is subscribed", () => {
   it("rejects the N+1th fresh mount with 429 when every held instance is subscribed", async () => {
-    const events: SecurityEvent[] = [];
+    const events: RpxdEvent[] = [];
     const handler = makeHandler({
       maxInstancesPerSession: 2,
-      onSecurityEvent: (e) => events.push(e),
+      onEvent: (e) => events.push(e),
     });
     const abort = new AbortController();
     await openStream(handler, "hard-cap", "s1", abort.signal);
