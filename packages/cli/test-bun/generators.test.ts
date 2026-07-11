@@ -9,7 +9,7 @@
  * (the example is a superset of a generated app's deps).
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyPlan } from "../src/generators/apply.ts";
@@ -123,6 +123,75 @@ describe("generated app: build + serve (pure Bun)", () => {
   it("404s an unknown path", async () => {
     const res = await fetch(`${base()}/nope`, { headers: { cookie: COOKIE } });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("scaffold security: secrets (S2)", () => {
+  const secretsRoot = join(repoRoot, ".rpxd-gen-test-secrets");
+  const HEX64 = /^[0-9a-f]{64}$/;
+
+  afterAll(() => {
+    rmSync(secretsRoot, { recursive: true, force: true });
+  });
+
+  it("generates a .env with two distinct 64-hex-char secrets when auth is scaffolded", () => {
+    const plan = planInit({ name: "secrets-test", auth: true, db: true });
+    const env = plan.files.find((f) => f.path === ".env");
+    expect(env).toBeTruthy();
+    const sessionMatch = env?.contents.match(/^RPXD_SESSION_SECRET=([0-9a-f]+)$/m);
+    const authMatch = env?.contents.match(/^BETTER_AUTH_SECRET=([0-9a-f]+)$/m);
+    expect(sessionMatch?.[1]).toMatch(HEX64);
+    expect(authMatch?.[1]).toMatch(HEX64);
+    expect(sessionMatch?.[1]).not.toBe(authMatch?.[1]);
+  });
+
+  it("omits BETTER_AUTH_SECRET from .env when auth is not scaffolded", () => {
+    const plan = planInit({ name: "secrets-test", auth: false, db: false });
+    const env = plan.files.find((f) => f.path === ".env");
+    expect(env).toBeTruthy();
+    expect(env?.contents).toMatch(/^RPXD_SESSION_SECRET=[0-9a-f]{64}$/m);
+    expect(env?.contents).not.toContain("BETTER_AUTH_SECRET");
+  });
+
+  it("kills the hardcoded auth secret and fails closed in production", () => {
+    const plan = planInit({ name: "secrets-test", auth: true, db: true });
+    const authTs = plan.files.find((f) => f.path === "adapters/auth.ts")?.contents ?? "";
+    expect(authTs).not.toContain("dev-secret-change-me");
+    expect(authTs).not.toContain("0123456789abcdef");
+    expect(authTs).toContain("process.env.BETTER_AUTH_SECRET");
+    expect(authTs).toContain('process.env.NODE_ENV === "development"');
+    expect(authTs).toMatch(/throw new Error\(\s*["'`].*BETTER_AUTH_SECRET/s);
+  });
+
+  it("scaffolded dev and test scripts run as development; build/start stay production", () => {
+    const plan = planInit({ name: "secrets-test", auth: false, db: false });
+    const pkg = JSON.parse(plan.files.find((f) => f.path === "package.json")?.contents ?? "{}");
+    expect(pkg.scripts.dev).toMatch(/^NODE_ENV=development\s/);
+    expect(pkg.scripts.test).toMatch(/^NODE_ENV=development\s/);
+    expect(pkg.scripts.build).not.toMatch(/NODE_ENV=development/);
+    expect(pkg.scripts.start).not.toMatch(/NODE_ENV=development/);
+  });
+
+  it(".env is non-clobbering: re-applying a freshly generated plan preserves existing secrets", () => {
+    rmSync(secretsRoot, { recursive: true, force: true });
+    mkdirSync(secretsRoot, { recursive: true });
+    const first = applyPlan(
+      secretsRoot,
+      planInit({ name: "secrets-test", auth: true, db: true }),
+      {},
+    );
+    expect(first.written).toContain(".env");
+    const before = readFileSync(join(secretsRoot, ".env"), "utf-8");
+
+    // A second, independently-generated plan has different random secrets —
+    // applyPlan must still leave the on-disk .env untouched (skipped).
+    const second = applyPlan(
+      secretsRoot,
+      planInit({ name: "secrets-test", auth: true, db: true }),
+      {},
+    );
+    expect(second.skipped).toContain(".env");
+    expect(readFileSync(join(secretsRoot, ".env"), "utf-8")).toBe(before);
   });
 });
 

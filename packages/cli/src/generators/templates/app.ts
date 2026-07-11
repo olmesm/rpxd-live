@@ -4,6 +4,7 @@
  * welcome route, the `Scope` primitive, and the project manifests. Kept close
  * to `examples/kitchen-sink` so drift between the demo and generated apps is visible.
  */
+import { randomBytes } from "node:crypto";
 import type { FileWrite } from "../types.ts";
 
 /** Shape shared by the app-shell builders. */
@@ -44,11 +45,13 @@ const packageJson = ({ name, db, auth }: AppOptions): string => {
   };
   if (db) devDeps.prisma = "^7.8.0";
 
+  // dev/test run as development (belt-and-braces — `rpxd dev` sets this too);
+  // build/start stay production so a missing secret fails closed (S1/S2).
   const scripts: Record<string, string> = {
-    dev: "rpxd dev",
+    dev: "NODE_ENV=development rpxd dev",
     build: "rpxd build",
     start: "rpxd start",
-    test: "vitest run",
+    test: "NODE_ENV=development vitest run",
     typecheck: "tsc --noEmit",
   };
   if (db) {
@@ -123,15 +126,33 @@ generated/
 const viteEnv = (): string => `/// <reference types="vite/client" />\n`;
 
 /**
+ * Per-project secrets (S2): gitignored, written once at scaffold time, never
+ * clobbered by a re-run of `rpxd init` ({@link applyPlan}'s non-clobbering
+ * write). Bun auto-loads `.env` into `process.env`, so dev works with zero
+ * setup; production must set these explicitly (the README says so).
+ */
+const envFile = (auth: boolean): string => {
+  const lines = [
+    "# rpxd — server secrets (gitignored). Regenerate with: openssl rand -hex 32",
+    `RPXD_SESSION_SECRET=${randomBytes(32).toString("hex")}`,
+  ];
+  if (auth) lines.push(`BETTER_AUTH_SECRET=${randomBytes(32).toString("hex")}`);
+  return `${lines.join("\n")}\n`;
+};
+
+/**
  * Project README: the run/build/deploy commands plus the one env var that
  * matters in production. Kept short — the docs site carries the full
  * deployment guide; this is the note you see on `rpxd init`.
  */
-const readme = ({ name, db }: AppOptions): string => {
+const readme = ({ name, db, auth }: AppOptions): string => {
   const dbSetup = db ? "bun run setup   # generate the Prisma client + apply the schema\n" : "";
   const dbDeploy = db
     ? "\nThe default sqlite DB lives in the container's ephemeral layer — mount a\nvolume at `/app/prisma` (or set `DATABASE_URL` to durable storage) so data\nsurvives a redeploy.\n"
     : "";
+  const secretVars = auth
+    ? "`RPXD_SESSION_SECRET` and `BETTER_AUTH_SECRET`"
+    : "`RPXD_SESSION_SECRET`";
   return `# ${name}
 
 An [rpxd](https://olmesm.github.io/rpxd-live/) app — server-side live objects,
@@ -144,6 +165,9 @@ bun install
 ${dbSetup}bun run dev      # http://localhost:3000
 \`\`\`
 
+A \`.env\` with per-project secrets was generated for you (gitignored — never
+committed), so local dev is signed with zero setup.
+
 ## Deploy
 
 \`\`\`sh
@@ -151,8 +175,9 @@ bun run build    # dist/client + dist/server
 bun run start    # serve the build on $PORT (default 3000)
 \`\`\`
 
-Set \`RPXD_SESSION_SECRET\` in production so the session cookie is HMAC-signed
-(without it the sid is unsigned and rpxd warns once at boot).
+Production must set ${secretVars} — the server refuses to start
+without them (the session cookie would be unsigned, or auth sessions would be
+forgeable).
 
 A Tier-1 \`Dockerfile\` is included:
 
@@ -384,6 +409,7 @@ export function appShellFiles(opts: AppOptions): FileWrite[] {
     { path: "README.md", contents: readme(opts) },
     { path: "tsconfig.json", contents: tsconfig(opts.db) },
     { path: ".gitignore", contents: gitignore() },
+    { path: ".env", contents: envFile(opts.auth) },
     { path: "Dockerfile", contents: dockerfile(opts) },
     { path: ".dockerignore", contents: dockerignore() },
     { path: "vite-env.d.ts", contents: viteEnv() },
