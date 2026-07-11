@@ -18,6 +18,8 @@ describe("RpxdConfig instance/observability knobs", () => {
           | "maxUnattachedInstances"
           | "maxInstancesPerSession"
           | "maxBufferedBytes"
+          | "warnQueueDepth"
+          | "maxBroadcastBacklog"
         >
       | undefined
     >();
