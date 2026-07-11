@@ -76,11 +76,13 @@ export interface RpxdHandlerOptions {
   authenticate?: (req: Request, ctx: { sid: string }) => unknown | Promise<unknown>;
   /**
    * Cross-origin allowlist for the control plane (`/__rpxd/ws|stream|rpc|control`,
-   * #52). Defaults to **same-origin only** — the cross-site WebSocket-hijack /
-   * CSRF defense. A same-origin browser app needs no config; a deliberate
-   * cross-origin deployment lists its origins (or passes a predicate). SSR `GET`
-   * and `route()` handlers are never gated — a top-level nav is legitimately
-   * cross-site.
+   * #52) and for state-changing `route()` methods (S3). Defaults to
+   * **same-origin only** — the cross-site WebSocket-hijack / CSRF defense. A
+   * same-origin browser app needs no config; a deliberate cross-origin
+   * deployment lists its origins (or passes a predicate). SSR `GET` and
+   * `route()`'s `GET`/`HEAD`/`OPTIONS` are never gated — a top-level nav is
+   * legitimately cross-site; a `route()`'s state-changing methods can opt out
+   * individually with `.crossOrigin()`.
    */
   allowedOrigins?: AllowedOrigins;
   /**
@@ -1119,6 +1121,19 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       if (hit) {
         const reg = opts.httpRoutes.find((r) => r.path === hit.path) as HttpRouteRegistration;
         const method = req.method.toUpperCase() as RouteMethod;
+        // CSRF (S3): state-changing route() methods are same-origin by default —
+        // GET/HEAD/OPTIONS stay exempt (top-level nav / CORS preflight is legitimately
+        // cross-site). `.crossOrigin()` opts a route back out (public webhooks).
+        const safeMethod = method === "GET" || method === "HEAD" || method === "OPTIONS";
+        if (!safeMethod && !reg.def.crossOrigin && !originAllowed(req, opts.allowedOrigins)) {
+          emitSecurity("origin-rejected", {
+            origin: req.headers.get("origin"),
+            path: url.pathname,
+          });
+          return {
+            done: withSession(new Response("forbidden origin", { status: 403 }), sid, isNew),
+          };
+        }
         const fn = reg.def.handlers[method] ?? reg.def.handlers.ALL;
         if (!fn) {
           return {

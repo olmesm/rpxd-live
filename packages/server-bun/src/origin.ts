@@ -6,8 +6,13 @@
  * blind cross-site POST. The default is same-origin; a deliberate cross-origin
  * deployment opts in via {@link AllowedOrigins}.
  *
- * SSR `GET` navigation and `route()` handlers are intentionally **not** gated —
- * a top-level navigation is legitimately cross-site (an inbound link).
+ * SSR `GET` navigation is intentionally **not** gated — a top-level navigation
+ * is legitimately cross-site (an inbound link). `route()` handlers follow the
+ * same shape: `GET`/`HEAD`/`OPTIONS` stay exempt (nav / CORS preflight), but a
+ * state-changing method (`POST`/`PUT`/`PATCH`/`DELETE`) is same-origin by
+ * default too (S3) — a route opts back out with `.crossOrigin()` for the
+ * deliberately cross-origin case (a public webhook, a delegated auth
+ * subtree).
  */
 
 /**

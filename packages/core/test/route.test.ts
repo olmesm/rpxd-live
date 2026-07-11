@@ -34,6 +34,34 @@ describe("route()", () => {
     expect(isRoute(null)).toBe(false);
     expect(isRoute("nope")).toBe(false);
   });
+
+  describe(".crossOrigin() (S3 CSRF opt-out)", () => {
+    it("defaults to falsy — same-origin required", () => {
+      const r = route("/x").post(() => new Response("p"));
+      expect(r.def.crossOrigin).toBeFalsy();
+    });
+
+    it("sets def.crossOrigin when called before the method", () => {
+      const r = route("/x")
+        .crossOrigin()
+        .post(() => new Response("p"));
+      expect(r.def.crossOrigin).toBe(true);
+    });
+
+    it("sets def.crossOrigin when called after the method (order-independent)", () => {
+      const r = route("/x")
+        .post(() => new Response("p"))
+        .crossOrigin();
+      expect(r.def.crossOrigin).toBe(true);
+    });
+
+    it("is immutable — the base route is unaffected", () => {
+      const base = route("/x");
+      const opted = base.crossOrigin();
+      expect(base.def.crossOrigin).toBeFalsy();
+      expect(opted.def.crossOrigin).toBe(true);
+    });
+  });
 });
 
 describe("matchHttpPath", () => {

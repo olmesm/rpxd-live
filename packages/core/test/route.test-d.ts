@@ -32,4 +32,16 @@ describe("route() typing", () => {
       .post(async () => new Response("p"));
     expectTypeOf(r).toMatchTypeOf<RouteObject<"/api/thing">>();
   });
+
+  it("crossOrigin() is chainable, order-independent, and returns the same RouteObject shape", () => {
+    const before = route("/api/webhooks/stripe")
+      .crossOrigin()
+      .post(() => new Response(null));
+    expectTypeOf(before).toMatchTypeOf<RouteObject<"/api/webhooks/stripe">>();
+
+    const after = route("/api/webhooks/stripe")
+      .post(() => new Response(null))
+      .crossOrigin();
+    expectTypeOf(after).toMatchTypeOf<RouteObject<"/api/webhooks/stripe">>();
+  });
 });

@@ -68,6 +68,18 @@ segment (`matchHttpPath` captures the rest under `ctx.params.$`). Auth libraries
 always mount as a subtree (Next's `[...all]`, TanStack's `$`), so the delegation
 route relies on it.
 
+**CSRF.** A state-changing `route()` method (`.post`/`.put`/`.patch`/`.delete`)
+requires same-origin by default, same as the [control plane](#cross-site-protection--the-origin-policy).
+`.get`/`.head`/`.options` stay exempt — a top-level nav is legitimately cross-site,
+and `OPTIONS` is a CORS preflight. For a route that's deliberately cross-origin
+(a public webhook, a delegated auth callback), opt out explicitly:
+
+```ts
+export default route("/api/webhooks/stripe")
+  .crossOrigin()   // Stripe posts here from its own origin
+  .post(async (req, ctx) => { /* … */ });
+```
+
 ## Authentication
 
 Auth splits into two halves — **resolve** (read the request into "who's acting")
@@ -267,8 +279,12 @@ victim's cookies and drive rpc batches / read envelopes on their behalf
 rpxd gates the control plane **same-origin by default**, before `authenticate`
 runs. A cross-origin request whose `Origin` isn't allow-listed gets `403`; an
 absent `Origin` (native apps, server-to-server, CLIs) is allowed, since the
-attack is browser-only. SSR `GET` navigation and `route()` handlers are **not**
-gated — a top-level navigation is legitimately cross-site.
+attack is browser-only. SSR `GET` navigation is **not** gated — a top-level
+navigation is legitimately cross-site. `route()` handlers get the same
+treatment as the rest of the app: `GET`/`HEAD`/`OPTIONS` stay exempt (nav / CORS
+preflight), but a state-changing method is same-origin by default too, with
+`.crossOrigin()` as the explicit opt-out (see the CSRF note earlier on this
+page).
 
 A same-origin app needs no config. For a deliberate cross-origin deployment
 (a separate admin origin, a native shell), widen the allowlist:
