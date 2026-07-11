@@ -52,15 +52,17 @@ export default live("/feed")
   });
 ```
 
-Append emits compact `add` patches for the new tail — O(new rows) on the wire,
-not O(total).
+Appending sends compact `add` patches carrying only the new tail — the message
+size scales with the new rows, not the whole list.
 
 :::caution[Accumulated lists and snapshots]
 Appending means `state.items` grows with every window — and rpxd persists
-**whole-state** [snapshots](/rpxd-live/concepts/persistence/). So the accumulated feed is written through on
-every flush and pushed in full on a reconnect resync, both O(total). And on a
-cold wake the instance re-runs `setup` and `load` rebuilds from the URL's cursor,
-which means the *first* window — a deep-scrolled position isn't restored.
+**whole-state** [snapshots](/rpxd-live/concepts/persistence/). Every state
+write persists the full accumulated feed, and a reconnect resends it in full.
+Both costs grow with the total list, not the last page. And when an instance is
+rebuilt from scratch (a cold wake), `setup` re-runs and `load` rebuilds from
+the URL's cursor — that's the *first* window, so a deep-scrolled position isn't
+restored.
 
 Prefer **replace-window** [pagination](/rpxd-live/guides/pagination/) unless the
 feed genuinely needs to accumulate. If it does:

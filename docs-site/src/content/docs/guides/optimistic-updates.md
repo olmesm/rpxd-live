@@ -5,8 +5,9 @@ sidebar:
   order: 3
 ---
 
-rpxd's optimistic model is **function replay**, not patch merging. The client
-keeps two things:
+This page shows how to make an rpc feel instant: apply the change on the
+client immediately, then let the server confirm it. rpxd's model for this is
+**function replay**, not patch merging. The client keeps two things:
 
 - **`confirmed`** — the last server truth.
 - **a pending queue** of your optimistic functions.
@@ -18,9 +19,10 @@ free and merges impossible to get wrong.
 
 1. You call `rpc.add({ text })`. The optimistic function is pushed to the queue
    and the view re-derives instantly.
-2. The batch is POSTed. When the **ack** arrives, its patch is applied to
-   `confirmed` and the function is dropped from the queue — the optimistic and
-   real states converge with no visible flip.
+2. The batch is POSTed. When the **ack** (the server's acknowledgment of the
+   rpc) arrives, its patch is applied to `confirmed` and the function is
+   dropped from the queue — the optimistic and real states converge with no
+   visible flip.
 3. If the rpc **errors**, the function is simply dropped: the view snaps back to
    `confirmed`. Free rollback.
 4. If a replay ever **throws** (e.g. it referenced a row that no longer exists),
@@ -44,15 +46,12 @@ Optimistic functions must be **synchronous, pure, and identity-based**:
 ## Id linking without remounting
 
 When a create is confirmed, the real id must replace the temp id — but you don't
-want the row to remount and lose focus/animation. rpxd handles this:
-
-- The runtime records **where `tempId` lands** in the optimistic patches (path +
-  sub-path — any field name, nested is fine).
-- It matches the corresponding `add` op in the ack patches and reads the same
-  sub-path, producing `idMap: { tempId → realId }`.
-- **`keyOf(id)`** applies that map at render time: it returns the original
-  tempId for optimistically-created rows and the id unchanged otherwise — stable
-  React keys, no remount, no wire rewriting.
+want the row to remount and lose focus or animation. rpxd handles this: the
+runtime matches your optimistic temp id to the real id the server confirms, and
+**`keyOf(id)`** applies that mapping at render time. It returns the original
+temp id for optimistically-created rows and the id unchanged otherwise — stable
+React keys, no remount. (The matching mechanics are described in the
+[wire protocol](/rpxd-live/concepts/wire-protocol/) page.)
 
 ```tsx
 {state.todos.map((t) => (
@@ -60,8 +59,8 @@ want the row to remount and lose focus/animation. rpxd handles this:
 ))}
 ```
 
-For shapes the position-matcher can't infer, `ctx.resolveId()` is the escape
-hatch. Id linking is entirely client-side; the wire is never rewritten.
+For shapes the matcher can't infer, `ctx.resolveId()` is the escape hatch. Id
+linking is entirely client-side; nothing the server sends is rewritten.
 
 ## Testing
 

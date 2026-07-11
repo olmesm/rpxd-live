@@ -84,16 +84,17 @@ The **first argument is the whole URL** — `{ params, search }`. `search`
 in `setup` and rpc handlers — see `ctx.params.orgId` in the example above.
 
 It's **latest-wins**: a newer invocation aborts the prior run's `ctx.signal` and
-drops its late flushes, so rapid filter/page changes resolve to the last URL.
+drops its late writes, so rapid filter/page changes resolve to the last URL.
 Pass `ctx.signal` to `fetch` so a superseded load stops early. Because the URL
-is the query key, filtering and pagination are shareable, bookmarkable, and
-rebuilt from the URL on cold wake.
+holds the filters and pages, those views are shareable and bookmarkable, and an
+instance rebuilt from scratch (a cold wake) restores them from the URL.
 
 During SSR the first document carries state through the loader's **first
-patch**, then the rest streams (no flag). Patch synchronously before the first
-`await` and that projection renders immediately, streaming the data in after
-hydration (fast TTFB); `await` the data *before* the first `patchState` and the
-renderer waits for it, so the first document is crawlable and data-complete.
+patch**; everything after it streams. There is no flag — placement decides.
+Patch synchronously before the first `await` and that early state renders
+immediately, with the data streaming in after hydration (fast first paint).
+Or `await` the data *before* the first `patchState`: the renderer waits for it,
+so the first document is crawlable and data-complete.
 
 See [Loading data](/rpxd-live/guides/loading-data/) for the full model and the
 [pagination](/rpxd-live/guides/pagination/),
@@ -144,11 +145,9 @@ Plain React. Props are fully typed:
 ## Why zero annotations
 
 Each `.rpc(name, ...)` extends an accumulated `{ name → payload }` record. By
-`.render()`, that record has become the `rpc` facade's type. The same types flow
-through `optimistic`, `handler`, `onError`, **and** the client `rpc.*`
-signature — with no codegen step. The fluent chain is construction-time only; it
-evaluates to the same long-form object the server consumes at runtime. The
-contract is locked by the type tests in
+`.render()`, that record has become the type of the `rpc` prop. The same types
+flow through `optimistic`, `handler`, `onError`, **and** the client `rpc.*`
+signature — with no codegen step. The contract is locked by the type tests in
 [`packages/core/test/live.test-d.ts`](https://github.com/olmesm/rpxd-live/blob/main/packages/core/test/live.test-d.ts).
 
 Here's the mechanic in miniature — **hover the identifiers** to see the inferred

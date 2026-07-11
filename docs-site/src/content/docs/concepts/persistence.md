@@ -5,14 +5,16 @@ sidebar:
   order: 4
 ---
 
-Persistence is a small interface with two jobs: store whole-state snapshots, and
-carry the [pubsub bus](/rpxd-live/concepts/pubsub/).
+Persistence is a small interface with two jobs: store whole-state snapshots,
+and carry the [pubsub bus](/rpxd-live/concepts/pubsub/) — the broadcast
+channel instances use to coordinate.
 
 ## The adapter interface
 
 A `StorageAdapter` does `get` / `set` / `delete` of `{ state, session, seq,
 version }` plus pubsub. The `session` field is the value your `authenticate`
-hook returned — it's what's restored on cold wake, alongside `state`. The
+hook returned. It's what's restored, alongside `state`, on a **cold wake** —
+when a new request rebuilds an instance that was evicted from memory. The
 framework writes through on every `patchState` flush and rpc completion.
 
 | Adapter | Package | Use |
@@ -31,9 +33,10 @@ export default defineConfig({ storage: sqlite("./data.db") });
 ## Snapshots are continuity, not cache
 
 This is the key design decision: **snapshots exist for session continuity, not
-as a read cache.** A cold wake always re-runs `mount`. Reloading state from a
-snapshot would risk serving state that missed a broadcast while the instance was
-evicted; re-running `mount` reads fresh truth and re-subscribes.
+as a read cache.** A cold wake always re-runs `mount`. Why not just reload the
+snapshot? Because a snapshot may have missed broadcasts while the instance was
+evicted. Re-running `mount` reads fresh truth from your data sources and
+re-subscribes.
 
 - **Write-through** on every flush / completion.
 - **Cold wake re-runs `mount`** — snapshots bridge eviction, they don't replace

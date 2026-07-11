@@ -5,9 +5,10 @@ sidebar:
   order: 1
 ---
 
-`examples/kitchen-sink` is the reference app. It doubles as the acceptance suite —
-Playwright runs against it across every transport and render combination — so
-every page here is a working demonstration of a concept in these docs.
+`examples/kitchen-sink` is the reference app: every page is a working
+demonstration of a concept in these docs. It also doubles as the acceptance
+suite — Playwright runs against it across every transport and render
+combination — so what you see here is exactly what's tested.
 
 ## Run it
 
@@ -38,11 +39,11 @@ locally with `bun run dev`.
 | Route | File | Demonstrates |
 | --- | --- | --- |
 | `/` | `index.tsx` | optimistic todos — add / toggle, `keyOf`, user-scoped queries; URL-driven [filtering](/rpxd-live/guides/filtering-and-search/) via the `load` loader |
-| `/stream` | `stream.tsx` | streaming — `for await` + `append` patches (O(delta) wire), `ctx.abort` |
+| `/stream` | `stream.tsx` | streaming — `for await` + `append` patches (only the new text crosses the wire), `ctx.abort` |
 | `/chat` | `chat.tsx` | multiplayer — pubsub broadcast, single-code-path `on` handler (`self: true`) |
 | `/import` | `import.tsx` | CSV import — pure `parseCsv` in `domain/`, per-row `patchState` progress, and `.onError` state repair that rides the error ack |
-| `/item/$id` | `item.$id.tsx` | tier-2 [soft reload](/rpxd-live/guides/routing/) — a `$id` path-param change reruns `setup`+`load` while the connection survives |
-| `/doc` | `doc.tsx` | an [RSC field](/rpxd-live/concepts/rsc/) — server-rendered markdown |
+| `/item/$id` | `item.$id.tsx` | same-route [soft reload](/rpxd-live/guides/routing/) — a `$id` path-param change reruns `setup`+`load` while the connection survives |
+| `/doc` | `doc.tsx` | a [React Server Components (RSC) field](/rpxd-live/concepts/rsc/) — server-rendered markdown |
 | `/login` | `login.tsx` | auth forms (Better Auth email/password) |
 | `/account` | `account.tsx` | the [setup-redirect pattern](/rpxd-live/guides/routes-and-auth/#enforcing-auth--the-guard) — the page's state *is* the user, so it `throw redirect("/login")`s from `setup`, not a `guard` |
 | `/api/auth/*` | `api.auth.$.ts` | the [delegation route](/rpxd-live/guides/routes-and-auth/) — `route().all()` |

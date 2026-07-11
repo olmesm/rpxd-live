@@ -5,12 +5,12 @@ sidebar:
   order: 2
 ---
 
-`setup` sets up what's true regardless of the URL; **`load` is the loader** —
-the single place URL-dependent data loads. It runs once after `setup` (first
-paint) and again on every `nav.patch`, and it's the foundation every pattern in
-[pagination](/rpxd-live/guides/pagination/), [infinite
-scroll](/rpxd-live/guides/infinite-scroll/), and [filtering &
-search](/rpxd-live/guides/filtering-and-search/) builds on.
+This page shows where data loading lives in an rpxd page: **`load`**, the
+single place URL-dependent data loads. `setup` builds the state that doesn't
+depend on the URL; `load` runs once after it (first paint) and again on every
+`nav.patch`. Every pattern in [pagination](/rpxd-live/guides/pagination/),
+[infinite scroll](/rpxd-live/guides/infinite-scroll/), and [filtering &
+search](/rpxd-live/guides/filtering-and-search/) builds on it.
 
 ```tsx
 export default live("/issues")
@@ -46,17 +46,18 @@ Split every piece of state by **cadence**:
 Because `setup` is synchronous, "all data loads in `load`" is a structural
 guarantee, and a same-route path step's skeleton is instant.
 
-On the client there is exactly one verb for changing a view: **`nav.patch`** —
-and it *is* the reload, because it's what triggers the loader. No paired "load"
-rpc, no `useEffect`. See [Routing](/rpxd-live/guides/routing/) for how
-`nav.patch` updates the URL without re-running `setup`.
+On the client there is exactly one way to change a view: **`nav.patch`**.
+Calling it updates the URL, and the URL change runs the loader. There is no
+paired "load" rpc and no `useEffect`. See [Routing](/rpxd-live/guides/routing/)
+for how `nav.patch` updates the URL without re-running `setup`.
 
 ## The URL is the query key
 
 Because filters, pages, and cursors live in the URL, the views built on the
-loader are **shareable, bookmarkable, and back-button-correct** for free. On a
-cold wake the instance re-runs `setup` and the loader rebuilds the exact window
-from the URL — no "remember where I was" state required. A full-page load of a
+loader are **shareable, bookmarkable, and back-button-correct** for free. When
+an instance is rebuilt from scratch (a cold wake), `setup` re-runs and the
+loader rebuilds the exact window from the URL — no "remember where I was" state
+required. A full-page load of a
 filtered URL reconciles a warm instance to that URL too.
 
 ## Three things you get without extra API
@@ -65,8 +66,8 @@ filtered URL reconciles a warm instance to that URL too.
 `loading` flag. The previous window stays on screen (rendered with `aria-busy`)
 until the new one lands. It falls out of `patchState`, not a cache.
 
-**Loading, empty, and error are just state.** There's no loader ack. Set
-`s.loading` / `s.error` yourself and render off them:
+**Loading, empty, and error are just state.** The loader sends no completion
+message. Set `s.loading` / `s.error` yourself and render off them:
 
 ```tsx
 .load(async ({ search }, ctx) => {
@@ -88,9 +89,9 @@ superseded load stops early.
 ## SSR: the first document carries state through the loader's first patch
 
 The renderer serializes state through the loader's **first patch** and streams
-everything after it. Because an `async` function runs synchronously up to its
-first `await`, *where you put the first `patchState` relative to the first
-`await`* is the whole choice — no flag:
+everything after it. An `async` function runs synchronously up to its first
+`await`. So the whole choice is where you put the first `patchState` relative
+to the first `await` — no flag:
 
 ```tsx
 // Patch before the await → the projection renders now, data streams in.
@@ -113,14 +114,14 @@ is deterministic — keyed to the first patch, never a timer.
 
 ## What the loader is not
 
-`load` writes **page state** through `ctx.patchState` (typed from `setup`, same
-as an rpc handler); `ctx.state` is a read-only view. Its **first argument is the
-whole URL** — `{ params, search }`. `search` is untyped view state
-(`Record<string, string | undefined>`), so narrow and default it yourself
-(`search.filter ?? "open"`). `params`
-(from `/org/$orgId`) are typed, like everywhere else. And there's no built-in
-`paginated()` helper: the patterns that follow are ~15-line loaders, because the
-loader already is the abstraction.
+`load` writes **page state** through `ctx.patchState`, typed from `setup` the
+same as an rpc handler. `ctx.state` is a read-only view. The **first argument
+is the whole URL**: `{ params, search }`. `params` (from `/org/$orgId`) are
+typed, like everywhere else. `search` is untyped view state
+(`Record<string, string | undefined>`) — narrow and default it yourself
+(`search.filter ?? "open"`). And there's no built-in `paginated()` helper: the
+patterns that follow are ~15-line loaders, because the loader already is the
+abstraction.
 
 Next: [Pagination](/rpxd-live/guides/pagination/),
 [Infinite scroll](/rpxd-live/guides/infinite-scroll/), and

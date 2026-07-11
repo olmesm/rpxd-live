@@ -5,10 +5,13 @@ sidebar:
   order: 3
 ---
 
-Instances are **per-session** — there are no shared instances, no `key` or
-`scope` on the live object. Multiplayer is achieved by having those per-session
-instances coordinate through a broadcast bus, which the persistence layer
-carries.
+Instances are **per-session**: every browser session gets its own instance of
+a live object. Multiplayer happens by those instances broadcasting events to
+each other, over a bus that the
+[persistence layer](/rpxd-live/concepts/persistence/) carries.
+
+(Looking for shared instances — a `key` or `scope` option? There isn't one.
+Coordination is always by broadcast.)
 
 ## The three calls
 
@@ -78,11 +81,11 @@ ctx.broadcast("chat:lobby", "message.created", message);
 
 Only the **event** and **payload** are typed — the `topic` (arg 1) stays a
 free-form string, since channels are usually built from runtime ids
-(`` `org:${orgId}` ``). Adoption is incremental: an event you haven't registered
-has an `unknown` payload — usable only after a narrowing check, which nudges you
-to add it to the map. You can register events one at a time. Registering an
-event, by contrast, is enforced everywhere — a wrong payload shape or a typo'd
-registered name is a type error at the call site.
+(`` `org:${orgId}` ``). Adoption is incremental: register events one at a
+time. An unregistered event still works, but its payload is `unknown` — usable
+only after a narrowing check, which nudges you to add it to the map. Once an
+event *is* registered, it's checked everywhere: a wrong payload shape or a
+typo in the name is a type error at the call site.
 
 ## Exclude-self by default
 

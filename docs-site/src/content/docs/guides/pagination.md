@@ -93,10 +93,11 @@ export default live("/issues")
 
 ## Why replace-window is the right default
 
-Replacing the window keeps `state.items` at one page (~20 rows), which fits
-rpxd's whole-state snapshot model cleanly: write-through stays small and a
-reconnect resync is one page, not the whole history. If you instead *accumulate*
-rows as the user pages, see the caveat in
+Replacing the window keeps `state.items` at one page (~20 rows). That matters
+because rpxd persists state as whole-state
+[snapshots](/rpxd-live/concepts/persistence/): with one page in state, each
+snapshot write stays small, and a reconnect resends one page — not the whole
+history. If you instead *accumulate* rows as the user pages, see the caveat in
 [Infinite scroll](/rpxd-live/guides/infinite-scroll/).
 
 :::note

@@ -78,19 +78,21 @@ runs first, so a denied request never runs `setup` and allocates nothing.)
    every URL change of a live instance.
 2. **`setup`** — synchronous. Computes the initial state from `params` and
    `session`, and wires any pubsub [subscriptions](/rpxd-live/concepts/pubsub/).
-   Runs once per instance identity; a cold wake re-runs it.
+   Runs once per instance identity; a cold wake (rebuilding an evicted
+   instance) re-runs it.
 3. **`load`** — the URL loader. Writes page state through `ctx.patchState`. The
    first patch renders and everything after it streams, so loader shape controls
    the first paint (see [SSR](/rpxd-live/concepts/ssr/)). Re-runs on every URL
    change, latest-wins.
 4. **`render` / attach** — SSR emits the HTML plus an embedded
-   `{ snapshot, seq, attachToken }`; the live connection then **adopts** the
-   warm instance rather than mounting again (see
+   `{ snapshot, seq, attachToken }`. The live connection then **adopts** the
+   instance the SSR render left warm in memory, rather than mounting again (see
    [SSR](/rpxd-live/concepts/ssr/)).
 
-After the first paint the instance stays live: rpc batches mutate it, broadcasts
-fan in, and when the last subscriber leaves it is snapshotted and evicted after
-a warm TTL (see [persistence](/rpxd-live/concepts/persistence/)).
+After the first paint the instance stays live: rpc batches mutate it and
+broadcasts fan in. When the last subscriber leaves, the instance is snapshotted
+and evicted after a grace period — the warm TTL (see
+[persistence](/rpxd-live/concepts/persistence/)).
 
 ## Where a request ends
 
