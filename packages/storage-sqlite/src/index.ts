@@ -43,8 +43,17 @@ export function sqlite(path: string): StorageAdapter {
   );
   const remove = db.prepare("DELETE FROM rpxd_snapshots WHERE key = ?1");
 
+  // Once `close()` releases the db handle, further ops must fail loudly rather
+  // than read a half-torn-down handle. bun:sqlite doesn't throw on
+  // use-after-close on its own, so we gate it here — matching the node backend.
+  let closed = false;
+  const assertOpen = (): void => {
+    if (closed) throw new Error("sqlite storage is closed");
+  };
+
   return {
     get(key): Snapshot | undefined {
+      assertOpen();
       const row = select.get(key) as {
         state: string;
         session: string;
@@ -60,6 +69,7 @@ export function sqlite(path: string): StorageAdapter {
       };
     },
     set(key, snap) {
+      assertOpen();
       upsert.run(
         key,
         JSON.stringify(snap.state),
@@ -70,10 +80,12 @@ export function sqlite(path: string): StorageAdapter {
       );
     },
     delete(key) {
+      assertOpen();
       remove.run(key);
     },
     bus: new LocalBus(),
     close: () => {
+      closed = true;
       db.close();
     },
   };
