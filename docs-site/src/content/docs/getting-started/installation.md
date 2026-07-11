@@ -10,11 +10,20 @@ rpxd is Bun-first; Node ≥ 24 is supported via `@rpxd/adapter-node` — see
 uses `Bun.serve` (HTTP + WS on one port) and `bun:sqlite`; Vite runs on Bun for
 dev and build.
 
-:::note[Status]
-The `@rpxd/*` packages are not yet published to npm. Work from a clone of the
-repo for now — `bunx @rpxd/cli` and the `@rpxd/*` imports below will work once
-publishing lands.
-:::
+## Start a new project
+
+Scaffold an app with the CLI:
+
+```sh
+bunx @rpxd/cli init my-app
+cd my-app
+bun install
+bun run dev     # http://localhost:3000
+```
+
+The scaffold writes a gitignored `.env` with a per-project `RPXD_SESSION_SECRET`
+(and `BETTER_AUTH_SECRET` when auth is included), so local dev is signed with no
+setup; set both in production.
 
 ## Try the example
 

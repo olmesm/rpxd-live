@@ -7,8 +7,9 @@ plain React render. rpxd streams state changes to the browser as minimal
 patches, replays optimistic updates on the client, and coordinates
 multiplayer through pubsub.
 
-> **Status: pre-1.0.** The `@rpxd/*` packages are not published to npm yet —
-> clone this repo to try it. APIs may still change.
+> **Status: pre-1.0.** Published as `@rpxd/*` on npm — `bunx @rpxd/cli init my-app`
+> to scaffold a project, or clone this repo to explore. APIs may still change
+> before 1.0.
 
 **[Documentation](https://olmesm.github.io/rpxd-live/)** ·
 [Spec](./spec.md) ·
