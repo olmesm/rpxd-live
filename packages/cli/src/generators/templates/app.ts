@@ -116,9 +116,68 @@ dist/
 *.db
 *.db-*
 generated/
+.env
+.env.*
 `;
 
 const viteEnv = (): string => `/// <reference types="vite/client" />\n`;
+
+/**
+ * Tier-1 production image: a multi-stage build that compiles the app and runs
+ * `rpxd start` on a slim Bun runtime. `exec` in the db variant hands PID 1 to
+ * rpxd so `SIGTERM` (docker stop / Kubernetes) reaches it and warm snapshots are
+ * flushed on shutdown. A native dep like Prisma's engine keeps this on the Bun
+ * runtime (Tier 1) rather than a compiled single binary.
+ */
+const dockerfile = (opts: AppOptions): string => {
+  const build = opts.db ? "bun run db:generate && bun run build" : "bun run build";
+  // db apps apply the schema, then `exec` so `bun run start` becomes PID 1 and
+  // receives docker stop's SIGTERM directly (the shell is replaced, not left in
+  // the middle). `bun run` then forwards the signal to rpxd for a clean drain.
+  const cmd = opts.db
+    ? 'CMD ["sh", "-c", "bun run db:push && exec bun run start"]'
+    : 'CMD ["bun", "run", "start"]';
+  // The default sqlite DB lives in the container's ephemeral layer, so a redeploy
+  // starts empty and \`db:push\` recreates the schema — mount a volume at
+  // \`/app/prisma\` or point DATABASE_URL at durable storage to keep data.
+  const persistNote = opts.db
+    ? "# DATA: the default sqlite file is ephemeral — mount a volume at /app/prisma\n# (or set DATABASE_URL to durable storage), or data is lost on every redeploy.\n"
+    : "";
+  return `# syntax=docker/dockerfile:1
+# Tier-1 image: build the app, then run \`rpxd start\` on a slim Bun runtime.
+
+FROM oven/bun:1 AS build
+WORKDIR /app
+COPY package.json bun.lock* ./
+# Add \`--frozen-lockfile\` for reproducible prod builds once a lockfile is committed.
+RUN bun install
+COPY . .
+RUN ${build}
+
+FROM oven/bun:1-slim
+WORKDIR /app
+ENV NODE_ENV=production
+# Source (the config is imported at runtime), built bundles, and deps.
+COPY --from=build /app ./
+EXPOSE 3000
+${persistNote}# SIGTERM reaches rpxd → it flushes warm snapshots + runs \`onShutdown\` before
+# exiting (graceful shutdown). Add \`--init\` to \`docker run\` for zombie reaping.
+${cmd}
+`;
+};
+
+const dockerignore = (): string => `node_modules
+dist
+generated
+.git
+.rpxd
+.vite
+*.tsbuildinfo
+*.db
+*.db-*
+.env
+.env.*
+`;
 
 const vitestConfig = (): string => `import { defineConfig } from "vitest/config";
 
@@ -280,6 +339,8 @@ export function appShellFiles(opts: AppOptions): FileWrite[] {
     { path: "package.json", contents: packageJson(opts) },
     { path: "tsconfig.json", contents: tsconfig(opts.db) },
     { path: ".gitignore", contents: gitignore() },
+    { path: "Dockerfile", contents: dockerfile(opts) },
+    { path: ".dockerignore", contents: dockerignore() },
     { path: "vite-env.d.ts", contents: viteEnv() },
     { path: "vitest.config.ts", contents: vitestConfig() },
     { path: "rpxd.config.ts", contents: rpxdConfig(opts.auth) },
