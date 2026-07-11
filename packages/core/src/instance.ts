@@ -274,6 +274,27 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       return;
     }
 
+    // Belt-and-braces crash-guard: `decodeBatch` (increment 2 wires this at the
+    // transport boundary) already keeps a malformed `calls` from reaching here,
+    // but `handleBatch` is also called directly (testing harness, future
+    // callers) — so it must stay total on its own. A non-array `calls` used to
+    // throw a bare TypeError reading `.length` below; fire-and-forget with no
+    // `.catch()` at the boundary, that crashed the whole process on Node ≥24
+    // (`--unhandled-rejections=throw`). Route through the same error-ack path
+    // the version gate uses; an unparseable `rpcId` can't be correlated to a
+    // waiting client, so there's nothing to ack — just return.
+    if (!Array.isArray(batch.calls)) {
+      if (typeof batch.rpcId !== "string") return;
+      await this.#ackError(
+        batch.rpcId,
+        { name: "ProtocolError", message: "calls must be an array", rpc: "?" },
+        "?",
+        undefined,
+        {},
+      );
+      return;
+    }
+
     const cached = this.#acks.get(batch.rpcId);
     if (cached) {
       for (const fn of this.#listeners) fn(cached);

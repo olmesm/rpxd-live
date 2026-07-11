@@ -400,6 +400,111 @@ describe("stream + rpc + control (§11)", () => {
   });
 });
 
+describe("guarded batch-dispatch boundary (channel pipeline increment 2, #110/#65)", () => {
+  async function mount(handler: ReturnType<typeof makeHandler>, path = "/org/9/board") {
+    const res = await handler.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({ type: "mount", path }),
+      }),
+    );
+    const { instance } = await res.json();
+    return instance as string;
+  }
+
+  it("400s a batch with a non-array `calls` and error-acks it over the open stream", async () => {
+    const handler = makeHandler();
+    const instance = await mount(handler);
+    const streamRes = await handler.fetch(
+      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+    );
+    const sse = new SseReader(streamRes);
+    await sse.next(); // full snapshot
+
+    const res = await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({ v: V, instance, rpcId: "c1", calls: null }),
+      }),
+    );
+    expect(res.status).toBe(400);
+
+    const ack = await sse.next();
+    expect(ack?.rpcId).toBe("c1");
+    expect(ack?.instance).toBe(instance);
+    expect(ack?.error?.name).toBe("ProtocolError");
+
+    // The handler survives a malformed batch — a subsequent valid request
+    // still works.
+    const ok = await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({
+          v: V,
+          instance,
+          rpcId: "c2",
+          calls: [{ rpc: "add", payload: { item: "still-alive" } }],
+        }),
+      }),
+    );
+    expect(ok.status).toBe(202);
+    await handler.dispose();
+  });
+
+  it("400s a batch whose `calls` is not an array at all (e.g. a number)", async () => {
+    const handler = makeHandler();
+    const instance = await mount(handler);
+    const res = await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({ v: V, instance, rpcId: "c3", calls: 42 }),
+      }),
+    );
+    expect(res.status).toBe(400);
+
+    // Still answers subsequent requests fine.
+    const ok = await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({
+          v: V,
+          instance,
+          rpcId: "c4",
+          calls: [{ rpc: "add", payload: { item: "fine" } }],
+        }),
+      }),
+    );
+    expect(ok.status).toBe(202);
+    await handler.dispose();
+  });
+
+  it("400s a batch with a completely unparseable instance (not a string) without acking anything", async () => {
+    const handler = makeHandler();
+    const streamRes = await handler.fetch(
+      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+    );
+    const sse = new SseReader(streamRes);
+
+    const res = await handler.fetch(
+      new Request(`${base}/__rpxd/rpc`, {
+        method: "POST",
+        headers: COOKIE,
+        body: JSON.stringify({ v: V, instance: 42, rpcId: "c5", calls: [] }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    // Nothing to ack — the instance was never a valid string to correlate.
+    const ack = await sse.next(150);
+    expect(ack).toBeNull();
+    await handler.dispose();
+  });
+});
+
 describe("origin policy — cross-site control-plane defense (#52)", () => {
   const CROSS = { ...COOKIE, origin: "http://evil.example" };
   const SAME = { ...COOKIE, origin: base }; // base === request origin → same-origin
@@ -1349,6 +1454,69 @@ describe("tier-2 soft reload — late mount over the live stream (§7)", () => {
     // No second full for the same instance on this stream.
     expect(await sse.next(120)).toBeNull();
     expect(handler.instanceCount).toBe(1);
+    await handler.dispose();
+  });
+});
+
+describe("request pipeline (Channel A, #75)", () => {
+  // The refactor of `fetch` into named stages (origin → throttle → auth →
+  // dispatch) over `runPipeline` (@rpxd/core) is behavior-preserving — these
+  // three tests pin the *ordering* in a way a flat ladder can't cleanly
+  // assert: each earlier stage must short-circuit before any later stage's
+  // side effect (an authenticate call, a dispatch handler run) occurs.
+
+  it("origin gate precedes auth — a rejected cross-origin control POST never invokes authenticate", async () => {
+    let authCalls = 0;
+    const handler = makeHandler({
+      authenticate: () => {
+        authCalls++;
+        return {};
+      },
+    });
+    const res = await handler.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers: { ...COOKIE, origin: "http://evil.example" },
+        body: JSON.stringify({ type: "mount", path: "/org/9/board" }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(authCalls).toBe(0);
+    await handler.dispose();
+  });
+
+  it("throttle precedes auth — a throttled request never invokes authenticate", async () => {
+    let authCalls = 0;
+    const handler = makeHandler({
+      throttle: { key: () => "k", limit: { capacity: 0, refillPerSec: 0 } },
+      authenticate: () => {
+        authCalls++;
+        return {};
+      },
+    });
+    const res = await handler.fetch(new Request(`${base}/org/7/board`, { headers: COOKIE }));
+    expect(res.status).toBe(429);
+    expect(authCalls).toBe(0);
+    await handler.dispose();
+  });
+
+  it("auth precedes dispatch — an authenticate rejection never runs the route's setup", async () => {
+    let setupRuns = 0;
+    const guardedDef: LiveDefinition<{ ok: boolean }, "/guarded", Record<string, unknown>> = {
+      setup: () => {
+        setupRuns++;
+        return { ok: true };
+      },
+    };
+    const handler = createRpxdHandler({
+      routes: [{ path: "/guarded", def: guardedDef }],
+      authenticate: () => {
+        throw new Error("nope");
+      },
+    });
+    const res = await handler.fetch(new Request(`${base}/guarded`, { headers: COOKIE }));
+    expect(res.status).toBe(403);
+    expect(setupRuns).toBe(0);
     await handler.dispose();
   });
 });
