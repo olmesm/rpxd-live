@@ -24,6 +24,7 @@ import {
   applyConfigOverrides,
   type ConfigOverrides,
   instanceHandlerOptions,
+  propagateSessionSecretEnv,
   type RpxdConfig,
 } from "./config.ts";
 import type { ShellAssets, ShellComponents, SsrRuntime } from "./render.ts";
@@ -99,6 +100,12 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     existsSync(configPath) ? ((await import(pathToFileURL(configPath).href)).default ?? {}) : {},
     opts.overrides,
   );
+
+  // Secret propagation (§16, #95): rsc() (react-server bundle) and the SSR
+  // verifier (packages/cli/src/ssr.ts) run in separate module graphs in this
+  // one process — RPXD_SESSION_SECRET is the only channel between them. Must
+  // run before the server/rsc bundles are imported below.
+  propagateSessionSecretEnv(config);
 
   // Process-owner backstop (item 5): any FUTURE detached rejection (framework
   // or app code — rpxd's own dispatch boundary is already total, #112) is

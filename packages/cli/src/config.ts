@@ -1,7 +1,8 @@
 /**
  * `rpxd.config.ts` surface (§14): the only non-route file in userland.
  */
-import type { RateLimit, StorageAdapter } from "@rpxd/core";
+import { randomBytes } from "node:crypto";
+import { isDev, type RateLimit, type StorageAdapter } from "@rpxd/core";
 import type { RpxdDiagnosticSink, RpxdHandlerOptions } from "@rpxd/server-bun";
 
 /** Transport selection (§11): SSE default, WS opt-in. */
@@ -178,6 +179,43 @@ export function applyConfigOverrides(config: RpxdConfig, overrides?: ConfigOverr
   if (overrides?.transport) config.transport = { kind: overrides.transport };
   if (overrides?.rsc !== undefined) config.rsc = overrides.rsc;
   return config;
+}
+
+/**
+ * Propagate the resolved session secret into `process.env.RPXD_SESSION_SECRET`
+ * (§16, #95): `rsc()` (`packages/rsc/src/server.ts`, react-server graph) signs
+ * an RSC field's `$rscTag` and the SSR verifier (`packages/cli/src/ssr.ts`)
+ * checks it — separate module graphs in the same process, so this env var is
+ * the only channel that carries one shared secret between them. Call this
+ * from `createDevServer`/`startApp` right after config resolution and BEFORE
+ * the react-server/ssr graphs are set up, so both sides read the same value
+ * for the lifetime of the process.
+ *
+ * Mirrors {@link RpxdHandlerOptions.sessionSecret}'s own resolution (S1, #122):
+ * a configured `session.secret` wins; otherwise development mints an
+ * ephemeral in-memory secret (so #95 signing/verification exercises the real
+ * path in dev too); production gets nothing here (a secret is either
+ * configured or the handler's own fail-closed guard refuses to start). Only
+ * ever *sets* the env var when the resolved value is non-empty, and never
+ * clobbers one already present (`||=`) — an operator-set
+ * `RPXD_SESSION_SECRET` (or an earlier call in the same process) always wins.
+ *
+ * The explicit `cookie: { sign: false }` escape hatch is a no-op here too:
+ * that flag means the app deliberately wants the whole B2/#95 secret
+ * machinery off (an unsigned sid, `rsc()` shipping unbranded fields), so this
+ * must not force a secret into the shared env var behind that choice — doing
+ * so would silently turn `rsc()` back on for signing (it also reads this var)
+ * and make the SSR verifier reject every field, defeating the opt-out.
+ *
+ * @example
+ * ```ts
+ * propagateSessionSecretEnv(config); // before createViteServer / bundle import
+ * ```
+ */
+export function propagateSessionSecretEnv(config: Pick<RpxdConfig, "session">): void {
+  if (config.session?.cookie?.sign === false) return; // deliberate unsigned escape hatch (S1) — rsc() stays unbranded too
+  const secret = config.session?.secret || (isDev() ? randomBytes(32).toString("hex") : "");
+  if (secret) process.env.RPXD_SESSION_SECRET ||= secret;
 }
 
 /**

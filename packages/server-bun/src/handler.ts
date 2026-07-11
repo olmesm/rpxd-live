@@ -353,7 +353,16 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   // HMAC-signed sid (B2): unforgeable when a secret is set. `||` (not `??`)
   // collapses an empty-string secret to `undefined` so it's treated the same
   // as "no secret configured" below, rather than signing with an empty key.
-  let sessionSecret = opts.sessionSecret || process.env.RPXD_SESSION_SECRET || undefined;
+  // explicitUnsigned short-circuits this to `undefined` unconditionally (#95):
+  // since the CLI now propagates a resolved secret into
+  // process.env.RPXD_SESSION_SECRET so rsc()/the SSR verifier can share it
+  // (§16), a secret can be "available" via that env var (or the `sessionSecret`
+  // option) even for an app that deliberately asked for `cookie.sign:false` —
+  // the escape hatch must still mean "never signed", not "signed if something
+  // happens to be configured".
+  let sessionSecret = explicitUnsigned
+    ? undefined
+    : opts.sessionSecret || process.env.RPXD_SESSION_SECRET || undefined;
   if (!sessionSecret && !explicitUnsigned) {
     if (isDev()) {
       // Dev/prod fidelity: no configured secret in dev → an ephemeral in-memory

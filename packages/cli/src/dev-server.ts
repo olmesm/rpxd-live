@@ -29,6 +29,7 @@ import {
   applyConfigOverrides,
   type ConfigOverrides,
   instanceHandlerOptions,
+  propagateSessionSecretEnv,
   type RpxdConfig,
 } from "./config.ts";
 import { rpxdEntryPlugin } from "./entry.ts";
@@ -155,6 +156,12 @@ export async function createDevServer(
     ),
     ...opts.configOverride,
   };
+
+  // Secret propagation (§16, #95): rsc() (react-server graph) and the SSR
+  // verifier (packages/cli/src/ssr.ts) run in separate module graphs in this
+  // one process — RPXD_SESSION_SECRET is the only channel between them. Must
+  // run before the Vite server (and its rsc/ssr environments) below.
+  propagateSessionSecretEnv(config);
 
   // Route codegen before anything imports .rpxd/routes.gen.ts (§7).
   runCodegen(root);
