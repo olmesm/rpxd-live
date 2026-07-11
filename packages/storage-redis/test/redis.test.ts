@@ -402,6 +402,80 @@ describe("RedisBus subscribe multiplexing (#62)", () => {
     expect(seenB).toEqual([]);
   });
 
+  it("drain() awaits in-flight publishes and empties the pending set; publish stays a non-rejecting void", async () => {
+    // A client whose publish returns a promise we resolve on demand, so we can
+    // observe drain() gating on the in-flight publish rather than racing it.
+    let resolvePublish: (() => void) | undefined;
+    let localDelivered = 0;
+    const client: RedisLikeClient = {
+      get: () => null,
+      set: () => {},
+      del: () => {},
+      publish: () =>
+        new Promise<void>((resolve) => {
+          resolvePublish = resolve;
+        }),
+      subscribe: () => () => {},
+    };
+    const storage = redis(client);
+    storage.bus.subscribe("t", "me", () => {
+      localDelivered++;
+    });
+
+    // publish is fire-and-forget: it returns synchronously (undefined) and never rejects.
+    const ret = storage.bus.publish({
+      topic: "t",
+      event: "e",
+      payload: null,
+      senderId: "other",
+      self: false,
+    });
+    expect(ret).toBeUndefined();
+
+    // drain() must NOT resolve while the publish is still in flight.
+    let drainResolved = false;
+    const drained = storage.bus.drain?.().then(() => {
+      drainResolved = true;
+    });
+    await tick();
+    expect(drainResolved).toBe(false); // gated on the pending publish
+
+    // Settle the in-flight publish; drain() now resolves and the pending set empties.
+    resolvePublish?.();
+    await drained;
+    expect(drainResolved).toBe(true);
+
+    // A second drain with nothing pending resolves immediately (set was cleared).
+    let secondResolved = false;
+    await storage.bus.drain?.().then(() => {
+      secondResolved = true;
+    });
+    expect(secondResolved).toBe(true);
+    // Fake client didn't loop delivery back, so no local delivery happened here —
+    // the point is drain tracked the PUBLISH acceptance, not remote processing.
+    expect(localDelivered).toBe(0);
+  });
+
+  it("drain() resolves even when the in-flight publish rejects (publish never leaks a rejection)", async () => {
+    const client: RedisLikeClient = {
+      get: () => null,
+      set: () => {},
+      del: () => {},
+      publish: () => Promise.reject(new Error("redis down")),
+      subscribe: () => () => {},
+    };
+    const storage = redis(client);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(() =>
+      storage.bus.publish({ topic: "t", event: "e", payload: null, senderId: "s", self: true }),
+    ).not.toThrow();
+    // drain must not reject — the failing publish is caught by publish's own .catch,
+    // and drain only waits for the in-flight tracking promise to settle.
+    await expect(storage.bus.drain?.()).resolves.toBeUndefined();
+    spy.mockRestore();
+  });
+
   it("still catches a rejected client.subscribe (no unhandled rejection) with multiple subscribers pending", async () => {
     const client: RedisLikeClient = {
       get: () => null,

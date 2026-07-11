@@ -65,6 +65,10 @@ class RedisBus implements PubSubBus {
   private readonly prefix: string;
   private readonly channels = new Map<string, ChannelEntry>();
   private emit: RpxdEventSink = makeEmit();
+  // In-flight publishes, tracked so the test harness's settled() can await that
+  // the PUBLISH commands it fired have been accepted (and local subscribers on
+  // this node notified) — never remote-node processing, which is out of scope.
+  private readonly pending = new Set<Promise<void>>();
   constructor(client: RedisLikeClient, prefix: string) {
     this.client = client;
     this.prefix = prefix;
@@ -78,17 +82,35 @@ class RedisBus implements PubSubBus {
     // Surface (rather than drop) a publish failure: a bare `void` on a
     // rejecting promise is an unhandled rejection, which crashes Node under the
     // default --unhandled-rejections=throw.
-    Promise.resolve(
+    const p = Promise.resolve(
       this.client.publish(`${this.prefix}bus:${msg.topic}`, JSON.stringify(msg)),
-    ).catch((err) => {
-      this.emit({
-        category: "storage",
-        type: "redis-publish-failed",
-        level: "error",
-        error: err,
-        detail: { topic: msg.topic },
+    )
+      .then(() => {})
+      .catch((err) => {
+        this.emit({
+          category: "storage",
+          type: "redis-publish-failed",
+          level: "error",
+          error: err,
+          detail: { topic: msg.topic },
+        });
+      })
+      .finally(() => {
+        this.pending.delete(p);
       });
-    });
+    // Track without awaiting: publish stays fire-and-forget `void` (§8). Only
+    // drain() below awaits these, so a failing publish is already caught and
+    // never re-thrown at a drain() awaiter.
+    this.pending.add(p);
+  }
+
+  /**
+   * Await the PUBLISH commands fired so far to be accepted (and local
+   * subscribers notified). Scoped to this node's delivery — cross-node
+   * processing is not, and cannot be, awaited here. See {@link PubSubBus.drain}.
+   */
+  async drain(): Promise<void> {
+    await Promise.all([...this.pending]);
   }
 
   subscribe(topic: string, subscriberId: string, fn: (msg: BroadcastMessage) => void): () => void {
