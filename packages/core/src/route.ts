@@ -34,6 +34,14 @@ export type RouteHandlerFn<Params> = (
 export interface RouteDefinition {
   // biome-ignore lint/suspicious/noExplicitAny: handlers hosted for routes of any param shape
   handlers: Partial<Record<RouteMethod | "ALL", RouteHandlerFn<any>>>;
+  /**
+   * CSRF opt-out (S3) for state-changing methods (`POST`/`PUT`/`PATCH`/`DELETE`).
+   * `GET`/`HEAD`/`OPTIONS` are always exempt regardless of this flag — a
+   * top-level nav is legitimately cross-site, and `OPTIONS` is a CORS
+   * preflight. Set via {@link RouteObject.crossOrigin}; `undefined`/`false`
+   * means the adapter enforces same-origin (`originAllowed`) by default.
+   */
+  crossOrigin?: boolean;
 }
 
 /**
@@ -61,18 +69,42 @@ export interface RouteObject<Path extends string = string> {
   options(fn: RouteHandlerFn<PathParams<Path>>): RouteObject<Path>;
   /** Handle every method — forward a whole subtree (the delegation case). */
   all(fn: RouteHandlerFn<PathParams<Path>>): RouteObject<Path>;
+  /**
+   * Opt this route out of the default same-origin (CSRF) check on its
+   * state-changing methods (S3) — for endpoints that are deliberately
+   * cross-origin (a public webhook, a delegated auth subtree). `GET`/`HEAD`/
+   * `OPTIONS` never needed the check to begin with, so this only changes
+   * behavior for `POST`/`PUT`/`PATCH`/`DELETE`. A modifier, not a terminal
+   * handler — chainable before or after the method calls, and immutable like
+   * them (returns a fresh route; the receiver is untouched).
+   *
+   * @example
+   * ```ts
+   * // routes/api.webhooks.stripe.ts → /api/webhooks/stripe
+   * // Stripe's own IP/signature is the real auth here, so the app opts this
+   * // endpoint out of the same-origin default explicitly.
+   * export default route("/api/webhooks/stripe")
+   *   .crossOrigin()
+   *   .post(async (req, ctx) => {
+   *     await handleStripe(req, ctx.session);
+   *     return new Response(null, { status: 204 });
+   *   });
+   * ```
+   */
+  crossOrigin(): RouteObject<Path>;
 }
 
 function makeRoute<Path extends string>(
   path: Path,
   handlers: RouteDefinition["handlers"],
+  crossOrigin = false,
 ): RouteObject<Path> {
   const add = (method: RouteMethod | "ALL", fn: RouteHandlerFn<PathParams<Path>>) =>
-    makeRoute(path, { ...handlers, [method]: fn });
+    makeRoute(path, { ...handlers, [method]: fn }, crossOrigin);
   return {
     $route: true,
     path,
-    def: { handlers },
+    def: { handlers, crossOrigin },
     get: (fn) => add("GET", fn),
     post: (fn) => add("POST", fn),
     put: (fn) => add("PUT", fn),
@@ -81,6 +113,7 @@ function makeRoute<Path extends string>(
     head: (fn) => add("HEAD", fn),
     options: (fn) => add("OPTIONS", fn),
     all: (fn) => add("ALL", fn),
+    crossOrigin: () => makeRoute(path, handlers, true),
   };
 }
 
@@ -92,10 +125,14 @@ function makeRoute<Path extends string>(
  * @example
  * ```ts
  * // routes/api.webhooks.stripe.ts → /api/webhooks/stripe
- * export default route("/api/webhooks/stripe").post(async (req, ctx) => {
- *   await handleStripe(req, ctx.session);
- *   return new Response(null, { status: 204 });
- * });
+ * // Stripe posts here from its own origin, so this state-changing route opts
+ * // out of the same-origin default (S3) — Stripe's signature is the real auth.
+ * export default route("/api/webhooks/stripe")
+ *   .crossOrigin()
+ *   .post(async (req, ctx) => {
+ *     await handleStripe(req, ctx.session);
+ *     return new Response(null, { status: 204 });
+ *   });
  *
  * // routes/api.auth.$.ts → /api/auth/*  (all methods, delegated)
  * export default route("/api/auth/$").all((req) => auth.handler(req));
