@@ -5,10 +5,11 @@ sidebar:
   order: 1
 ---
 
-`live()` is a fluent chain where each step *locks* something for the next. The
-whole contract — state shape, payload types, the client-facing `rpc` facade — is
-inferred. You write no type annotations, and unknown rpc names or wrong payloads
-are compile errors.
+This page walks the whole `live()` chain — every step a page is built from,
+and how types flow between them. Each step locks something in for the next:
+the state shape, the payload types, the `rpc` object your component calls. All
+of it is inferred. You write no type annotations, and unknown rpc names or
+wrong payloads are compile errors.
 
 ```tsx
 export default live("/org/$orgId/board")
@@ -70,11 +71,12 @@ it doesn't write state.
 
 The **URL-keyed loader** — the single place URL-dependent data loads. Runs once
 after `setup` (first paint) and again on every `nav.patch`. A search change
-(`nav.patch`) streams new data in over the reused connection with **no `setup`**,
-state preserved; a same-route path change reruns `setup`+`load` (fresh state, the
-connection survives). Writes **page state** via `ctx.patchState`; `ctx.session`
-is read-only. Loading and errors are ordinary state the loader writes — there's
-no ack.
+(`nav.patch`) runs only the loader: `setup` does not rerun, state is preserved,
+and the new data streams in over the same connection. A same-route path change
+reruns both `setup` and `load` with fresh state; the connection still survives.
+The loader writes **page state** via `ctx.patchState`; `ctx.session` is
+read-only. Loading and errors are ordinary state the loader writes — there is
+no completion message to wait for.
 
 The **first argument is the whole URL** — `{ params, search }`. `search`
 (`?filter=…`) is untyped view state (`Record<string, string | undefined>`);

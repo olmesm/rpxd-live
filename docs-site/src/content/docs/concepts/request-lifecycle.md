@@ -5,9 +5,15 @@ sidebar:
   order: 1
 ---
 
-Every request rpxd handles runs **two nested sequences**: an outer _request
-pipeline_ that every request passes through, and — for a page mount — an inner
-_live-object lifecycle_ that runs `setup`, `guard`, and `load`.
+This page follows a request through rpxd, from the moment it arrives to the
+moment a live page is on screen. Knowing the order — which check runs first,
+which hook runs when — makes a `403`, a redirect, or a slow first paint easy
+to trace.
+
+Every request runs **two nested sequences**. The outer _request pipeline_
+handles every request: session, security checks, dispatch. When the request
+mounts a page, an inner _live-object lifecycle_ runs the page's hooks:
+`guard`, `setup`, and `load`. Here is the whole flow at a glance:
 
 ```text
 handler.fetch(req)                          ← request pipeline
@@ -35,18 +41,19 @@ Every request — a page navigation, an SSE stream, an rpc batch, a `route()`
 call — enters through the one handler `fetch` and passes the same outer stages.
 
 1. **Session resolution.** The `rpxd_sid` cookie is read into a session id
-   (`sid`) — its signature verified when a secret is set, so a forged or unsigned
-   cookie mints a fresh `sid` instead. An absent cookie mints one too and sets it
-   on the response. The `sid` namespaces this browser's instances and snapshots.
-2. **Origin policy.** The control-plane endpoints (`/__rpxd/ws|stream|rpc|
-   control`) are **same-origin by default** — a cross-origin request whose
-   `Origin` isn't allow-listed gets a `403`, checked _before_ authentication.
-   SSR `GET` navigation and `route()` handlers are not gated (a top-level nav is
-   legitimately cross-site). See the
+   (`sid`). When a secret is set its signature is verified, so a forged or
+   unsigned cookie mints a fresh `sid` instead. An absent cookie mints one too
+   and sets it on the response. The `sid` namespaces this browser's instances
+   and snapshots.
+2. **Origin policy.** The **control plane** — rpxd's own endpoints,
+   `/__rpxd/ws|stream|rpc|control` — is **same-origin by default**. A
+   cross-origin request whose `Origin` isn't allow-listed gets a `403`, checked
+   _before_ authentication. SSR `GET` navigation and `route()` handlers are not
+   gated (a top-level nav is legitimately cross-site). See the
    [wire protocol](/rpxd-live/concepts/wire-protocol/).
-3. **Throttle.** An opt-in per-key token bucket (also before authentication, so a
-   flood can't amplify auth/mount work); over-limit HTTP requests get a `429`,
-   the SSE stream exempt. See
+3. **Throttle.** An opt-in, per-key token bucket. It also runs before
+   authentication, so a flood can't amplify auth or mount work. Over-limit HTTP
+   requests get a `429`; the SSE stream is exempt. See
    [session security](/rpxd-live/guides/routes-and-auth/#session-cookie-security).
 4. **Authentication.** The optional `authenticate` hook runs once; a throw is a
    `403`, and its return value is `ctx.session` for every reducer thereafter.

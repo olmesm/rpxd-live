@@ -1,25 +1,33 @@
 # @rpxd/server-bun
 
-The HTTP/WS runtime handler and the `ServerAdapter` seam — the piece that
-turns live objects into a served app on Bun.
+Serve an rpxd app with Bun: the HTTP/WebSocket handler that turns live
+objects into a running server.
+
+```sh
+bun add @rpxd/server-bun
+```
+
+Not yet on npm — work from a clone of the repo for now.
 
 `rpxd dev`/`rpxd start` (from [`@rpxd/cli`](../cli)) use this internally;
 import it directly to embed rpxd in your own Bun server.
 
 ## What lives here
 
-- **`createRpxdHandler`** — web-standard `Request` → `Response` handler for
-  the whole wire: `GET /__rpxd/stream` (SSE envelopes), `POST /__rpxd/rpc`
-  (batches), `POST /__rpxd/control` (mount / resync / url / release), plus SSR
-  with attach tokens so the page adopts its server-warmed instance. Owns
-  sessions (cookie), instance registry, warm-TTL eviction, and rpc dedupe.
-  Plain HTTP routes (`httpRoutes`, from `route()`) are matched before the
-  SSR/`404` fallthrough — that's how webhooks and `/api/auth/*` are served.
+- **`createRpxdHandler`** — a web-standard `Request` → `Response` handler
+  for the whole wire protocol. It serves `GET /__rpxd/stream` (the SSE
+  update stream), `POST /__rpxd/rpc` (rpc batches), and `POST /__rpxd/control`
+  (mount / resync / url / release). It also does SSR: the page gets an attach
+  token so it adopts the instance the server just rendered with. Sessions
+  (cookie), the instance registry, idle-instance eviction, and rpc dedupe
+  live here too. Plain HTTP routes (`httpRoutes`, from `route()`) are matched
+  before the SSR/404 fallthrough — that's how webhooks and `/api/auth/*` are
+  served.
 - **`bunAdapter`** — the `ServerAdapter` implementation over `Bun.serve`.
-  The handler itself has no Bun types past this boundary, which is what
-  keeps a future Node adapter small.
-- **`wsTransport`** — the optional single-duplex-socket transport (§11):
-  same envelopes, different framing.
+  The handler itself uses no Bun types past this boundary, which is what
+  keeps other adapters (like [`@rpxd/adapter-node`](../adapter-node)) small.
+- **`wsTransport`** — an optional transport that runs everything over one
+  duplex WebSocket instead of SSE + POST. Same messages, different framing.
 
 ## Usage
 
