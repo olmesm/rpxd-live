@@ -17,6 +17,8 @@ describe("RpxdConfig instance/observability knobs", () => {
           | "unattachedTtlMs"
           | "maxUnattachedInstances"
           | "maxInstancesPerSession"
+          | "warnQueueDepth"
+          | "maxBroadcastBacklog"
         >
       | undefined
     >();

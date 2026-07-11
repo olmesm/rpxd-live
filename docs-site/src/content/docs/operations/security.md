@@ -86,6 +86,19 @@ traffic or a single runaway session can't grow memory unbounded:
   is rejected (`429` on HTTP, an error envelope on WS) instead of pinning
   unbounded instances.
 
+Each instance also holds its own internal work queue — everything that
+touches its state runs through it: patchState writes, the URL loader, rpc
+commits, snapshot saves, and reactions to broadcast events. Two more knobs
+tune that queue:
+
+- **`warnQueueDepth`** (default `maxBatchCalls × 2`) — past this depth, the
+  instance is falling behind and emits an observability diagnostic. Nothing
+  is dropped; it's a signal to look closer.
+- **`maxBroadcastBacklog`** (default off) — an opt-in ceiling scoped to
+  broadcast reactions only. Past the cap, excess broadcast events are dropped
+  (with a diagnostic) instead of backing up behind your app's real writes.
+  patchState, the loader, rpc, and snapshots are never dropped, cap or no cap.
+
 These, plus `warmTtlMs` and `attachTtlMs`, are configurable through the
 `instances` block on `RpxdConfig`:
 
@@ -96,6 +109,7 @@ export default defineConfig({
     maxUnattachedInstances: 200,
     maxInstancesPerSession: 16,
     unattachedTtlMs: 5_000,
+    maxBroadcastBacklog: 100,
   },
 });
 ```
@@ -131,8 +145,9 @@ types:
 | `cap-rejected` | A mount was rejected — every slot at `maxInstancesPerSession` was subscribed |
 
 `onDiagnostic` also receives `request`-, `instance`-, and `storage`-category
-diagnostics (crashed requests, WS faults, flush/broadcast/snapshot failures);
-filter on `category` when you only want the security ones. The runtime swallows
+diagnostics (crashed requests, WS faults, flush/broadcast/snapshot failures, a
+backlogged queue, a dropped broadcast); filter on `category` when you only
+want the security ones. The runtime swallows
 any throw from the sink, so a broken logger can't affect the work it's observing:
 
 ```ts

@@ -44,6 +44,8 @@ async function make(
     session?: Session;
     id?: string;
     emit?: RpxdDiagnosticSink;
+    warnQueueDepth?: number;
+    maxBroadcastBacklog?: number;
   } = {},
 ) {
   const storage = opts.storage ?? memory();
@@ -55,6 +57,8 @@ async function make(
     storage,
     storageKey: opts.key ?? uid("key"),
     emit: opts.emit,
+    warnQueueDepth: opts.warnQueueDepth,
+    maxBroadcastBacklog: opts.maxBroadcastBacklog,
   });
   const envelopes: Envelope[] = [];
   inst.addListener((env) => envelopes.push(env));
@@ -703,6 +707,99 @@ describe("pubsub (§8)", () => {
     await a.inst.handleBatch(batch("shoutSelf"));
     await a.inst.idle();
     expect(a.inst.state.log).toEqual(["sent", "sent", "recv:hi"]);
+  });
+});
+
+describe("queue-backlog observability + opt-in broadcast-backlog cap", () => {
+  const defWithOn = (): LiveDefinition<TodoState, "/t/$id", Session> => ({
+    setup: (ctx) => {
+      ctx.subscribe("room:1");
+      return initial();
+    },
+    rpc: {
+      add: {
+        async handler({ text }: { text: string }, ctx) {
+          ctx.patchState(((s) => {
+            s.todos.push({ id: uid("todo"), text });
+          }) as Mut);
+        },
+      },
+    },
+    on: {
+      recv: (state, p: { n: number }) => {
+        (state as TodoState).log.push(`recv:${p.n}`);
+      },
+    },
+  });
+
+  const publishRecv = (storage: StorageAdapter, n: number) =>
+    storage.bus.publish({
+      topic: "room:1",
+      event: "recv",
+      payload: { n },
+      senderId: "other",
+      self: false,
+    });
+
+  it("emits instance/queue-backlog once when the queue backs up past warnQueueDepth", async () => {
+    const events: RpxdDiagnostic[] = [];
+    const { inst, storage } = await make(defWithOn(), {
+      emit: (e) => events.push(e),
+      warnQueueDepth: 2,
+    });
+    // #queue.size increments synchronously per enqueue (queue.ts), independent
+    // of handler duration — three same-tick broadcasts cross warnQueueDepth=2
+    // on the second publish, before any of the three has actually run.
+    publishRecv(storage, 0);
+    publishRecv(storage, 1);
+    publishRecv(storage, 2);
+    await inst.idle();
+    const warned = events.filter((e) => e.type === "queue-backlog");
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toMatchObject({
+      category: "instance",
+      level: "warn",
+      detail: { instance: inst.id, warnAt: 2 },
+    });
+  });
+
+  it("drops broadcast runs past maxBroadcastBacklog while a concurrent rpc still commits", async () => {
+    const events: RpxdDiagnostic[] = [];
+    const { inst, storage } = await make(defWithOn(), {
+      emit: (e) => events.push(e),
+      maxBroadcastBacklog: 1,
+    });
+    // The first publish is enqueued (backlog 1); its handler hasn't started
+    // (queue defers to a microtask), so the next two synchronous publishes
+    // see backlog already at cap and are dropped — never enqueued at all.
+    publishRecv(storage, 0);
+    publishRecv(storage, 1);
+    publishRecv(storage, 2);
+    // Critical work — an rpc's patchState commit — must be unaffected by the
+    // broadcast cap: it isn't counted against the backlog and is never dropped.
+    await inst.handleBatch(batch("add", { text: "important" }));
+    await inst.idle();
+
+    const dropped = events.filter((e) => e.type === "broadcast-dropped");
+    expect(dropped.length).toBeGreaterThanOrEqual(2);
+    expect(dropped[0]).toMatchObject({
+      category: "instance",
+      level: "warn",
+      detail: { instance: inst.id, event: "recv", cap: 1 },
+    });
+    // The rpc's write committed — not dropped, not blocked by the broadcast cap.
+    expect(inst.state.todos).toEqual([{ id: expect.any(String), text: "important" }]);
+    // The one broadcast that was within cap still ran.
+    expect(inst.state.log).toContain("recv:0");
+  });
+
+  it("drops nothing when maxBroadcastBacklog is unset (default: unbounded, today's behavior)", async () => {
+    const events: RpxdDiagnostic[] = [];
+    const { inst, storage } = await make(defWithOn(), { emit: (e) => events.push(e) });
+    for (let i = 0; i < 5; i++) publishRecv(storage, i);
+    await inst.idle();
+    expect(events.filter((e) => e.type === "broadcast-dropped")).toHaveLength(0);
+    expect(inst.state.log).toEqual(["recv:0", "recv:1", "recv:2", "recv:3", "recv:4"]);
   });
 });
 

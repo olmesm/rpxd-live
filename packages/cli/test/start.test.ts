@@ -32,4 +32,15 @@ describe("instanceHandlerOptions (RpxdConfig -> RpxdHandlerOptions wiring)", () 
   it("regression: omitted instances/onDiagnostic adds no overrides (handler defaults apply)", () => {
     expect(instanceHandlerOptions({})).toEqual({ onDiagnostic: undefined });
   });
+
+  it("forwards warnQueueDepth and maxBroadcastBacklog", () => {
+    const config: RpxdConfig = {
+      instances: { warnQueueDepth: 128, maxBroadcastBacklog: 50 },
+    };
+    expect(instanceHandlerOptions(config)).toEqual({
+      warnQueueDepth: 128,
+      maxBroadcastBacklog: 50,
+      onDiagnostic: undefined,
+    });
+  });
 });

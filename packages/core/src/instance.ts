@@ -71,6 +71,31 @@ export interface CreateInstanceOptions<S, Path extends string, Session> {
    * working.
    */
   emit?: RpxdDiagnosticSink;
+  /**
+   * Depth at which the instance's single {@link SerialQueue} — the one
+   * serialization point for patchState flushes, loader writes, rpc
+   * commits/acks, snapshot persistence, AND broadcast `on` handler runs — is
+   * considered backlogged. Emits one `instance/queue-backlog` diagnostic per
+   * backlog episode (re-arms once depth drains back under this value); never
+   * drops or rejects anything — pure observability. Defaults to
+   * `maxBatchCalls * 2` (a queue holding more than two batches' worth of work
+   * is clearly falling behind).
+   */
+  warnQueueDepth?: number;
+  /**
+   * Opt-in cap on outstanding broadcast/event (`on` handler) runs — the
+   * *only* enqueue this can drop. The instance's queue is shared by
+   * state-critical work (patchState flushes, loader writes, rpc
+   * commits/acks, snapshot writes) and by broadcast reactions; a blanket
+   * queue-depth cap would reject state-critical work too, which is unsafe.
+   * So this counts and caps *only* broadcast/event enqueues: past the cap, an
+   * excess broadcast is dropped (never enqueued) with an
+   * `instance/broadcast-dropped` diagnostic, while all other queued work is
+   * completely unaffected. Defaults to `undefined` (unbounded — today's
+   * behavior); set it for topics that can receive a flood of events an
+   * instance can't usefully keep up with.
+   */
+  maxBroadcastBacklog?: number;
 }
 
 const ACK_CACHE_LIMIT = 64;
@@ -135,11 +160,19 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   readonly #maxBatchCalls: number;
   /** App diagnostic sink (#73), wrapped so a throw from it never breaks a handler. */
   readonly #emitDiagnostic: RpxdDiagnosticSink;
+  /** Opt-in broadcast/event backlog cap (see {@link CreateInstanceOptions.maxBroadcastBacklog}). */
+  readonly #maxBroadcastBacklog: number | undefined;
 
   #state!: S;
   #session: Session;
   #seq = 0;
-  readonly #queue = new SerialQueue();
+  readonly #queue: SerialQueue;
+  /**
+   * Outstanding broadcast/event (`on` handler) runs — incremented only around
+   * that enqueue in {@link #subscribeTopic}, decremented once the run settles
+   * either way. Never touched by patchState/load/rpc/snapshot work (§ above).
+   */
+  #broadcastBacklog = 0;
   readonly #listeners = new Set<(env: Envelope) => void>();
   readonly #unsubs = new Map<string, () => void>();
   readonly #buckets = new Map<string, TokenBucket>();
@@ -180,6 +213,18 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     this.#defaultRateLimit = opts.defaultRateLimit;
     this.#maxBatchCalls = opts.maxBatchCalls ?? DEFAULT_MAX_BATCH_CALLS;
     this.#emitDiagnostic = makeDiagnosticEmit(opts.emit);
+    this.#maxBroadcastBacklog = opts.maxBroadcastBacklog;
+    const warnQueueDepth = opts.warnQueueDepth ?? this.#maxBatchCalls * 2;
+    this.#queue = new SerialQueue({
+      warnAt: warnQueueDepth,
+      onWarn: () =>
+        this.#emitDiagnostic({
+          category: "instance",
+          type: "queue-backlog",
+          level: "warn",
+          detail: { instance: this.id, depth: this.#queue.size, warnAt: warnQueueDepth },
+        }),
+    });
   }
 
   /**
@@ -690,6 +735,30 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     const unsub = this.#storage.bus.subscribe(topic, this.id, (msg) => {
       const handler = this.#def.on?.[msg.event];
       if (!handler) return;
+      // Opt-in backlog cap (Layer 3): scoped to *only* this broadcast/event
+      // enqueue — never patchState/load/rpc/snapshot work, which share the
+      // same queue but must never be dropped. A blanket queue-depth cap would
+      // reject state-critical flushes indiscriminately (unsafe); counting
+      // just this enqueue lets an app shed a broadcast flood it can't keep up
+      // with while every other write still lands.
+      if (
+        this.#maxBroadcastBacklog !== undefined &&
+        this.#broadcastBacklog >= this.#maxBroadcastBacklog
+      ) {
+        this.#emitDiagnostic({
+          category: "instance",
+          type: "broadcast-dropped",
+          level: "warn",
+          detail: {
+            instance: this.id,
+            event: msg.event,
+            backlog: this.#broadcastBacklog,
+            cap: this.#maxBroadcastBacklog,
+          },
+        });
+        return;
+      }
+      this.#broadcastBacklog += 1;
       void this.#queue
         .run(() => this.#runEventHandler(handler, msg.payload))
         .catch((e) => {
@@ -702,6 +771,9 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
             error: e,
             detail: { event: msg.event },
           });
+        })
+        .finally(() => {
+          this.#broadcastBacklog -= 1;
         });
     });
     this.#unsubs.set(topic, unsub);
