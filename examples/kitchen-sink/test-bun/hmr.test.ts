@@ -60,7 +60,7 @@ describe("reducer HMR (§15)", () => {
     });
   }
 
-  async function stateOf(instance: string): Promise<{ n: number }> {
+  async function stateOf(_instance: string): Promise<{ n: number }> {
     // second mount for the same session returns the same warm instance;
     // read state via SSR of the page
     const res = await fetch(`${base()}/hmr-probe`, { headers: { cookie: COOKIE } });

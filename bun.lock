@@ -102,8 +102,8 @@
         "typescript": "^5.9.0",
       },
       "peerDependencies": {
-        "react": ">=18",
-        "react-dom": ">=18",
+        "react": ">=19",
+        "react-dom": ">=19",
       },
     },
     "packages/client": {
@@ -151,8 +151,8 @@
         "vitest": "^4.0.0",
       },
       "peerDependencies": {
-        "react": ">=18",
-        "react-dom": ">=18",
+        "react": ">=19",
+        "react-dom": ">=19",
       },
     },
     "packages/server-bun": {

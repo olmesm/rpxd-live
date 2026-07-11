@@ -280,7 +280,7 @@ export async function createDevServer(
   onRouteFileChange = (file) => {
     if (!file.startsWith(routesDir)) return;
     const entry = fileToRoute(file.slice(routesDir.length + 1));
-    if (!entry || entry.kind !== "page" || entry.path === null) return;
+    if (entry?.kind !== "page" || entry.path === null) return;
     const routePath = entry.path;
     routeFiles.set(routePath, entry.file);
     void reloadRouteDef(routePath, () => loadDefModule(entry.file)).catch((e) =>
