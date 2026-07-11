@@ -1,17 +1,18 @@
 /**
- * The `rpxd dev`/`rpxd start` startup banner: a dense block-glyph RPXD
- * wordmark that rolls in from the right (ease-out, speed-line trail, one-frame
- * overshoot), then the server summary beneath it, then logs as normal.
+ * The `rpxd dev`/`rpxd start` startup banner: `rpxd dev` types out in the
+ * brand gradient (magenta → orange), a shine sweeps across the rule beneath
+ * it while the title's color drains away — both ending on the same frame —
+ * then the server summary prints and logs follow.
  *
- * Frame generation is pure ({@link wordmark}, {@link rollOffsets},
- * {@link renderRollFrame}, {@link infoLines}); {@link startBanner} is the thin
- * impure player that does the ANSI cursor work. The animation runs
- * concurrently with server boot — {@link BannerHandle.finish} joins both.
+ * Frame generation is pure ({@link titleFrame}, {@link ruleFrame},
+ * {@link infoLines}); {@link startBanner} is the thin impure player that does
+ * the ANSI cursor work. The animation runs concurrently with server boot —
+ * {@link BannerHandle.finish} joins both.
  *
- * Escape hatch (deliberately an easter egg): `BORING=me` prints the plain
- * one-liner instead. Any `BORING` value works, but only `me` earns the
- * deadpan acknowledgment. CI / non-TTY / narrow terminals fall back to the
- * same plain output automatically, no incantation required.
+ * Escape hatch: any `BORING` value prints the plain lines instead (the
+ * documented incantation is `BORING=me`; an escape hatch that sometimes fails
+ * is a bug, so every value works). CI / non-TTY / narrow terminals fall back
+ * to the same plain output automatically, no incantation required.
  */
 import { networkInterfaces } from "node:os";
 
@@ -38,153 +39,113 @@ export interface BannerInfo {
   networkUrl?: string;
 }
 
-// 5-row block font, each letter 6 columns on the base grid. Letter glyphs use
-// only █▀▄ so the roll's ░▒▓ trail (and its coloring) can't collide with them.
-const LETTERS: Record<string, readonly string[]> = {
-  R: ["█████▄", "██  ██", "█████▀", "██ ▀█▄", "██  ██"],
-  P: ["█████▄", "██  ██", "█████▀", "██    ", "██    "],
-  X: ["██  ██", " ▀██▀ ", "  ██  ", " ▄██▄ ", "██  ██"],
-  D: ["█████▄", "██  ██", "██  ██", "██  ██", "█████▀"],
-};
-const ROWS = 5;
-const GAP = "  ";
-const BASE_MARK = Array.from({ length: ROWS }, (_, row) =>
-  ["R", "P", "X", "D"].map((l) => (LETTERS[l] as readonly string[])[row] as string).join(GAP),
-);
-const HIDE_CURSOR = "\x1b[?25l";
-const SHOW_CURSOR = "\x1b[?25h";
-// Gradient endpoints: magenta → orange across the wordmark.
+/** Banner rule width; also the minimum comfortable animation width. */
+const WIDTH = 40;
+/** Gradient endpoints: magenta → orange across the typed title. */
 const GRAD_FROM = [217, 70, 239] as const;
 const GRAD_TO = [251, 146, 60] as const;
+/** Fade target ≈ a typical terminal foreground; the settle frame goes plain. */
+const INKISH = [222, 213, 201] as const;
+/** Length of the gradient shine head on the rule. */
+const SHINE = 8;
+
+const HIDE_CURSOR = "\x1b[?25l";
+const SHOW_CURSOR = "\x1b[?25h";
+const DIM = "\x1b[2m";
+const RESET = "\x1b[0m";
+
+const mix = (a: readonly number[], b: readonly number[], t: number): number[] =>
+  a.map((v, i) => Math.round(v + ((b[i] as number) - v) * t));
+
+const fg = (c: readonly number[]): string => `\x1b[38;2;${c[0]};${c[1]};${c[2]}m`;
 
 /**
- * The RPXD wordmark, horizontally stretched `scale`× (each base column
- * repeated) — that stretch is what makes it dense rather than a skinny figlet.
+ * One frame of the typed title: the first `chars` characters of `title`,
+ * bold, colored across the brand gradient and mixed toward plain by `fade`
+ * (0 = full gradient, 1 = no color at all). Identity-plain when `color` is
+ * false.
  *
  * @example
  * ```ts
- * wordmark(4); // 5 rows, 120 columns wide
+ * titleFrame("rpxd dev", 4, 0, true); // "rpx d" typed so far, full gradient
  * ```
  */
-export function wordmark(scale = 1): string[] {
-  if (scale <= 1) return [...BASE_MARK];
-  return BASE_MARK.map((row) => row.replace(/./g, (c) => c.repeat(scale)));
-}
-
-/**
- * Pick the horizontal stretch for a terminal width: ~150 columns of glyph on
- * ultrawide, ~120 on wide, ~90 on standard; `0` means "too narrow to animate"
- * (the caller falls back to plain output).
- *
- * @example
- * ```ts
- * pickScale(160); // 5 → a 150-column wordmark
- * ```
- */
-export function pickScale(columns: number): number {
-  if (columns >= 155) return 5;
-  if (columns >= 125) return 4;
-  if (columns >= 95) return 3;
-  return 0;
-}
-
-/**
- * The roll-in's x-offset per frame: ease-out from just inside the right edge
- * (`width`) toward the left margin, ending with a one-frame overshoot past 0
- * and a snap back — the "thunk" that sells the roll.
- *
- * @example
- * ```ts
- * rollOffsets(120, 30); // [101, 84, ..., 3, 1, -2, 0]
- * ```
- */
-export function rollOffsets(width: number, markWidth: number, frames = 18): number[] {
-  const easeOutCubic = (t: number): number => 1 - (1 - t) ** 3;
-  const glide: number[] = [];
-  for (let i = 1; i <= frames; i++) {
-    glide.push(Math.round(width * (1 - easeOutCubic(i / frames))));
+export function titleFrame(title: string, chars: number, fade: number, color: boolean): string {
+  const shown = title.slice(0, chars);
+  if (!color || fade >= 1) return `\x1b[1m${shown}${RESET}`;
+  let out = "\x1b[1m";
+  for (let i = 0; i < shown.length; i++) {
+    const base = mix(GRAD_FROM, GRAD_TO, i / Math.max(1, title.length - 1));
+    out += `${fg(mix(base, INKISH, fade))}${shown[i]}`;
   }
-  while (glide.length > 0 && glide[glide.length - 1] === 0) glide.pop();
-  const overshoot = Math.max(2, Math.round(markWidth / 15));
-  return [...glide, -overshoot, 0];
-}
-
-/** `▓▓▒▒░░` speed lines, dense nearest the mark, `len` characters total. */
-function trailGlyphs(len: number): string {
-  if (len <= 0) return "";
-  const dense = Math.ceil(len * 0.4);
-  const mid = Math.ceil((len - dense) / 2);
-  return "▓".repeat(dense) + "▒".repeat(mid) + "░".repeat(len - dense - mid);
+  return `${out}${RESET}`;
 }
 
 /**
- * One animation frame: the wordmark at `offset` (negative = overshooting past
- * the left margin), a `trailLen`-column fading trail behind it, everything
- * clipped to `width`.
+ * One frame of the rule: drawn out to column `head`, with the last
+ * {@link SHINE} columns carrying the gradient shine. At `head === width`
+ * with `color` false (or after the settle frame) it is the plain dim rule.
  *
  * @example
  * ```ts
- * renderRollFrame(wordmark(3), 40, 120, 8);
+ * ruleFrame(40, 20, true); // half-drawn rule with a gradient head
  * ```
  */
-export function renderRollFrame(
-  mark: string[],
-  offset: number,
-  width: number,
-  trailLen: number,
-): string[] {
-  const trail = trailGlyphs(trailLen);
-  return mark.map((row) => {
-    let line = " ".repeat(Math.max(0, offset)) + row + trail;
-    if (offset < 0) line = line.slice(-offset);
-    return line.slice(0, Math.max(0, width)).trimEnd();
-  });
+export function ruleFrame(width: number, head: number, color: boolean): string {
+  const end = Math.min(width, head);
+  if (!color) return `${DIM}${"─".repeat(end)}${RESET}`;
+  const tail = Math.max(0, end - SHINE);
+  let out = `${DIM}${"─".repeat(tail)}${RESET}`;
+  for (let x = tail; x < end; x++) {
+    out += `${fg(mix(GRAD_FROM, GRAD_TO, (x - tail) / SHINE))}─`;
+  }
+  return `${out}${RESET}`;
 }
 
 /**
- * The server summary that pops beneath the locked wordmark, framed between
- * rule lines of the banner's width.
+ * The summary under the rule — four content rows and the closing rule. No
+ * `rpxd dev` header: the typed title above already says it.
  *
  * @example
  * ```ts
- * infoLines({ command: "dev", port: 3000, transport: "sse", rsc: false, routes: 3 }, 90, false);
+ * infoLines({ command: "dev", port: 3000, transport: "sse", rsc: false, routes: 3 }, 40, false);
  * ```
  */
 export function infoLines(info: BannerInfo, width: number, color: boolean): string[] {
-  const dim = (s: string): string => (color ? `\x1b[2m${s}\x1b[22m` : s);
+  const dim = (s: string): string => (color ? `${DIM}${s}\x1b[22m` : s);
   const cyan = (s: string): string => (color ? `\x1b[36m${s}\x1b[39m` : s);
-  const rule = dim("─".repeat(width));
-  const head = [`rpxd ${info.command}`];
+  const head: string[] = [];
   if (info.version) head.push(`v${info.version}`);
   if (info.readyMs !== undefined) head.push(`ready in ${Math.round(info.readyMs)} ms`);
-  const lines = [rule, `  ${head.join(" · ")}`, `  ➜ local    ${cyan(localUrl(info.port))}`];
+  const lines: string[] = [];
+  if (head.length > 0) lines.push(`  ${head.join(" · ")}`);
+  lines.push(`  ➜ local    ${cyan(localUrl(info.port))}`);
   if (info.networkUrl) lines.push(`  ➜ network  ${cyan(info.networkUrl)}`);
-  lines.push(`  ${summarySegments(info).join(" · ")}`, rule);
+  lines.push(`  ${summarySegments(info).join(" · ")}`, dim("─".repeat(width)));
   return lines;
 }
 
 /**
- * The no-theatrics output: CI, non-TTY, narrow terminals — and the documented
- * `BORING=me` easter egg, which gets a deadpan `(fine.)`. Any other `BORING`
- * value still disables the banner (an escape hatch that sometimes fails is a
- * bug), just without the acknowledgment.
+ * The no-theatrics output: CI, non-TTY, narrow terminals, and any `BORING`
+ * value (the documented incantation is `BORING=me` — an escape hatch that
+ * sometimes fails is a bug, so every value works).
  *
  * @example
  * ```ts
  * plainLines(info, { BORING: "me" });
- * // ["rpxd dev → http://localhost:3000  (fine.)", "  transport sse · ..."]
+ * // ["rpxd dev → http://localhost:3000", "  transport sse · ..."]
  * ```
  */
-export function plainLines(info: BannerInfo, env: Record<string, string | undefined>): string[] {
-  const fine = env.BORING === "me" ? "  (fine.)" : "";
+export function plainLines(info: BannerInfo, _env: Record<string, string | undefined>): string[] {
   const segments = summarySegments(info);
   if (info.readyMs !== undefined) segments.push(`ready in ${Math.round(info.readyMs)} ms`);
-  return [`rpxd ${info.command} → ${localUrl(info.port)}${fine}`, `  ${segments.join(" · ")}`];
+  return [`rpxd ${info.command} → ${localUrl(info.port)}`, `  ${segments.join(" · ")}`];
 }
 
 /**
- * Decide the output tier: `"full"` (wordmark, and animation for `dev`) only
- * in a wide interactive terminal with no opt-out in play; `"plain"` otherwise.
+ * Decide the output tier: `"full"` (typed title + rule shine, animated for
+ * `dev`) only in an interactive terminal with no opt-out in play; `"plain"`
+ * otherwise.
  *
  * @example
  * ```ts
@@ -197,50 +158,8 @@ export function bannerMode(
 ): "full" | "plain" {
   if (env.BORING || env.CI || env.TERM === "dumb") return "plain";
   if (!stream.isTTY) return "plain";
-  if (pickScale(stream.columns ?? 0) === 0) return "plain";
+  if ((stream.columns ?? 0) < WIDTH + 6) return "plain";
   return "full";
-}
-
-/**
- * Paint one frame row: letter glyphs (`█▀▄`) get the magenta→orange gradient
- * positioned relative to the mark's `offset`, trail glyphs (`░▒▓`) go dim
- * gray, everything else passes through. Identity when `enabled` is false.
- *
- * @example
- * ```ts
- * colorizeRow("  ██▓░", 2, 30, true);
- * ```
- */
-export function colorizeRow(
-  row: string,
-  offset: number,
-  markWidth: number,
-  enabled: boolean,
-): string {
-  if (!enabled) return row;
-  let out = "";
-  let open = false;
-  for (let i = 0; i < row.length; i++) {
-    const ch = row[i] as string;
-    if (ch === "█" || ch === "▀" || ch === "▄") {
-      const t = Math.min(1, Math.max(0, (i - offset) / markWidth));
-      const [r, g, b] = GRAD_FROM.map((from, c) =>
-        Math.round(from + ((GRAD_TO[c] as number) - from) * t),
-      );
-      out += `\x1b[38;2;${r};${g};${b}m${ch}`;
-      open = true;
-    } else if (ch === "░" || ch === "▒" || ch === "▓") {
-      out += `\x1b[38;5;240m${ch}`;
-      open = true;
-    } else {
-      if (open) {
-        out += "\x1b[0m";
-        open = false;
-      }
-      out += ch;
-    }
-  }
-  return open ? `${out}\x1b[0m` : out;
 }
 
 /** A minimal writable surface — `process.stdout`, or a capture in tests. */
@@ -252,7 +171,7 @@ export interface BannerStream {
 
 /** Options for {@link startBanner}; everything impure is injectable. */
 export interface StartBannerOptions {
-  /** `dev` animates the roll-in; `start` prints the locked frame statically. */
+  /** `dev` animates; `start` prints the settled title + rule statically. */
   command: "dev" | "start";
   /** Output stream. Default `process.stdout`. */
   stream?: BannerStream;
@@ -262,13 +181,11 @@ export interface StartBannerOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Console to buffer while frames rewrite lines. Default the global. */
   consoleObj?: Console;
-  /** Roll-in frame count. Default 18 (~600 ms at 30 fps). */
-  frames?: number;
 }
 
 /** A banner in flight: join it with the boot result, or bail out. */
 export interface BannerHandle {
-  /** Wait for the roll to land, then print the server summary. */
+  /** Wait for the animation to settle, then print the server summary. */
   finish(info: Omit<BannerInfo, "command">): Promise<void>;
   /** Boot failed: stop animating, restore the cursor, print nothing more. */
   abort(): Promise<void>;
@@ -325,10 +242,12 @@ function detectNetworkUrl(port: number): string {
 }
 
 /**
- * Kick off the startup banner. In a wide TTY, `dev` starts the roll-in
- * immediately so it plays *while* the server boots (the animation covers the
- * wait instead of adding to it); `start` holds the static frame. Everywhere
- * else — CI, pipes, narrow terminals, `BORING=me` — plain lines.
+ * Kick off the startup banner. In an interactive terminal, `dev` starts the
+ * typed-title + rule-shine animation immediately so it plays *while* the
+ * server boots (it covers the wait instead of adding to it); the title's
+ * gradient fades out in lockstep with the shine, both ending together.
+ * `start` prints the settled title statically. Everywhere else — CI, pipes,
+ * narrow terminals, `BORING=me` — plain lines.
  *
  * @example
  * ```ts
@@ -345,10 +264,11 @@ export function startBanner(opts: StartBannerOptions): BannerHandle {
   const mode = bannerMode(env, stream);
   const color = mode === "full" && env.NO_COLOR === undefined;
   const animate = mode === "full" && opts.command === "dev";
+  const title = `rpxd ${opts.command}`;
   let aborted = false;
   let restoreConsole: (() => void) | undefined;
 
-  // Ctrl-C mid-roll must not leave the user's terminal without a cursor.
+  // Ctrl-C mid-animation must not leave the user's terminal without a cursor.
   const onSigint = (): void => {
     stream.write(SHOW_CURSOR);
   };
@@ -363,25 +283,28 @@ export function startBanner(opts: StartBannerOptions): BannerHandle {
     restoreConsole = bufferConsole(opts.consoleObj ?? console);
     if (stream === process.stdout) process.once("SIGINT", onSigint);
     animation = (async () => {
-      const mark = wordmark(pickScale(stream.columns ?? 0));
-      const markWidth = (mark[0] as string).length;
-      const width = Math.max(markWidth, (stream.columns ?? markWidth + 1) - 1);
       stream.write(HIDE_CURSOR);
-      let first = true;
-      let prev = width;
-      for (const offset of rollOffsets(width, markWidth, opts.frames)) {
-        if (aborted) break;
-        // The wake fills the gap the mark leaves toward the right edge (its
-        // right edge is off-screen early in the roll), sized by frame speed
-        // so it dies out naturally as the mark brakes.
-        const gap = Math.max(0, width - (offset + markWidth));
-        const trailLen = offset <= 0 ? 0 : Math.min(gap, 3 * Math.max(0, prev - offset));
-        prev = offset;
-        const rows = renderRollFrame(mark, offset, width, trailLen);
-        const painted = rows.map((row) => `\x1b[2K${colorizeRow(row, offset, markWidth, color)}`);
-        stream.write(`${first ? "" : `\x1b[${mark.length}A`}${painted.join("\n")}\n`);
-        first = false;
-        await sleep(1000 / 30);
+      // the title types out in full gradient
+      for (let i = 1; i <= title.length && !aborted; i++) {
+        stream.write(`${i === 1 ? "" : "\x1b[1A"}\x1b[2K${titleFrame(title, i, 0, color)}\n`);
+        await sleep(28);
+      }
+      // the shine sweeps the rule while the title color drains — ending together
+      const SWEEP = 16;
+      for (let f = 1; f <= SWEEP && !aborted; f++) {
+        const fade = (f / SWEEP) ** 2; // hold the color, drain at the end
+        stream.write(
+          `${f === 1 ? "\x1b[1A" : "\x1b[2A"}\x1b[2K${titleFrame(title, title.length, fade, color)}\n` +
+            `\x1b[2K${ruleFrame(WIDTH, Math.round((WIDTH * f) / SWEEP), color)}\n`,
+        );
+        await sleep(30);
+      }
+      if (!aborted) {
+        // settle: plain bold title over the quiet full rule
+        stream.write(
+          `\x1b[2A\x1b[2K${titleFrame(title, title.length, 1, color)}\n` +
+            `\x1b[2K${ruleFrame(WIDTH, WIDTH, false)}\n`,
+        );
       }
       stream.write(SHOW_CURSOR);
     })();
@@ -396,14 +319,14 @@ export function startBanner(opts: StartBannerOptions): BannerHandle {
           stream.write(`${plainLines(info, env).join("\n")}\n`);
           return;
         }
-        const mark = wordmark(pickScale(stream.columns ?? 0));
-        const markWidth = (mark[0] as string).length;
         if (!animate) {
-          const locked = mark.map((row) => colorizeRow(row, 0, markWidth, color));
-          stream.write(`${locked.join("\n")}\n`);
+          // start: the settled frame, no animation
+          stream.write(
+            `${titleFrame(title, title.length, 1, color)}\n${ruleFrame(WIDTH, WIDTH, false)}\n`,
+          );
         }
         const networkUrl = info.networkUrl ?? detectNetworkUrl(info.port);
-        stream.write(`${infoLines({ ...info, networkUrl }, markWidth, color).join("\n")}\n`);
+        stream.write(`${infoLines({ ...info, networkUrl }, WIDTH, color).join("\n")}\n`);
       } finally {
         // Buffered boot logs replay *below* the summary — the banner stays
         // one intact block, logs beneath it.

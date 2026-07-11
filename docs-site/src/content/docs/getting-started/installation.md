@@ -56,15 +56,13 @@ rpxd dev --no-rsc              # disable RSC fields
 
 `PORT` (env) sets the port for `dev` and `start` (default `3000`).
 
-`dev` and `start` open with an animated RPXD banner in wide interactive
-terminals (CI, pipes, and narrow terminals get plain output automatically).
-If the theatrics are not for you:
+`dev` and `start` open with an animated banner in interactive terminals
+(CI, pipes, and narrow terminals get plain output automatically). If the
+theatrics are not for you:
 
 ```sh
 BORING=me rpxd dev
 ```
-
-(fine.)
 
 ### Scaffold
 

@@ -2,14 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   type BannerInfo,
   bannerMode,
-  colorizeRow,
   infoLines,
-  pickScale,
   plainLines,
-  renderRollFrame,
-  rollOffsets,
+  ruleFrame,
   startBanner,
-  wordmark,
+  titleFrame,
 } from "../src/banner.ts";
 
 // biome's noControlCharactersInRegex bans the literal — build the CSI matcher.
@@ -27,126 +24,78 @@ const info: BannerInfo = {
   networkUrl: "",
 };
 
-describe("wordmark", () => {
-  it("is 5 rows of equal width built from block glyphs", () => {
-    const mark = wordmark(1);
-    expect(mark).toHaveLength(5);
-    const widths = new Set(mark.map((r) => r.length));
-    expect(widths.size).toBe(1);
-    for (const row of mark) expect(row).toMatch(/^[█▀▄ ]+$/);
+describe("titleFrame", () => {
+  it("types out the first N characters, bold", () => {
+    expect(strip(titleFrame("rpxd dev", 4, 0, true))).toBe("rpxd");
+    expect(strip(titleFrame("rpxd dev", 8, 0, true))).toBe("rpxd dev");
+    expect(titleFrame("rpxd dev", 8, 0, true)).toContain("\x1b[1m");
   });
 
-  it("scales horizontally by repeating columns", () => {
-    const base = wordmark(1)[0] as string;
-    const wide = wordmark(4)[0] as string;
-    expect(wide.length).toBe(base.length * 4);
-    // Stretching preserves the glyph sequence: dedup of runs matches.
-    expect(wide.replace(/(.)\1*/g, "$1")).toBe(base.replace(/(.)\1*/g, "$1"));
-  });
-});
-
-describe("pickScale", () => {
-  it("targets ~150 cols on ultrawide, ~120 on wide, ~90 on standard", () => {
-    const markW = (wordmark(1)[0] as string).length;
-    expect(pickScale(200) * markW).toBe(150);
-    expect(pickScale(160) * markW).toBe(150);
-    expect(pickScale(140) * markW).toBe(120);
-    expect(pickScale(100) * markW).toBe(90);
+  it("carries the gradient at fade 0 — first and last characters differ", () => {
+    const frame = titleFrame("rpxd dev", 8, 0, true);
+    const codes = frame.match(/38;2;\d+;\d+;\d+/g) ?? [];
+    expect(codes.length).toBe(8);
+    expect(codes[0]).not.toBe(codes.at(-1));
   });
 
-  it("returns 0 below the animatable minimum", () => {
-    expect(pickScale(80)).toBe(0);
+  it("is fully plain at fade 1 and when color is off", () => {
+    expect(titleFrame("rpxd dev", 8, 1, true)).toBe("\x1b[1mrpxd dev\x1b[0m");
+    expect(titleFrame("rpxd dev", 8, 0, false)).toBe("\x1b[1mrpxd dev\x1b[0m");
+  });
+
+  it("fades toward plain: colors at fade 0.9 differ from fade 0", () => {
+    const hot = titleFrame("rpxd dev", 8, 0, true);
+    const cooled = titleFrame("rpxd dev", 8, 0.9, true);
+    expect(cooled).not.toBe(hot);
+    expect(strip(cooled)).toBe(strip(hot)); // visible text identical
   });
 });
 
-describe("rollOffsets", () => {
-  it("eases from off-screen right to an overshoot past the left margin, then rests at 0", () => {
-    const offsets = rollOffsets(120, 30);
-    expect(offsets[0]).toBeLessThan(120); // a sliver is visible immediately
-    expect(offsets[0]).toBeGreaterThan(0);
-    expect(offsets.at(-1)).toBe(0); // rests at the left margin
-    expect(offsets.at(-2)).toBeLessThan(0); // one-frame overshoot "thunk"
-    const gliding = offsets.slice(0, -2);
-    for (let i = 1; i < gliding.length; i++) {
-      expect(gliding[i] as number).toBeLessThanOrEqual(gliding[i - 1] as number);
-    }
-  });
-});
-
-describe("renderRollFrame", () => {
-  const mark = wordmark(1);
-
-  it("places the mark at the offset and never exceeds the width", () => {
-    const rows = renderRollFrame(mark, 10, 120, 0);
-    expect(rows[0]).toBe(`${" ".repeat(10)}${mark[0]}`);
-    for (const row of rows) expect(row.length).toBeLessThanOrEqual(120);
+describe("ruleFrame", () => {
+  it("draws out to the head position", () => {
+    expect(strip(ruleFrame(40, 20, true))).toBe("─".repeat(20));
+    expect(strip(ruleFrame(40, 40, true))).toBe("─".repeat(40));
   });
 
-  it("clips at the right edge on entry", () => {
-    const markW = (mark[0] as string).length;
-    const rows = renderRollFrame(mark, 120 - 5, 120, 0);
-    for (const row of rows) expect(row.length).toBeLessThanOrEqual(120);
-    expect((rows[0] as string).trimStart().length).toBeLessThan(markW);
+  it("carries a gradient shine head when color is on, plain dim otherwise", () => {
+    expect(ruleFrame(40, 20, true)).toContain("\x1b[38;2;");
+    expect(ruleFrame(40, 40, false)).toBe(`\x1b[2m${"─".repeat(40)}\x1b[0m`);
   });
 
-  it("clips at the left edge on overshoot", () => {
-    const rows = renderRollFrame(mark, -2, 120, 0);
-    expect(rows[0]).toBe((mark[0] as string).slice(2));
-  });
-
-  it("draws a fading speed-line trail behind the mark while moving", () => {
-    const rows = renderRollFrame(mark, 20, 120, 6);
-    expect(rows[0]).toContain("▓");
-    expect(rows[0]).toContain("░");
-    // Dense shading sits nearest the mark, light shading trails furthest.
-    expect((rows[0] as string).indexOf("▓")).toBeLessThan((rows[0] as string).indexOf("░"));
-  });
-
-  it("at rest with no trail, reproduces the wordmark at the margin", () => {
-    const rows = renderRollFrame(mark, 0, 120, 0);
-    expect(rows).toEqual(mark.map((r) => r.trimEnd()));
+  it("never overshoots the width", () => {
+    expect(strip(ruleFrame(40, 99, true)).length).toBe(40);
   });
 });
 
 describe("infoLines", () => {
-  it("frames the server summary between rules of the banner width", () => {
-    const lines = infoLines(info, 90, false);
-    expect(lines[0]).toBe("─".repeat(90));
-    expect(lines.at(-1)).toBe("─".repeat(90));
+  it("prints four content rows and the closing rule — no rpxd dev header", () => {
+    const lines = infoLines({ ...info, networkUrl: "http://192.168.1.24:3000" }, 40, false);
+    expect(lines).toHaveLength(5);
     const body = lines.join("\n");
-    expect(body).toContain("http://localhost:3000");
-    expect(body).toContain("transport ws");
-    expect(body).toContain("rsc on");
-    expect(body).toContain("14 routes");
-    expect(body).toContain("ready in 412 ms");
-    expect(body).toContain("v0.1.0");
+    expect(body).toContain("v0.1.0 · ready in 412 ms");
+    expect(body).toContain("➜ local    http://localhost:3000");
+    expect(body).toContain("➜ network  http://192.168.1.24:3000");
+    expect(body).toContain("transport ws · rsc on · 14 routes");
+    expect(body).not.toContain("rpxd dev");
+    expect(lines.at(-1)).toBe("─".repeat(40));
   });
 
-  it("includes the network URL only when one exists", () => {
-    const withLan = infoLines({ ...info, networkUrl: "http://192.168.1.24:3000" }, 90, false);
-    expect(withLan.join("\n")).toContain("http://192.168.1.24:3000");
-    expect(infoLines(info, 90, false).join("\n")).not.toContain("network");
-  });
-
-  it("omits optional segments it has no data for", () => {
-    const lines = infoLines({ ...info, version: undefined, readyMs: undefined }, 90, false);
-    const body = lines.join("\n");
-    expect(body).not.toContain("ready in");
-    expect(body).not.toContain(" v");
+  it("omits rows it has no data for", () => {
+    const lines = infoLines({ ...info, version: undefined, readyMs: undefined }, 40, false);
+    expect(lines).toHaveLength(3); // local, transport, rule — no header, no network
+    expect(lines.join("\n")).not.toContain("ready in");
   });
 });
 
 describe("plainLines (boring/CI output)", () => {
-  it("acknowledges the documented incantation with a deadpan (fine.)", () => {
+  it("prints the plain line for BORING=me, no commentary", () => {
     const lines = plainLines(info, { BORING: "me" });
-    expect(lines[0]).toContain("rpxd dev → http://localhost:3000");
-    expect(lines[0]).toContain("(fine.)");
+    expect(lines[0]).toBe("rpxd dev → http://localhost:3000");
+    expect(lines.join("\n")).not.toContain("(fine.)");
   });
 
-  it("still disables for any other BORING value, without the easter egg", () => {
-    const lines = plainLines(info, { BORING: "1" });
-    expect(lines[0]).toContain("http://localhost:3000");
-    expect(lines.join("\n")).not.toContain("(fine.)");
+  it("disables identically for any other BORING value", () => {
+    expect(plainLines(info, { BORING: "1" })).toEqual(plainLines(info, { BORING: "me" }));
   });
 
   it("carries the same summary as the fancy banner", () => {
@@ -159,9 +108,9 @@ describe("plainLines (boring/CI output)", () => {
 });
 
 describe("bannerMode", () => {
-  const tty = { isTTY: true, columns: 140 };
+  const tty = { isTTY: true, columns: 100 };
 
-  it("goes full in a wide interactive terminal", () => {
+  it("goes full in an interactive terminal", () => {
     expect(bannerMode({}, tty)).toBe("full");
   });
 
@@ -169,31 +118,17 @@ describe("bannerMode", () => {
     ["BORING set", { BORING: "me" }, tty],
     ["CI", { CI: "true" }, tty],
     ["dumb terminal", { TERM: "dumb" }, tty],
-    ["not a TTY", {}, { isTTY: false, columns: 140 }],
-    ["too narrow", {}, { isTTY: true, columns: 80 }],
+    ["not a TTY", {}, { isTTY: false, columns: 100 }],
+    ["too narrow", {}, { isTTY: true, columns: 40 }],
   ] as const)("falls back to plain when %s", (_reason, env, stream) => {
     expect(bannerMode(env, stream)).toBe("plain");
-  });
-});
-
-describe("colorizeRow", () => {
-  const row = "  ██▀▄ ▓▒░";
-
-  it("wraps glyphs in 24-bit color and leaves visible text unchanged", () => {
-    const painted = colorizeRow(row, 2, 4, true);
-    expect(painted).toContain("\x1b[38;2;");
-    expect(strip(painted)).toBe(row);
-  });
-
-  it("is the identity when color is disabled", () => {
-    expect(colorizeRow(row, 2, 4, false)).toBe(row);
   });
 });
 
 describe("startBanner", () => {
   const instant = (): Promise<void> => Promise.resolve();
 
-  function fakeStream(columns = 140, isTTY = true) {
+  function fakeStream(columns = 100, isTTY = true) {
     const chunks: string[] = [];
     return {
       chunks,
@@ -201,20 +136,33 @@ describe("startBanner", () => {
     };
   }
 
-  it("animates the roll then prints the server info (dev, full mode)", async () => {
+  it("types the title, sweeps the rule, then prints the summary (dev)", async () => {
     const { chunks, stream } = fakeStream();
     const banner = startBanner({ command: "dev", stream, env: {}, sleep: instant });
     await banner.finish(info);
     const out = chunks.join("");
-    expect(out).toContain("\x1b[?25l"); // cursor hidden during the roll
+    expect(out).toContain("\x1b[?25l"); // cursor hidden during animation
     expect(out).toContain("\x1b[?25h"); // and restored
-    expect(out).toContain("\x1b[5A"); // frames rewrite in place
-    expect(strip(out)).toContain("██"); // the wordmark landed
-    expect(strip(out)).toContain("http://localhost:3000");
-    expect(strip(out)).toContain("transport ws");
+    expect(out).toContain("\x1b[1A"); // title retype frames
+    expect(out).toContain("\x1b[2A"); // title+rule sweep frames
+    const text = strip(out);
+    expect(text).toContain("rpxd dev");
+    expect(text).toContain("─".repeat(40)); // the settled rule
+    expect(text).toContain("http://localhost:3000");
+    expect(text).toContain("transport ws");
   });
 
-  it("buffers console output during the roll and flushes it afterwards", async () => {
+  it("ends the title fade and the shine on the same frame", async () => {
+    const { chunks, stream } = fakeStream();
+    const banner = startBanner({ command: "dev", stream, env: {}, sleep: instant });
+    await banner.finish(info);
+    // the settle frame is the last two-line rewrite: plain title + full rule
+    const settle = chunks.filter((c) => c.startsWith("\x1b[2A")).at(-1) as string;
+    expect(settle).toContain("\x1b[1mrpxd dev\x1b[0m"); // no gradient left
+    expect(strip(settle)).toContain("─".repeat(40)); // rule fully drawn
+  });
+
+  it("buffers console output during the animation and flushes it afterwards", async () => {
     const { stream } = fakeStream();
     const logged: unknown[][] = [];
     const fakeConsole = { log: (...args: unknown[]) => void logged.push(args) };
@@ -234,19 +182,19 @@ describe("startBanner", () => {
     });
     expect(logged).toEqual([]); // held back while frames rewrite lines
     await banner.finish(info);
-    expect(logged).toEqual([["boot noise"]]); // replayed once the banner locked
+    expect(logged).toEqual([["boot noise"]]); // replayed once the banner settled
     fakeConsole.log("after");
     expect(logged.at(-1)).toEqual(["after"]); // console restored
   });
 
-  it("flushes buffered logs after the info block, not between wordmark and summary", async () => {
+  it("flushes buffered logs after the info block, not between title and summary", async () => {
     const order: string[] = [];
     const stream = {
       isTTY: true,
-      columns: 140,
+      columns: 100,
       write: (s: string) => void (strip(s).includes("localhost") && order.push("info")),
     };
-    const fakeConsole = { log: () => void order.push("flushed") };
+    const fakeConsole = { log: (..._args: unknown[]) => void order.push("flushed") };
     let noised = false;
     const banner = startBanner({
       command: "dev",
@@ -273,15 +221,17 @@ describe("startBanner", () => {
     expect(strip(out)).not.toContain("localhost");
   });
 
-  it("prints the static locked frame for start (no animation frames)", async () => {
+  it("prints the settled frame for start (no animation frames)", async () => {
     const { chunks, stream } = fakeStream();
     const banner = startBanner({ command: "start", stream, env: {}, sleep: instant });
     await banner.finish(info);
     const out = chunks.join("");
     expect(out).not.toContain("\x1b[?25l");
-    expect(out).not.toContain("\x1b[5A");
-    expect(strip(out)).toContain("██");
-    expect(strip(out)).toContain("http://localhost:3000");
+    expect(out).not.toContain("\x1b[2A");
+    const text = strip(out);
+    expect(text).toContain("rpxd start");
+    expect(text).toContain("─".repeat(40));
+    expect(text).toContain("http://localhost:3000");
   });
 
   it("BORING=me skips the theatrics entirely", async () => {
@@ -290,7 +240,7 @@ describe("startBanner", () => {
     await banner.finish(info);
     const out = chunks.join("");
     expect(out).not.toContain("\x1b[");
-    expect(out).toContain("(fine.)");
-    expect(out).toContain("http://localhost:3000");
+    expect(out).not.toContain("(fine.)");
+    expect(out).toContain("rpxd dev → http://localhost:3000");
   });
 });
