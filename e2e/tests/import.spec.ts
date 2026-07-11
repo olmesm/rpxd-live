@@ -1,8 +1,11 @@
 /** Streaming rpcs (§3): each patchState tick flushes a patch envelope. */
 import { expect, test } from "@playwright/test";
+import { gotoHydrated } from "./helpers";
 
 test("patchState flushes stream progressively, then clears the flag", async ({ page }) => {
-  await page.goto("/import");
+  // Hydration gate: a pre-hydration click on the (type="button") preset does
+  // nothing — no handler attached yet — and the import never starts.
+  await gotoHydrated(page, "/import");
   await page.getByTestId("import-sample").click();
 
   // first segment: importing flag set before any items arrive
@@ -22,7 +25,7 @@ test("patchState flushes stream progressively, then clears the flag", async ({ p
 test("a poison row rejects the rpc and .onError repairs state on the error ack", async ({
   page,
 }) => {
-  await page.goto("/import");
+  await gotoHydrated(page, "/import");
   await page.getByTestId("import-bad").click();
 
   // the two good rows before the poison row land first

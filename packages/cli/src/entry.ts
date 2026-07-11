@@ -60,6 +60,10 @@ const app = createElement(LiveApp, {
 
 const Root = rootModule ? (await rootModule()).default : null;
 hydrateRoot(rootEl, Root ? createElement(Root, null, app) : app);
+// Hydration marker: a click that lands before hydration is lost (no handler
+// attached yet) or falls through to a native form submit. Stamped after
+// hydrateRoot commits the shell so tests/apps can gate interaction on it.
+document.documentElement.dataset.rpxdHydrated = "true";
 `;
 
 /**
