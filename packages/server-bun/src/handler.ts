@@ -57,7 +57,7 @@ export interface RenderContext {
  * per-session cap. They reach the app as {@link RpxdDiagnostic}s with
  * `category: "security"` through {@link RpxdHandlerOptions.onDiagnostic}.
  */
-type SecurityEventType = "origin-rejected" | "rate-limited" | "cap-evicted" | "cap-rejected";
+type SecurityDiagnosticType = "origin-rejected" | "rate-limited" | "cap-evicted" | "cap-rejected";
 
 /** Options for {@link createRpxdHandler}. */
 export interface RpxdHandlerOptions {
@@ -398,7 +398,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   /** Fire a `security`-category event (#8) through the unified sink (#73). The
    * `emit` wrapper swallows any throw from the app sink — observability must
    * never affect the request it observes. */
-  function emitSecurity(type: SecurityEventType, detail?: Record<string, unknown>): void {
+  function emitSecurity(type: SecurityDiagnosticType, detail?: Record<string, unknown>): void {
     emit({ category: "security", type, level: "warn", detail });
   }
 
