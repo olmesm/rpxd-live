@@ -73,7 +73,7 @@ async function runDev(port: number, overrides: ConfigOverrides): Promise<void> {
     import("./dev-server.ts"),
     import("./banner.ts"),
   ]);
-  // The roll-in plays *while* the server boots — it covers the wait instead
+  // The animation plays *while* the server boots — it covers the wait instead
   // of adding to it; finish() joins both and prints the summary.
   const banner = startBanner({ command: "dev" });
   const t0 = performance.now();
