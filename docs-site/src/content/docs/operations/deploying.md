@@ -121,30 +121,87 @@ example.com {
 }
 ```
 
-## A Bun Dockerfile
+## Graceful shutdown
 
-The runtime is pure Bun with no build step needed at boot — `rpxd build`
-produces `dist/`, and `rpxd start` serves it.
+On `SIGTERM` / `SIGINT` — a `docker stop`, a Kubernetes pod eviction, `Ctrl-C`
+— `rpxd start` shuts down in a fixed order so no warm state is lost:
 
-```dockerfile
-FROM oven/bun:1 AS build
-WORKDIR /app
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
-COPY . .
-RUN bunx @rpxd/cli build
+1. **stop** taking new connections,
+2. **dispose** — flush every warm instance's snapshot to the storage adapter,
+3. **`onShutdown`** — your userland cleanup hook (below),
+4. **close storage** — rpxd closes the storage handle it opened itself.
 
-FROM oven/bun:1
-WORKDIR /app
-COPY --from=build /app ./
-ENV PORT=3000
-EXPOSE 3000
-CMD ["bunx", "@rpxd/cli", "start"]
+The ordering is load-bearing: snapshots are written in step 2, so storage stays
+open through it; `onShutdown` runs in step 3, before rpxd closes storage, in case
+your cleanup still touches it. A second signal, or a shutdown that overruns the
+timeout, force-exits — a wedged hook can't hang the process forever.
+
+This is why the Dockerfile below matters for signal delivery: the Bun runtime
+must be PID 1 (or run under an init that forwards `SIGTERM`) so `docker stop`'s
+signal reaches `bun run start`, which forwards it to rpxd.
+
+### `onShutdown` — close what your app owns
+
+rpxd closes the storage adapter it created; your app closes the resources **it**
+opened. `onShutdown` is the hook — most commonly to disconnect a Prisma client
+(a `--db` scaffold opens one), but any Redis client, queue connection, or
+external SDK closes here too:
+
+```ts
+// rpxd.config.ts
+import { defineConfig } from "@rpxd/cli";
+import { db } from "./adapters/db";
+
+export default defineConfig({
+  // …storage, session, etc.
+  onShutdown: () => db.$disconnect(),
+});
 ```
 
-Set `RPXD_SESSION_SECRET` (and your storage connection details) as runtime
-environment variables, not build args — they're deploy config, not part of the
-image. For a Node base image and `better-sqlite3`, see
+## A Bun Dockerfile
+
+`rpxd init` scaffolds a production `Dockerfile` and `.dockerignore` for you — a
+multi-stage build on `oven/bun`, then `rpxd start` on the slim runtime. It's the
+same shape as below; the generated one is db-aware (applies the Prisma schema on
+boot) and keeps the Bun runtime as PID 1 so `SIGTERM` reaches it and graceful
+shutdown works:
+
+```dockerfile
+# syntax=docker/dockerfile:1
+FROM oven/bun:1 AS build
+WORKDIR /app
+COPY package.json bun.lock* ./
+RUN bun install          # add --frozen-lockfile once a lockfile is committed
+COPY . .
+RUN bun run build        # `bun run db:generate && bun run build` for a --db app
+
+FROM oven/bun:1-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app ./
+EXPOSE 3000
+CMD ["bun", "run", "start"]
+# --db apps instead: CMD ["sh", "-c", "bun run db:push && exec bun run start"]
+# — `exec` makes `bun run start` PID 1 so it receives docker stop's SIGTERM.
+```
+
+```sh
+docker build -t my-app .
+docker run --init -p 3000:3000 \
+  -e RPXD_SESSION_SECRET=$(openssl rand -hex 32) \
+  my-app
+```
+
+`--init` runs a tiny init as PID 1 to reap zombies and forward signals — cheap
+insurance for clean shutdown. Set `RPXD_SESSION_SECRET` (and storage connection
+details) as **runtime** environment, not build args — they're deploy config, not
+part of the image. The scaffold already git- and docker-ignores `.env` so a
+local secrets file is never committed or baked in.
+
+If you scaffolded `--db`, the default sqlite file lives in the container's
+ephemeral layer and is lost on every redeploy — mount a volume where it lives
+(`-v my-app-data:/app/prisma`) or point `DATABASE_URL` at durable storage. For a
+Node base image and `better-sqlite3`, see
 [Running on Node](/rpxd-live/operations/node/).
 
 ## Multiple nodes
