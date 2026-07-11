@@ -60,6 +60,7 @@ describe("generated app: files", () => {
   it("scaffolds the shell + the resource", () => {
     for (const path of [
       "package.json",
+      "README.md",
       "tsconfig.json",
       "Dockerfile",
       ".dockerignore",

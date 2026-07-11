@@ -33,6 +33,21 @@ describe("scaffolded Dockerfile + ignores", () => {
   });
 });
 
+describe("scaffolded README", () => {
+  it("names the project and documents the build/deploy commands", () => {
+    const readme = fileOf(false, "README.md");
+    expect(readme).toContain("# x"); // project name as the title
+    expect(readme).toContain("bun run build");
+    expect(readme).toContain("bun run start");
+    expect(readme).toContain("RPXD_SESSION_SECRET"); // the one prod env var
+    expect(readme).toContain("docker build"); // points at the scaffolded Dockerfile
+  });
+
+  it("db variant notes the sqlite persistence footgun", () => {
+    expect(fileOf(true, "README.md")).toContain("/app/prisma");
+  });
+});
+
 describe("parseFields (field:type)", () => {
   it("maps every supported type to prisma + ts", () => {
     const fields = parseFields([

@@ -123,6 +123,50 @@ generated/
 const viteEnv = (): string => `/// <reference types="vite/client" />\n`;
 
 /**
+ * Project README: the run/build/deploy commands plus the one env var that
+ * matters in production. Kept short — the docs site carries the full
+ * deployment guide; this is the note you see on `rpxd init`.
+ */
+const readme = ({ name, db }: AppOptions): string => {
+  const dbSetup = db ? "bun run setup   # generate the Prisma client + apply the schema\n" : "";
+  const dbDeploy = db
+    ? "\nThe default sqlite DB lives in the container's ephemeral layer — mount a\nvolume at `/app/prisma` (or set `DATABASE_URL` to durable storage) so data\nsurvives a redeploy.\n"
+    : "";
+  return `# ${name}
+
+An [rpxd](https://olmesm.github.io/rpxd-live/) app — server-side live objects,
+optimistic client, patches over SSE.
+
+## Develop
+
+\`\`\`sh
+bun install
+${dbSetup}bun run dev      # http://localhost:3000
+\`\`\`
+
+## Deploy
+
+\`\`\`sh
+bun run build    # dist/client + dist/server
+bun run start    # serve the build on $PORT (default 3000)
+\`\`\`
+
+Set \`RPXD_SESSION_SECRET\` in production so the session cookie is HMAC-signed
+(without it the sid is unsigned and rpxd warns once at boot).
+
+A Tier-1 \`Dockerfile\` is included:
+
+\`\`\`sh
+docker build -t ${name} .
+docker run --init -p 3000:3000 -e RPXD_SESSION_SECRET=$(openssl rand -hex 32) ${name}
+\`\`\`
+${dbDeploy}
+See the [deployment guide](https://olmesm.github.io/rpxd-live/operations/deploying/)
+for env vars, graceful shutdown, and persistence.
+`;
+};
+
+/**
  * Tier-1 production image: a multi-stage build that compiles the app and runs
  * `rpxd start` on a slim Bun runtime. `exec` in the db variant hands PID 1 to
  * rpxd so `SIGTERM` (docker stop / Kubernetes) reaches it and warm snapshots are
@@ -337,6 +381,7 @@ export function scopeFrom(session: unknown): Scope {
 export function appShellFiles(opts: AppOptions): FileWrite[] {
   return [
     { path: "package.json", contents: packageJson(opts) },
+    { path: "README.md", contents: readme(opts) },
     { path: "tsconfig.json", contents: tsconfig(opts.db) },
     { path: ".gitignore", contents: gitignore() },
     { path: "Dockerfile", contents: dockerfile(opts) },
