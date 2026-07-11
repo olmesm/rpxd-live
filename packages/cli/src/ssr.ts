@@ -12,14 +12,14 @@
  */
 import type { LiveRoute, SyncState } from "@rpxd/core";
 import { configureRscRuntime, flightStream, hydrateRscFields } from "@rpxd/rsc/client";
-import { makeEmit, type RenderContext } from "@rpxd/server-bun";
+import { makeDiagnosticEmit, type RenderContext } from "@rpxd/server-bun";
 import { createElement, type FunctionComponent, type ReactElement, type ReactNode } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 
-// Standalone SSR events (#73): the shell renderers run without an app hook, so
-// route a prod render crash through the default (console) sink under the
+// Standalone SSR diagnostics (#73): the shell renderers run without an app hook,
+// so route a prod render crash through the default (console) sink under the
 // unified `request` taxonomy.
-const emit = makeEmit();
+const emit = makeDiagnosticEmit();
 
 let flightRuntimeReady: Promise<void> | undefined;
 

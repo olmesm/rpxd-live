@@ -17,7 +17,7 @@ import type { RouteDefinition } from "@rpxd/core";
 import {
   createRpxdHandler,
   type HttpRouteRegistration,
-  makeEmit,
+  makeDiagnosticEmit,
   type RouteRegistration,
   wsTransport,
 } from "@rpxd/server-bun";
@@ -50,13 +50,13 @@ export interface DevServerOptions {
   /**
    * Config fields merged (shallow) over the loaded `rpxd.config.ts` — the
    * injection seam for tests and embedding, where the config can't come from
-   * a file (e.g. an `onEvent` spy, or capacity caps under test).
+   * a file (e.g. an `onDiagnostic` spy, or capacity caps under test).
    *
    * @example
    * ```ts
    * await createDevServer(root, {
    *   port: 0,
-   *   configOverride: { onEvent: (e) => events.push(e) },
+   *   configOverride: { onDiagnostic: (d) => diagnostics.push(d) },
    * });
    * ```
    */
@@ -258,13 +258,13 @@ export async function createDevServer(
       return renderDevErrorPage(info.path, info.error);
     },
     defaultRateLimit: config.rateLimit,
-    ...instanceHandlerOptions(config), // dev honors instances.* + onEvent too
+    ...instanceHandlerOptions(config), // dev honors instances.* + onDiagnostic too
   });
 
-  // Dev-bridge transport events (#73): the node http/upgrade bridge below sits
-  // outside the handler, so route its recovered request/upgrade faults through
-  // the default (console) sink under the unified `request` taxonomy.
-  const emit = makeEmit();
+  // Dev-bridge transport diagnostics (#73): the node http/upgrade bridge below
+  // sits outside the handler, so route its recovered request/upgrade faults
+  // through the default (console) sink under the unified `request` taxonomy.
+  const emit = makeDiagnosticEmit();
 
   // Serialize reloads per route so two rapid saves whose imports resolve out
   // of order don't leave the instance on the older def (#67).

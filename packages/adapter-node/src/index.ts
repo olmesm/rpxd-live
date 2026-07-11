@@ -17,7 +17,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 import {
-  makeEmit,
+  makeDiagnosticEmit,
   type ServeHandle,
   type ServeOptions,
   type ServerAdapter,
@@ -25,10 +25,10 @@ import {
 } from "@rpxd/server-bun";
 import { WebSocketServer } from "ws";
 
-// Standalone transport events (#73): no app hook reaches this adapter, so route
-// its recovered request/upgrade faults through the default (console) sink —
-// same output as before, now under the unified `request` taxonomy.
-const emit = makeEmit();
+// Standalone transport diagnostics (#73): no app hook reaches this adapter, so
+// route its recovered request/upgrade faults through the default (console) sink
+// — same output as before, now under the unified `request` taxonomy.
+const emit = makeDiagnosticEmit();
 
 export type { ServeHandle, ServeOptions, ServerAdapter } from "@rpxd/server-bun";
 

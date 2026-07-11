@@ -5,14 +5,14 @@
  * @packageDocumentation
  */
 
-// Re-export the unified event-sink API (#73) so adapter/CLI packages that
-// already depend on server-bun can report `request`-category events without a
-// direct @rpxd/core runtime dependency.
+// Re-export the unified diagnostic-sink API (#73) so adapter/CLI packages that
+// already depend on server-bun can report `request`-category diagnostics without
+// a direct @rpxd/core runtime dependency.
 export {
-  defaultEventSink,
-  makeEmit,
-  type RpxdEvent,
-  type RpxdEventSink,
+  defaultDiagnosticSink,
+  makeDiagnosticEmit,
+  type RpxdDiagnostic,
+  type RpxdDiagnosticSink,
 } from "@rpxd/core";
 export {
   bunAdapter,

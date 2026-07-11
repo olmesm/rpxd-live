@@ -1,27 +1,31 @@
 import { describe, expect, it, vi } from "vitest";
-import { defaultEventSink, makeEmit, type RpxdEvent } from "../src/events.ts";
+import {
+  defaultDiagnosticSink,
+  makeDiagnosticEmit,
+  type RpxdDiagnostic,
+} from "../src/diagnostics.ts";
 
-describe("defaultEventSink", () => {
+describe("defaultDiagnosticSink", () => {
   it("routes each level to the matching console method with a [rpxd] category/type label", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
     try {
-      defaultEventSink({
+      defaultDiagnosticSink({
         category: "instance",
         type: "load-failed",
         level: "error",
         error: new Error("boom"),
       });
-      defaultEventSink({
+      defaultDiagnosticSink({
         category: "security",
         type: "rate-limited",
         level: "warn",
         detail: { key: "k" },
       });
-      defaultEventSink({ category: "request", type: "request-failed", level: "info" });
-      defaultEventSink({ category: "storage", type: "subscriber-threw", level: "debug" });
+      defaultDiagnosticSink({ category: "request", type: "request-failed", level: "info" });
+      defaultDiagnosticSink({ category: "storage", type: "subscriber-threw", level: "debug" });
       expect(error).toHaveBeenCalledWith(
         expect.stringContaining("instance/load-failed"),
         expect.anything(),
@@ -40,10 +44,10 @@ describe("defaultEventSink", () => {
   });
 });
 
-describe("makeEmit", () => {
-  it("forwards structured events to the wrapped sink", () => {
-    const seen: RpxdEvent[] = [];
-    const emit = makeEmit((e) => seen.push(e));
+describe("makeDiagnosticEmit", () => {
+  it("forwards structured diagnostics to the wrapped sink", () => {
+    const seen: RpxdDiagnostic[] = [];
+    const emit = makeDiagnosticEmit((d) => seen.push(d));
     emit({ category: "instance", type: "flush-failed", level: "error", error: new Error("x") });
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ category: "instance", type: "flush-failed", level: "error" });
@@ -52,7 +56,7 @@ describe("makeEmit", () => {
   it("swallows a throw from the sink so observability can't break the caller", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const emit = makeEmit(() => {
+      const emit = makeDiagnosticEmit(() => {
         throw new Error("sink blew up");
       });
       expect(() =>
@@ -64,10 +68,10 @@ describe("makeEmit", () => {
     }
   });
 
-  it("defaults to defaultEventSink when no sink is passed", () => {
+  it("defaults to defaultDiagnosticSink when no sink is passed", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const emit = makeEmit();
+      const emit = makeDiagnosticEmit();
       emit({
         category: "storage",
         type: "redis-publish-failed",

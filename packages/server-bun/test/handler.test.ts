@@ -3,7 +3,7 @@ import {
   type LiveDefinition,
   memory,
   type PROTOCOL_VERSION,
-  type RpxdEvent,
+  type RpxdDiagnostic,
   redirect,
 } from "@rpxd/core";
 import { describe, expect, it } from "vitest";
@@ -973,10 +973,10 @@ describe("guard runs before setup — denied requests allocate nothing (#8)", ()
   });
 });
 
-describe("event sink — security events (#8, #73)", () => {
+describe("diagnostic sink — security diagnostics (#8, #73)", () => {
   it("emits a category:security origin-rejected on a cross-origin control POST", async () => {
-    const events: RpxdEvent[] = [];
-    const handler = makeHandler({ onEvent: (e) => events.push(e) });
+    const events: RpxdDiagnostic[] = [];
+    const handler = makeHandler({ onDiagnostic: (e) => events.push(e) });
     await handler.fetch(
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
@@ -991,10 +991,10 @@ describe("event sink — security events (#8, #73)", () => {
   });
 
   it("emits rate-limited when the throttle rejects", async () => {
-    const events: RpxdEvent[] = [];
+    const events: RpxdDiagnostic[] = [];
     const handler = makeHandler({
       throttle: { key: () => "k", limit: { capacity: 1, refillPerSec: 0 } },
-      onEvent: (e) => events.push(e),
+      onDiagnostic: (e) => events.push(e),
     });
     await handler.fetch(new Request(`${base}/org/7/board`, { headers: COOKIE }));
     await handler.fetch(new Request(`${base}/org/7/board`, { headers: COOKIE })); // 429
@@ -1004,12 +1004,12 @@ describe("event sink — security events (#8, #73)", () => {
   });
 
   it("emits cap-evicted when a session exceeds its cap", async () => {
-    const events: RpxdEvent[] = [];
+    const events: RpxdDiagnostic[] = [];
     const handler = makeHandler({
       maxInstancesPerSession: 1,
       warmTtlMs: 1000,
       attachTtlMs: 1000,
-      onEvent: (e) => events.push(e),
+      onDiagnostic: (e) => events.push(e),
     });
     const m = (n: number) =>
       handler.fetch(
@@ -1027,7 +1027,7 @@ describe("event sink — security events (#8, #73)", () => {
   });
 
   it("emits a category:request request-failed when a mount crashes (#73)", async () => {
-    const events: RpxdEvent[] = [];
+    const events: RpxdDiagnostic[] = [];
     const crashDef: LiveDefinition<BoardState, "/org/$orgId/board", Record<string, unknown>> = {
       setup: () => {
         throw new Error("setup exploded");
@@ -1036,7 +1036,7 @@ describe("event sink — security events (#8, #73)", () => {
     const handler = createRpxdHandler({
       routes: [{ path: "/org/$orgId/board", def: crashDef }],
       storage: memory(),
-      onEvent: (e) => events.push(e),
+      onDiagnostic: (e) => events.push(e),
     });
     const res = await handler.fetch(new Request(`${base}/org/9/board`, { headers: COOKIE }));
     expect(res.status).toBe(500); // the crash still renders the fallback error page
@@ -1049,7 +1049,7 @@ describe("event sink — security events (#8, #73)", () => {
 
   it("swallows a throwing sink so it can't break the request", async () => {
     const handler = makeHandler({
-      onEvent: () => {
+      onDiagnostic: () => {
         throw new Error("sink blew up");
       },
     });

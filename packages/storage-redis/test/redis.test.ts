@@ -1,4 +1,4 @@
-import type { BroadcastMessage, LiveDefinition, RpxdEvent } from "@rpxd/core";
+import type { BroadcastMessage, LiveDefinition, RpxdDiagnostic } from "@rpxd/core";
 import { LiveInstance } from "@rpxd/core";
 import { describe, expect, it, vi } from "vitest";
 import { type RedisLikeClient, redis } from "../src/index.ts";
@@ -129,8 +129,8 @@ describe("redis storage adapter", () => {
     expect(seen).toHaveLength(1);
   });
 
-  it("routes a failed publish() to an injected event sink as a storage event (#73)", async () => {
-    const events: RpxdEvent[] = [];
+  it("routes a failed publish() to an injected diagnostic sink as a storage diagnostic (#73)", async () => {
+    const events: RpxdDiagnostic[] = [];
     const client: RedisLikeClient = {
       get: () => null,
       set: () => {},
