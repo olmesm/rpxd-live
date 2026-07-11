@@ -9,7 +9,7 @@
  *   resource). File scaffolders — they write files and *print* the rest
  *   (config edits, deps), never patching hand-owned files.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { defineCommand, runMain } from "citty";
 import { consola } from "consola";
@@ -58,14 +58,44 @@ function resolvePort(args: { port?: string }): number {
   return port;
 }
 
+/** Our own version for the banner; `undefined` if the read ever fails. */
+function cliVersion(): string | undefined {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8"));
+    return typeof pkg.version === "string" ? pkg.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function runDev(port: number, overrides: ConfigOverrides): Promise<void> {
-  const { createDevServer } = await import("./dev-server.ts");
-  const server = await createDevServer(process.cwd(), { port, overrides });
-  consola.success(`rpxd dev → http://localhost:${server.port}`);
+  const [{ createDevServer }, { startBanner }] = await Promise.all([
+    import("./dev-server.ts"),
+    import("./banner.ts"),
+  ]);
+  // The animation plays *while* the server boots — it covers the wait instead
+  // of adding to it; finish() joins both and prints the summary.
+  const banner = startBanner({ command: "dev" });
+  const t0 = performance.now();
+  try {
+    const server = await createDevServer(process.cwd(), { port, overrides });
+    await banner.finish({
+      port: server.port,
+      version: cliVersion(),
+      readyMs: performance.now() - t0,
+      ...server.info,
+    });
+  } catch (error) {
+    await banner.abort();
+    throw error;
+  }
 }
 
 const dev = defineCommand({
-  meta: { name: "dev", description: "Start the dev server (Vite + rpxd runtime)" },
+  meta: {
+    name: "dev",
+    description: "Start the dev server (Vite + rpxd runtime). BORING=me skips the banner",
+  },
   args: serveArgs,
   run: ({ args }) => runDev(resolvePort(args), overridesFrom(args)),
 });
@@ -84,15 +114,26 @@ const start = defineCommand({
   meta: { name: "start", description: "Serve the build from pure Bun (no Vite)" },
   args: serveArgs,
   run: async ({ args }) => {
-    const { startApp } = await import("./start.ts");
-    const { installShutdownHandlers } = await import("./shutdown.ts");
+    const [{ startApp }, { startBanner }, { installShutdownHandlers }] = await Promise.all([
+      import("./start.ts"),
+      import("./banner.ts"),
+      import("./shutdown.ts"),
+    ]);
+    // Prod gets the settled frame, no animation; same BORING escape hatch.
+    const banner = startBanner({ command: "start" });
+    const t0 = performance.now();
     const app = await startApp(process.cwd(), {
       port: resolvePort(args),
       overrides: overridesFrom(args),
     });
     // Flush warm snapshots + run cleanup on SIGTERM/SIGINT (containers, Ctrl-C).
     installShutdownHandlers(app.close);
-    consola.success(`rpxd start → http://localhost:${app.port}`);
+    await banner.finish({
+      port: app.port,
+      version: cliVersion(),
+      readyMs: performance.now() - t0,
+      ...app.info,
+    });
   },
 });
 

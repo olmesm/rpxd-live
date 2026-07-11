@@ -39,6 +39,8 @@ export interface StartOptions {
 /** A running production server. */
 export interface StartedApp {
   port: number;
+  /** Resolved summary the CLI banner announces: transport/rsc and route count. */
+  info: { transport: "sse" | "ws"; rsc: boolean; routes: number };
   close(): Promise<void>;
 }
 
@@ -231,6 +233,11 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
 
   return {
     port: handle.port,
+    info: {
+      transport: config.transport?.kind ?? "sse",
+      rsc: config.rsc === true,
+      routes: routes.length + httpRoutes.length,
+    },
     // Ordered graceful shutdown: stop taking new connections, flush every warm
     // instance's snapshot to storage (§11), run the app's own cleanup, then
     // close the storage rpxd owns. Ordering matters — dispose writes snapshots,
