@@ -63,6 +63,10 @@ Each package has its own README.
 
 TDD-first — see [`CLAUDE.md`](./CLAUDE.md) for conventions.
 
+**Production:** rpxd is secure by default. Set `RPXD_SESSION_SECRET` (32+
+random bytes) before deploying — the server refuses to start without it
+unless `NODE_ENV=development`, since an unsigned session cookie is forgeable.
+
 ```sh
 bun run test        # Vitest unit + type tests
 bun run typecheck   # tsc

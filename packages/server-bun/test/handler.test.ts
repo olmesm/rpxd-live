@@ -6,7 +6,7 @@ import {
   type RpxdDiagnostic,
   redirect,
 } from "@rpxd/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { signSessionId } from "../src/cookie.ts";
 import { createRpxdHandler } from "../src/handler.ts";
 import { matchPath, matchRoute } from "../src/match.ts";
@@ -1392,6 +1392,79 @@ describe("signed session cookie — HMAC integrity (B2)", () => {
       handler.resolveSid(new Request(base, { headers: { cookie: "rpxd_sid=plain" } })),
     ).toEqual({ sid: "plain", isNew: false }); // …and read unsigned, not minted fresh
     await handler.dispose();
+  });
+});
+
+describe("fail-closed secret guard (S1)", () => {
+  /** Save/restore NODE_ENV around a case so it can't leak into sibling tests. */
+  function withNodeEnv(value: string | undefined, run: () => void | Promise<void>) {
+    const prev = process.env.NODE_ENV;
+    if (value === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = value;
+    const restore = () => {
+      if (prev === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = prev;
+    };
+    const result = run();
+    if (result instanceof Promise) return result.finally(restore);
+    restore();
+    return undefined;
+  }
+
+  it("throws mentioning RPXD_SESSION_SECRET when NODE_ENV is unset and no secret is configured", () => {
+    withNodeEnv(undefined, () => {
+      expect(() => makeHandler()).toThrow(/RPXD_SESSION_SECRET/);
+    });
+  });
+
+  it('throws when NODE_ENV is "production" and no secret is configured', () => {
+    withNodeEnv("production", () => {
+      expect(() => makeHandler()).toThrow(/RPXD_SESSION_SECRET/);
+    });
+  });
+
+  it('throws when NODE_ENV is "staging" (proves isDev, not isProd) and no secret is configured', () => {
+    withNodeEnv("staging", () => {
+      expect(() => makeHandler()).toThrow(/RPXD_SESSION_SECRET/);
+    });
+  });
+
+  it('constructs and warns once when NODE_ENV is "development" and no secret is configured', async () => {
+    // warnUnsignedSid dedupes once per module instance, and earlier tests in
+    // this file already tripped it (constructing with no secret) — reset the
+    // module registry and re-import fresh so the one-time warning is
+    // observable here rather than already-consumed.
+    await withNodeEnv("development", async () => {
+      vi.resetModules();
+      const { createRpxdHandler: freshCreateRpxdHandler } = await import("../src/handler.ts");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const handler = freshCreateRpxdHandler({
+          routes: [{ path: "/org/$orgId/board", def: boardDef }],
+          warmTtlMs: 15,
+          attachTtlMs: 60,
+        });
+        expect(handler).toBeDefined();
+        expect(warn).toHaveBeenCalledTimes(1);
+        await handler.dispose();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
+  it("constructs silently under any NODE_ENV when a sessionSecret is configured", () => {
+    for (const value of [undefined, "production", "staging", "development"]) {
+      withNodeEnv(value, () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          expect(() => makeHandler({ sessionSecret: "unit-test-secret" })).not.toThrow();
+          expect(warn).not.toHaveBeenCalled();
+        } finally {
+          warn.mockRestore();
+        }
+      });
+    }
   });
 });
 

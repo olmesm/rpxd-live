@@ -72,3 +72,4 @@ normative spec is `spec.md`; the wire protocol is
   and the browser-side client (`packages/client`), which has no server hook.
   These framework diagnostics are distinct from the domain "events" of the
   typed-broadcast feature (`Register.events` / `ctx.broadcast`).
+- **Secure by default; gate on `isDev()`, never `isProd`.** Environment-gated guards use `isDev()` from `@rpxd/core` (exactly `NODE_ENV === "development"`); the default is production. A missing/unexpected `NODE_ENV` is treated as production and keeps fail-closed guards on (e.g. an unsigned session cookie refuses to start outside dev). Never write an `isProd` check — it inverts the safe default.
