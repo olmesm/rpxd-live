@@ -104,8 +104,19 @@ export function writeChunk(res: ServerResponse, value: Uint8Array): Promise<void
   });
 }
 
-/** Stream a web `Response` back through the node response. */
-async function writeWebResponse(res: ServerResponse, webRes: Response): Promise<void> {
+/**
+ * Stream a web `Response` back through the node response. When the body
+ * stream *errors* (the egress-budget kill for a stalled client), the response
+ * is destroyed rather than ended: the write loop may be parked in
+ * {@link writeChunk} on a `drain` the stalled socket will never fire, so only
+ * a `destroy` — which fires `close` — can unstick it and reap the connection.
+ *
+ * @example
+ * ```ts
+ * await writeWebResponse(res, await handler.fetch(req));
+ * ```
+ */
+export async function writeWebResponse(res: ServerResponse, webRes: Response): Promise<void> {
   res.statusCode = webRes.status;
   for (const [key, value] of webRes.headers) {
     if (key === "set-cookie") continue;
@@ -118,6 +129,11 @@ async function writeWebResponse(res: ServerResponse, webRes: Response): Promise<
     return;
   }
   const reader = webRes.body.getReader();
+  // Body-error reap: `closed` rejects only when the source errors — a clean
+  // end or a cancel resolves it, so a normal response is never destroyed.
+  const reap = reader.closed.catch(() => {
+    res.destroy();
+  });
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -130,6 +146,7 @@ async function writeWebResponse(res: ServerResponse, webRes: Response): Promise<
   } finally {
     // Cancel (not just release) so an abandoned body's source stops producing.
     await reader.cancel().catch(() => {});
+    await reap; // ordered: the reap settles before the response is finalized
   }
   res.end();
 }
@@ -200,6 +217,9 @@ export function nodeAdapter(): ServerAdapter {
                 data,
                 send: (message: string) => client.send(message),
                 close: () => client.close(),
+                // The egress byte budget's measure (§11) — `ws` exposes the
+                // unflushed byte count as a property, the seam as a method.
+                getBufferedAmount: () => client.bufferedAmount,
               };
               websocket.open?.(socketLike);
               client.on("message", (raw) => websocket.message?.(socketLike, String(raw)));

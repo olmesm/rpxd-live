@@ -59,11 +59,17 @@ export interface RenderContext {
 /**
  * The `security`-category diagnostic `type`s the runtime emits (#8, now part of
  * the unified diagnostic sink #73) — a rejected cross-origin request, a throttle
- * rejection, a capacity-driven instance eviction, and a mount rejected at the
- * per-session cap. They reach the app as {@link RpxdDiagnostic}s with
- * `category: "security"` through {@link RpxdHandlerOptions.onDiagnostic}.
+ * rejection, a capacity-driven instance eviction, a mount rejected at the
+ * per-session cap, and a connection killed for exceeding the egress byte budget.
+ * They reach the app as {@link RpxdDiagnostic}s with `category: "security"`
+ * through {@link RpxdHandlerOptions.onDiagnostic}.
  */
-type SecurityDiagnosticType = "origin-rejected" | "rate-limited" | "cap-evicted" | "cap-rejected";
+type SecurityDiagnosticType =
+  | "origin-rejected"
+  | "rate-limited"
+  | "cap-evicted"
+  | "cap-rejected"
+  | "stream-overflow";
 
 /** Options for {@link createRpxdHandler}. */
 export interface RpxdHandlerOptions {
@@ -214,10 +220,47 @@ export interface RpxdHandlerOptions {
    * `DEFAULT_MAX_BATCH_CALLS`). Passed through to every instance.
    */
   maxBatchCalls?: number;
+  /**
+   * Egress byte budget per connection (§11 slow-consumer guard). Envelope
+   * emission never blocks the instance, so a client that reads slower than its
+   * instance produces buffers the difference in server memory — unbounded
+   * without this cap. When a connection's unsent bytes exceed the budget it is
+   * killed (the SSE stream errored with its buffer discarded; the WS socket
+   * closed) with a `security`/`stream-overflow` diagnostic, and the client's
+   * normal reconnect recovers via a full-snapshot `resync`. Because that resync
+   * rides one envelope, the budget must comfortably exceed the largest full
+   * state snapshot or a reconnecting client re-trips it forever. Healthy
+   * connections hold ~0 buffered bytes, so only laggards ever approach it.
+   * Default {@link DEFAULT_MAX_BUFFERED_BYTES} (8 MiB); `null` disables.
+   *
+   * Enforcement is bounded by what the runtime lets us observe:
+   * - **WS** — enforced continuously via the socket's `getBufferedAmount`
+   *   (Bun natively; the Node adapter maps the `ws` package's
+   *   `bufferedAmount`). Sockets without the seam are never falsely killed.
+   * - **SSE on the Node adapter** — enforced continuously: its drain-aware
+   *   write loop propagates socket backpressure into the stream queue, where
+   *   `desiredSize` sees it.
+   * - **SSE on Bun** — enforced only for bursts that land before the runtime
+   *   drains the queue (e.g. a connect-time snapshot over budget). Bun
+   *   buffers streamed responses internally without honoring `desiredSize`
+   *   (verified against Bun 1.3), so gradual lag is invisible there until Bun
+   *   exposes response backpressure — prefer `transport: ws()` or a
+   *   proxy-level idle policy for laggard protection on Bun.
+   */
+  maxBufferedBytes?: number | null;
 }
 
 /** Default rpc/control body + WS frame cap (§11 ingress DoS guard): 1 MiB. */
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+
+/**
+ * Default per-connection egress byte budget (§11 slow-consumer guard): 8 MiB —
+ * 8× the {@link DEFAULT_MAX_BODY_BYTES} ingress cap, so it comfortably clears
+ * any realistic full-snapshot envelope (see
+ * {@link RpxdHandlerOptions.maxBufferedBytes} for why it must) while bounding
+ * what a stalled client can pin in server memory.
+ */
+export const DEFAULT_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 
 /**
  * Thrown by {@link readJsonCapped} when a body exceeds the configured cap. The
@@ -397,6 +440,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     opts.maxInstancesPerSession === undefined ? 32 : opts.maxInstancesPerSession;
   // Ingress body/frame cap (§11 DoS guard): rpc/control 413s, WS frame drops.
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  // Egress budget (§11 slow-consumer guard): `null` disables, undefined → default.
+  const maxBufferedBytes =
+    opts.maxBufferedBytes === undefined ? DEFAULT_MAX_BUFFERED_BYTES : opts.maxBufferedBytes;
   /** sessionId → instanceKey → entry */
   const sessions = new Map<string, Map<string, InstanceEntry>>();
   const byInstanceId = new Map<string, InstanceEntry>();
@@ -909,33 +955,71 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     // one-shot streams — a random id keeps the registry keyed uniformly.
     const streamId = url.searchParams.get("stream") ?? crypto.randomUUID();
 
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        const encoder = new TextEncoder();
-        controller.enqueue(encoder.encode("retry: 1000\n\n"));
-        const handle = subscribeSession(
-          sid,
-          (env) => {
-            try {
-              controller.enqueue(encoder.encode(encodeSse(env)));
-            } catch {
-              // stream already closed; eviction handles cleanup
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          const encoder = new TextEncoder();
+          let handle: StreamHandle | undefined;
+          let overflowed = false;
+          // Egress budget kill (§11 slow-consumer guard): error the stream —
+          // discarding its buffered queue, the memory being protected — and
+          // detach its listeners so eviction re-arms. The client's reconnect
+          // recovers via the full-snapshot resync on re-subscribe.
+          const kill = () => {
+            overflowed = true;
+            emitSecurity("stream-overflow", { sid, transport: "sse" });
+            if (handle) {
+              unregisterStream(sid, streamId);
+              handle.cleanup();
             }
-          },
-          { token: attachToken, seq: attachSeq },
-        );
-        registerStream(sid, streamId, handle);
-        req.signal.addEventListener("abort", () => {
-          unregisterStream(sid, streamId);
-          handle.cleanup();
-          try {
-            controller.close();
-          } catch {
-            // already closed
+            try {
+              controller.error(new Error("egress buffer exceeded maxBufferedBytes"));
+            } catch {
+              // already closed/errored
+            }
+          };
+          controller.enqueue(encoder.encode("retry: 1000\n\n"));
+          const h = subscribeSession(
+            sid,
+            (env) => {
+              if (overflowed) return;
+              try {
+                controller.enqueue(encoder.encode(encodeSse(env)));
+              } catch {
+                return; // stream already closed; eviction handles cleanup
+              }
+              // With the byte-length strategy below, desiredSize < 0 ⇔ unread
+              // bytes exceed the budget — the reader isn't keeping up.
+              if (maxBufferedBytes != null && (controller.desiredSize ?? 0) < 0) kill();
+            },
+            { token: attachToken, seq: attachSeq },
+          );
+          handle = h;
+          if (overflowed) {
+            // The kill fired during the initial snapshot fan-out, before the
+            // handle existed — finish its cleanup now, and never register.
+            h.cleanup();
+            return;
           }
-        });
+          registerStream(sid, streamId, h);
+          req.signal.addEventListener("abort", () => {
+            unregisterStream(sid, streamId);
+            h.cleanup();
+            try {
+              controller.close();
+            } catch {
+              // already closed
+            }
+          });
+        },
       },
-    });
+      // The budget is bytes, so measure the queue in bytes: desiredSize turns
+      // negative once unread chunks outweigh the budget. No strategy (chunk
+      // counting) when the budget is off.
+      maxBufferedBytes != null
+        ? new ByteLengthQueuingStrategy({ highWaterMark: maxBufferedBytes })
+        : undefined,
+    );
 
     return new Response(stream, {
       headers: {
@@ -1440,6 +1524,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
      * rejections and socket-message faults report through the same seam as
      * SSE/POST. Already wrapped, so a throw from the app sink is swallowed. */
     emit,
+
+    /** The resolved egress byte budget (§11, `null` = disabled) — shared with
+     * the WS transport so both transports enforce one budget. */
+    maxBufferedBytes,
 
     /** Test/introspection hook: number of live instances across sessions. */
     get instanceCount(): number {

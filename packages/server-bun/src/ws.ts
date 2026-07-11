@@ -41,10 +41,32 @@ export function wsTransport(
   const websocket: WebSocketHandlers = {
     open(socket: SocketLike) {
       const data = socket.data as WsData;
+      // Egress byte budget (§11 slow-consumer guard): after each send, a socket
+      // buffering more unsent bytes than the budget is killed — closing frees
+      // the buffer, and the client's reconnect recovers via the resync
+      // snapshot. Enforced only when the adapter exposes `getBufferedAmount`
+      // (unmeasurable sockets are never falsely killed).
+      const budget = handler.maxBufferedBytes;
+      let killed = false;
       data.session = handler.socket(
         data.sid,
         data.sessionData,
-        (env) => socket.send(JSON.stringify(env)),
+        (env) => {
+          if (killed) return; // close may not have round-tripped yet
+          socket.send(JSON.stringify(env));
+          if (budget == null) return;
+          const buffered = socket.getBufferedAmount?.();
+          if (buffered !== undefined && buffered > budget) {
+            killed = true;
+            handler.emit({
+              category: "security",
+              type: "stream-overflow",
+              level: "warn",
+              detail: { sid: data.sid, transport: "ws", buffered },
+            });
+            socket.close(); // the close callback below tears down the session
+          }
+        },
         data.attach,
       );
     },

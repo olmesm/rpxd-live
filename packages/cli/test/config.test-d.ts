@@ -17,6 +17,7 @@ describe("RpxdConfig instance/observability knobs", () => {
           | "unattachedTtlMs"
           | "maxUnattachedInstances"
           | "maxInstancesPerSession"
+          | "maxBufferedBytes"
         >
       | undefined
     >();
