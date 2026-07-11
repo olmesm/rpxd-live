@@ -1081,6 +1081,72 @@ describe("protocol version check (W1)", () => {
   });
 });
 
+describe("malformed batch.calls crash-guard (channel pipeline, increment 1)", () => {
+  it("acks a ProtocolError instead of throwing when calls is null", async () => {
+    const { inst, envelopes } = await make(baseDef);
+    await expect(
+      inst.handleBatch({
+        v: PROTOCOL_VERSION,
+        instance: "x",
+        rpcId: "c1",
+        // biome-ignore lint/suspicious/noExplicitAny: exercising a malformed wire payload on purpose
+        calls: null as any,
+      }),
+    ).resolves.toBeUndefined();
+    const ack = envelopes.find((e) => e.rpcId === "c1");
+    expect(ack).toBeDefined();
+    expect(ack?.error?.name).toBe("ProtocolError");
+    expect(inst.state.todos).toHaveLength(0);
+  });
+
+  it("acks a ProtocolError instead of throwing when calls is undefined", async () => {
+    const { inst, envelopes } = await make(baseDef);
+    await expect(
+      inst.handleBatch({
+        v: PROTOCOL_VERSION,
+        instance: "x",
+        rpcId: "c2",
+        // biome-ignore lint/suspicious/noExplicitAny: exercising a malformed wire payload on purpose
+        calls: undefined as any,
+      }),
+    ).resolves.toBeUndefined();
+    const ack = envelopes.find((e) => e.rpcId === "c2");
+    expect(ack).toBeDefined();
+    expect(ack?.error?.name).toBe("ProtocolError");
+  });
+
+  it("acks a ProtocolError instead of throwing when calls is a non-array object", async () => {
+    const { inst, envelopes } = await make(baseDef);
+    await expect(
+      inst.handleBatch({
+        v: PROTOCOL_VERSION,
+        instance: "x",
+        rpcId: "c3",
+        // biome-ignore lint/suspicious/noExplicitAny: exercising a malformed wire payload on purpose
+        calls: 42 as any,
+      }),
+    ).resolves.toBeUndefined();
+    const ack = envelopes.find((e) => e.rpcId === "c3");
+    expect(ack).toBeDefined();
+    expect(ack?.error?.name).toBe("ProtocolError");
+  });
+
+  it("does not throw and does not ack when rpcId itself is malformed", async () => {
+    const { inst, envelopes } = await make(baseDef);
+    await expect(
+      inst.handleBatch({
+        v: PROTOCOL_VERSION,
+        instance: "x",
+        // biome-ignore lint/suspicious/noExplicitAny: exercising a malformed wire payload on purpose
+        rpcId: 123 as any,
+        // biome-ignore lint/suspicious/noExplicitAny: exercising a malformed wire payload on purpose
+        calls: null as any,
+      }),
+    ).resolves.toBeUndefined();
+    expect(envelopes).toHaveLength(0);
+  });
+});
+
 describe("diagnostic sink (#73)", () => {
   it("emits a structured instance/load-failed diagnostic to an injected sink", async () => {
     const events: RpxdDiagnostic[] = [];

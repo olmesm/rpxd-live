@@ -6,6 +6,7 @@
  *
  * @packageDocumentation
  */
+export { type BatchDecodeError, type DecodedBatch, decodeBatch } from "./decode.ts";
 export {
   defaultDiagnosticSink,
   makeDiagnosticEmit,
@@ -43,6 +44,7 @@ export {
   type Url,
 } from "./live.ts";
 export { matchHttpPath, matchHttpRoute, matchPath, matchRoute, type RouteMatch } from "./match.ts";
+export { runPipeline, type Stage, type StageResult } from "./pipeline.ts";
 export { isRedirect, RedirectError, redirect } from "./redirect.ts";
 export {
   isRoute,
