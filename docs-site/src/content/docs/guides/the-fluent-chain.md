@@ -50,7 +50,8 @@ export default live("/org/$orgId/board")
 
 ### `.setup((ctx) => state)`
 
-Runs server-side on page load (and on cold wake), **synchronously**. Returns the
+Runs server-side on page load (and on a cold wake — when an instance is
+rebuilt from scratch), **synchronously**. Returns the
 initial state skeleton; its shape **locks the state type** for `guard`, `load`,
 every `rpc`, `on`, and `render`. Path params (`orgId`) are typed from the path
 literal, on `ctx.params`. Call `ctx.subscribe` here to join pubsub topics. Being

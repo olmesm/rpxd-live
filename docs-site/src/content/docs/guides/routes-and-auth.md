@@ -331,5 +331,5 @@ my-app/
 ```
 
 Dependency direction stays one-way: `routes/` → `domain/` → `adapters/`. Routes
-touch `adapters/` only at the two seams that *are* the web layer's job — the
+touch `adapters/` only at the two points that *are* the web layer's job — the
 `authenticate` hook and the `api.auth` delegation.

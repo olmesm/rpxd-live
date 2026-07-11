@@ -10,11 +10,13 @@ token stream, a long import — without blocking anything else on the page.
 
 Handlers are plain `async (payload, ctx)` functions. The one rule: **all state
 writes go through `ctx.patchState(mutator)`**, a synchronous Immer mutator on a
-fresh draft. Each `patchState` sends clients exactly one patch message.
+fresh draft. Every flush — a round of writes sent to clients — produces exactly
+one patch message.
 
 ## Streaming is just a loop
 
-Because each `patchState` is one message, streaming is a `for await` loop. And
+Because each `patchState` flushes as one message, streaming is a `for await`
+loop. And
 string-suffix growth (`s.answer += delta`) compiles to an `append` patch op
 carrying only the delta — so a token stream costs **O(delta)** on the wire,
 not O(total):
