@@ -14,7 +14,8 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build": "bun --filter='./packages/*' run build"
   },
   "engines": {
     "node": ">=24"
@@ -28,7 +29,8 @@
     "react-server-dom-webpack": "^19.2.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "zshy": "^0.7.3"
   },
   "overrides": {
     "@hono/node-server": "^1.19.13",

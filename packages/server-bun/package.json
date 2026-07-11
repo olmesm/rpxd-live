@@ -6,6 +6,18 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "zshy -p ../../tsconfig.base.json"
+  },
+  "zshy": {
+    "cjs": false,
+    "exports": {
+      ".": "./src/index.ts"
+    }
+  },
   "dependencies": {
     "@rpxd/core": "workspace:*"
   },
