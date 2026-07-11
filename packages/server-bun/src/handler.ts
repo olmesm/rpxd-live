@@ -214,6 +214,28 @@ export interface RpxdHandlerOptions {
    * `DEFAULT_MAX_BATCH_CALLS`). Passed through to every instance.
    */
   maxBatchCalls?: number;
+  /**
+   * Depth at which an instance's single queue — the one serialization point
+   * for patchState flushes, loader writes, rpc commits/acks, snapshot writes,
+   * AND broadcast `on` handler runs — is considered backlogged. Fires one
+   * `instance/queue-backlog` diagnostic per backlog episode (re-arms once
+   * depth drains back under this value); pure observability, nothing is ever
+   * dropped or rejected because of it. Defaults to `maxBatchCalls * 2`.
+   * Passed through to every instance.
+   */
+  warnQueueDepth?: number;
+  /**
+   * Opt-in cap on outstanding broadcast/event (`on` handler) runs per
+   * instance — the *only* enqueue this can drop. The instance's queue is
+   * shared with state-critical work (patchState/load/rpc/snapshot), and a
+   * blanket queue-depth cap would reject that too — unsafe. So this counts
+   * and caps only broadcast/event enqueues: past the cap, an excess broadcast
+   * is dropped (never enqueued) with an `instance/broadcast-dropped`
+   * diagnostic, while every other queued write still lands. Default
+   * `undefined` (unbounded — today's behavior). Passed through to every
+   * instance.
+   */
+  maxBroadcastBacklog?: number;
 }
 
 /** Default rpc/control body + WS frame cap (§11 ingress DoS guard): 1 MiB. */
@@ -624,6 +646,8 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       storageKey: `${sid}:${pathname}`,
       defaultRateLimit: opts.defaultRateLimit,
       maxBatchCalls: opts.maxBatchCalls,
+      warnQueueDepth: opts.warnQueueDepth,
+      maxBroadcastBacklog: opts.maxBroadcastBacklog,
       emit,
     });
     try {
