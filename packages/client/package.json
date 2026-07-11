@@ -7,6 +7,19 @@
     ".": "./src/index.ts",
     "./react": "./src/react.ts"
   },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "zshy -p ../../tsconfig.base.json"
+  },
+  "zshy": {
+    "cjs": false,
+    "exports": {
+      ".": "./src/index.ts",
+      "./react": "./src/react.ts"
+    }
+  },
   "dependencies": {
     "@rpxd/core": "workspace:*",
     "immer": "^11.1.11",

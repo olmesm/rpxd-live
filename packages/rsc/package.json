@@ -10,6 +10,21 @@
     },
     "./client": "./src/client.ts"
   },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "zshy -p ../../tsconfig.base.json"
+  },
+  "zshy": {
+    "cjs": false,
+    "noEdit": true,
+    "exports": {
+      ".": "./src/server.ts",
+      "./server-stub": "./src/server-stub.ts",
+      "./client": "./src/client.ts"
+    }
+  },
   "peerDependencies": {
     "react": ">=19",
     "react-dom": ">=19"
