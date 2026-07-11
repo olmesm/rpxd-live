@@ -1400,7 +1400,12 @@ describe("signed session cookie — HMAC integrity (B2)", () => {
     const prev = process.env.RPXD_SESSION_SECRET;
     process.env.RPXD_SESSION_SECRET = "env-secret";
     try {
-      const handler = makeHandler(); // no sessionSecret option → falls back to the env var
+      // makeBareHandler, not makeHandler: makeHandler's own convenience default
+      // injects `cookie: { sign: false }` when neither `sessionSecret` nor
+      // `cookie` is in overrides (see its comment) — which would now (#95)
+      // force unsigned regardless of this env var. makeBareHandler is the
+      // true unconfigured default this test actually wants to exercise.
+      const handler = makeBareHandler(); // no sessionSecret option → falls back to the env var
       const value =
         /rpxd_sid=([^;]+)/.exec(
           (await handler.fetch(new Request(`${base}/org/7/board`))).headers.get("set-cookie") ?? "",
@@ -1451,6 +1456,39 @@ describe("signed session cookie — HMAC integrity (B2)", () => {
       handler.resolveSid(new Request(base, { headers: { cookie: "rpxd_sid=plain" } })),
     ).toEqual({ sid: "plain", isNew: false }); // …and read unsigned, not minted fresh
     await handler.dispose();
+  });
+
+  it("cookie.sign:false stays unsigned even when a sessionSecret option IS given (#95: explicit opt-out always wins)", async () => {
+    // Since #95, the CLI propagates a resolved secret into
+    // process.env.RPXD_SESSION_SECRET for rsc()/the SSR verifier to share —
+    // which means a secret can be "available" (via the option here, or via
+    // that env var) even for an app that explicitly asked for cookie.sign:false.
+    // The escape hatch must still mean what it says: never signed, regardless
+    // of what secret happens to be configured or sitting in the environment.
+    const handler = makeHandler({ sessionSecret: "available-secret", cookie: { sign: false } });
+    const value =
+      /rpxd_sid=([^;]+)/.exec(
+        (await handler.fetch(new Request(`${base}/org/7/board`))).headers.get("set-cookie") ?? "",
+      )?.[1] ?? "";
+    expect(value).not.toContain("."); // bare uuid, not <sid>.<mac> — not signed with the available secret
+    await handler.dispose();
+  });
+
+  it("cookie.sign:false stays unsigned even when RPXD_SESSION_SECRET is set in the environment (#95)", async () => {
+    const prev = process.env.RPXD_SESSION_SECRET;
+    process.env.RPXD_SESSION_SECRET = "env-secret-that-should-be-ignored";
+    try {
+      const handler = makeHandler({ cookie: { sign: false } });
+      const value =
+        /rpxd_sid=([^;]+)/.exec(
+          (await handler.fetch(new Request(`${base}/org/7/board`))).headers.get("set-cookie") ?? "",
+        )?.[1] ?? "";
+      expect(value).not.toContain(".");
+      await handler.dispose();
+    } finally {
+      if (prev === undefined) delete process.env.RPXD_SESSION_SECRET;
+      else process.env.RPXD_SESSION_SECRET = prev;
+    }
   });
 
   it("signs the sid by default in dev when no secret is configured — dev is no longer forgeable (S1)", async () => {

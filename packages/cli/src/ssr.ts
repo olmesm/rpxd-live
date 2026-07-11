@@ -10,8 +10,14 @@
  * non-suspending trees, and resolving Flight client references (§16)
  * suspends — which `renderToString` cannot do.
  */
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { LiveRoute, SyncState } from "@rpxd/core";
-import { configureRscRuntime, flightStream, hydrateRscFields } from "@rpxd/rsc/client";
+import {
+  configureRscRuntime,
+  flightStream,
+  hydrateRscFields,
+  type RscField,
+} from "@rpxd/rsc/client";
 import { makeDiagnosticEmit, type RenderContext } from "@rpxd/server-bun";
 import { createElement, type FunctionComponent, type ReactElement, type ReactNode } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
@@ -21,12 +27,52 @@ import { renderToReadableStream } from "react-dom/server.edge";
 // unified `request` taxonomy.
 const emit = makeDiagnosticEmit();
 
+/**
+ * Build the SSR-side RSC-field verifier (§16, #95): an HMAC-SHA256 check over
+ * the payload, matching `signRscField` in `packages/rsc/src/server.ts` byte
+ * for byte — same algorithm (hex digest), same env var
+ * (`RPXD_SESSION_SECRET`). `rsc()` runs in the react-server graph and this
+ * verifier runs in the ssr graph — separate module graphs in the same
+ * process — so that env var is the only channel carrying the shared secret
+ * between them. `node:crypto` stays inline here (not in `@rpxd/rsc`'s
+ * `client.ts`/`shared.ts`, which are browser-imported and must stay
+ * crypto-free); `timingSafeEqual` compares the MAC bytes so a forged tag
+ * can't be brute-forced via response-time differences.
+ *
+ * Returns `undefined` when no secret is configured, so
+ * `configureRscRuntime` gets no verifier and deserializes unverified
+ * (back-compat: an explicit `cookie.sign:false` opts out of the whole B2/#95
+ * secret machinery; with #122 dev always has a secret otherwise, so this only
+ * happens in that opt-out).
+ *
+ * @example
+ * ```ts
+ * const verify = makeRscVerifier();
+ * verify?.({ $rsc: "<p/>", $rscTag: "…" }); // true only if the HMAC checks out
+ * ```
+ */
+export function makeRscVerifier(): ((field: RscField) => boolean) | undefined {
+  const secret = process.env.RPXD_SESSION_SECRET;
+  if (!secret) return undefined;
+  return (field: RscField): boolean => {
+    if (!field.$rscTag) return false; // a secret exists — an untagged field is unverifiable, not trusted
+    // Matching algorithm: HMAC-SHA256 hex digest — must mirror server.ts's signRscField.
+    const want = createHmac("sha256", secret).update(field.$rsc).digest("hex");
+    const got = Buffer.from(field.$rscTag);
+    const wantBuf = Buffer.from(want);
+    return got.length === wantBuf.length && timingSafeEqual(got, wantBuf);
+  };
+}
+
 let flightRuntimeReady: Promise<void> | undefined;
 
-/** Install the server-graph Flight deserializer once (§16). */
+/** Install the server-graph Flight deserializer once (§16), verified (#95) when a secret is configured. */
 function ensureFlightRuntime(): Promise<void> {
   flightRuntimeReady ??= import("@vitejs/plugin-rsc/ssr").then(({ createFromReadableStream }) => {
-    configureRscRuntime((payload) => createFromReadableStream(flightStream(payload)));
+    configureRscRuntime(
+      (payload) => createFromReadableStream(flightStream(payload)),
+      makeRscVerifier(),
+    );
   });
   return flightRuntimeReady;
 }

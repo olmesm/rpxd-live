@@ -2,27 +2,42 @@
  * Marker shape for RSC fields (§16): an opaque serialized subtree in state.
  *
  * `$rsc` is a **reserved key**. Only `rsc()` (`packages/rsc/src/server.ts`)
- * should ever produce a value of this shape. Never place user-controlled
- * data into state as `{ $rsc: string }` — the check below is purely
- * structural (see {@link isRscField}), so a coincidental or hostile object
- * with this shape is indistinguishable from a genuine Flight payload and
- * will be handed to the Flight deserializer on the client/SSR. A
- * non-forgeable brand for this marker is tracked as a follow-up (issue #95);
- * until then, this is an app-author invariant, not an enforced one.
+ * should ever produce a value of this shape. Since #95, genuine `rsc()`
+ * output is HMAC-branded: `$rscTag` is `HMAC-SHA256(payload,
+ * RPXD_SESSION_SECRET)` (hex), stamped server-side when a secret is
+ * configured. Verification is **SSR-only** — the SSR deserializer
+ * (`packages/cli/src/ssr.ts`) checks `$rscTag` before handing the payload to
+ * `createFromReadableStream`, so a forged/tampered `{ $rsc }` value placed in
+ * state can't be Flight-deserialized there. The browser never verifies: it
+ * has no server secret to check against, and doesn't need one — an RSC field
+ * only ever reaches the browser over the authenticated, IDOR-protected
+ * server→client stream (SSE/WS), not from anything the browser could inject
+ * into state itself. The check below ({@link isRscField}) stays purely
+ * structural regardless — `$rscTag` is optional and unchecked by it, since
+ * verifying is the SSR deserializer's job, not this predicate's.
  */
 export interface RscField {
   /** Serialized server-rendered subtree. Opaque — never touch it in reducers. */
   $rsc: string;
+  /**
+   * HMAC-SHA256(payload, RPXD_SESSION_SECRET) hex digest, stamped by `rsc()`
+   * when a secret is configured (#95, SSR-only brand). Verified by the SSR
+   * deserializer only — the browser trusts the field unconditionally (see
+   * {@link RscField}). Absent when `rsc()` ran with no secret configured
+   * (`cookie.sign:false`, or no secret at all — back-compat, never throws).
+   */
+  $rscTag?: string;
 }
 
 /**
  * True when a state value is an RSC field marker.
  *
- * This check is **structural only** — it does not verify that the payload
- * was actually produced by `rsc()`. `$rsc` is a reserved key: app code must
- * never place user-controlled data into state in this shape, since anything
- * matching `{ $rsc: string }` is treated as a trusted Flight payload and
- * passed to `createFromReadableStream` (see {@link RscField}).
+ * This check is **structural only** — it does not verify `$rscTag` (see
+ * {@link RscField}). `$rsc` is a reserved key: app code must never place
+ * user-controlled data into state in this shape, since anything matching
+ * `{ $rsc: string }` is recognized as an RSC field marker and routed to the
+ * Flight deserializer (SSR verifies the brand first; the browser trusts the
+ * authenticated stream it arrived over).
  *
  * @example
  * ```ts
