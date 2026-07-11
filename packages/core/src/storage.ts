@@ -26,6 +26,22 @@ export interface PubSubBus {
   /** Returns an unsubscribe function. */
   subscribe(topic: string, subscriberId: string, fn: (msg: BroadcastMessage) => void): () => void;
   /**
+   * Await this bus's in-flight LOCAL (this-process) deliveries — the test
+   * harness's {@link StorageAdapter} `settled()` awaits it so a broadcast fired
+   * during settling lands before assertions run. `publish` stays fire-and-forget
+   * `void` (never block the instance, §8); `drain` is the only awaitable seam.
+   * The guarantee is scoped to local delivery — true cross-node fan-out is not
+   * modelled by a single-process bus. Optional so third-party buses stay
+   * compatible; a synchronous bus (see {@link LocalBus}) resolves immediately.
+   *
+   * @example
+   * ```ts
+   * bus.publish(msg);   // fire-and-forget, returns void
+   * await bus.drain?.(); // resolves once local delivery has settled
+   * ```
+   */
+  drain?(): Promise<void>;
+  /**
    * Inject the app's event sink (#73) so bus-internal faults — a throwing
    * subscriber, a dropped malformed message, a failed network publish — report
    * as structured `storage`-category events instead of bare `console.error`.
@@ -111,6 +127,13 @@ export class LocalBus implements PubSubBus {
       }
     }
   }
+
+  /**
+   * `LocalBus` delivers synchronously inside {@link publish}, so nothing is ever
+   * in flight — `drain` is an already-resolved no-op, present to satisfy the
+   * test harness's `settled()`.
+   */
+  async drain(): Promise<void> {}
 
   subscribe(topic: string, subscriberId: string, fn: (msg: BroadcastMessage) => void): () => void {
     let subs = this.#topics.get(topic);

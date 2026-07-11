@@ -1,4 +1,13 @@
-import { isRedirect, live, memory, redirect, type StorageAdapter } from "@rpxd/core";
+import {
+  type BroadcastMessage,
+  isRedirect,
+  LocalBus,
+  live,
+  memory,
+  type PubSubBus,
+  redirect,
+  type StorageAdapter,
+} from "@rpxd/core";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { testLive } from "../src/index.ts";
@@ -172,6 +181,39 @@ describe("testLive: broadcast injection + search params", () => {
     t.broadcast("room:1", "user.joined", { name: "ada" });
     await t.settled();
     expect(t.state.log).toEqual(["joined:ada"]);
+    await t.dispose();
+  });
+
+  it("settled() drains an async bus so a broadcast's reaction is visible (#66)", async () => {
+    // A bus whose local delivery is deferred until drain() runs — modelling a
+    // network bus (redis) where publish is fire-and-forget and delivery lands
+    // out of band. settled() must await drain() or the reaction is invisible.
+    class DeferredBus implements PubSubBus {
+      #inner = new LocalBus();
+      #pending: Array<() => void> = [];
+      publish(msg: BroadcastMessage): void {
+        // fire-and-forget: queue local delivery, return immediately (void).
+        this.#pending.push(() => this.#inner.publish(msg));
+      }
+      subscribe(topic: string, id: string, fn: (m: BroadcastMessage) => void): () => void {
+        return this.#inner.subscribe(topic, id, fn);
+      }
+      async drain(): Promise<void> {
+        const jobs = this.#pending;
+        this.#pending = [];
+        for (const job of jobs) job();
+        await Promise.resolve();
+      }
+    }
+    const base = memory();
+    const storage: StorageAdapter = { ...base, bus: new DeferredBus() };
+
+    const t = await testLive(roomRoute, { storage });
+    t.broadcast("room:1", "user.joined", { name: "ada" });
+    // Without settled() draining the bus, delivery is still pending here.
+    expect(t.state.log).toEqual([]);
+    await t.settled();
+    expect(t.state.log).toEqual(["joined:ada"]); // settled() awaited the deferred delivery
     await t.dispose();
   });
 

@@ -35,3 +35,18 @@ describe("LocalBus subscriber isolation", () => {
     expect(() => bus.publish(msg())).not.toThrow();
   });
 });
+
+describe("LocalBus.drain (test-harness settled support)", () => {
+  it("delivers synchronously inside publish, so drain after publish is a resolved no-op", async () => {
+    const bus = new LocalBus();
+    const seen: string[] = [];
+    bus.subscribe("room:1", "a", (m) => seen.push(m.event));
+
+    bus.publish(msg({ event: "hi" }));
+    // Delivery already happened synchronously — nothing is ever "in flight".
+    expect(seen).toEqual(["hi"]);
+
+    await expect(bus.drain()).resolves.toBeUndefined();
+    expect(seen).toEqual(["hi"]); // drain neither re-delivers nor loses anything
+  });
+});
