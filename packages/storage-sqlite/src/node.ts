@@ -70,5 +70,8 @@ export function sqliteNode(path: string): StorageAdapter {
       remove.run(key);
     },
     bus: new LocalBus(),
+    close: () => {
+      db.close();
+    },
   };
 }

@@ -53,6 +53,13 @@ export interface StorageAdapter {
   set(key: string, snap: Snapshot): Promise<void> | void;
   delete(key: string): Promise<void> | void;
   bus: PubSubBus;
+  /**
+   * Release any resources the adapter *owns* (e.g. an sqlite `Database` handle),
+   * called on graceful shutdown after snapshots are flushed. Optional: adapters
+   * over a caller-provided client (redis) leave closing that client to the app's
+   * `onShutdown` hook, since they don't own its lifecycle.
+   */
+  close?(): void | Promise<void>;
 }
 
 /**

@@ -85,10 +85,13 @@ const start = defineCommand({
   args: serveArgs,
   run: async ({ args }) => {
     const { startApp } = await import("./start.ts");
+    const { installShutdownHandlers } = await import("./shutdown.ts");
     const app = await startApp(process.cwd(), {
       port: resolvePort(args),
       overrides: overridesFrom(args),
     });
+    // Flush warm snapshots + run cleanup on SIGTERM/SIGINT (containers, Ctrl-C).
+    installShutdownHandlers(app.close);
     consola.success(`rpxd start → http://localhost:${app.port}`);
   },
 });

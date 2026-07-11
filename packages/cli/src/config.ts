@@ -88,6 +88,14 @@ export interface RpxdConfig {
    */
   throttle?: { key: (req: Request) => string | null; limit: RateLimit };
   /**
+   * Userland cleanup on graceful shutdown (`SIGTERM`/`SIGINT` under `rpxd
+   * start`). Runs after warm snapshots flush and before rpxd closes its own
+   * storage — the place to close resources the app owns, e.g. an auth/Prisma
+   * client: `onShutdown: () => prisma.$disconnect()`. rpxd closes the storage
+   * adapter it created itself.
+   */
+  onShutdown?: () => void | Promise<void>;
+  /**
    * Tuning knobs for the in-memory instance registry (§11): warm/attach TTLs
    * and the capacity caps that bound memory under scan floods or a runaway
    * session (#61 — see each field's doc on {@link RpxdHandlerOptions} for

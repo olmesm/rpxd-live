@@ -18,6 +18,14 @@ describe("sqlite storage adapter", () => {
     expect(storage.get("k1")).toBeUndefined();
   });
 
+  it("close() releases the db handle it owns (graceful shutdown)", () => {
+    const storage = sqlite(":memory:");
+    storage.set("k", { state: {}, session: {}, seq: 1, version: "v1" });
+    expect(storage.close).toBeDefined();
+    storage.close?.();
+    expect(() => storage.get("k")).toThrow(); // closed handle → further ops throw
+  });
+
   it("backs a LiveInstance write-through + session continuity (§9)", async () => {
     const storage = sqlite(":memory:");
     // Filter is view state → the `load` loader writes page state (§7). Page
