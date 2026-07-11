@@ -26,6 +26,7 @@ import {
   type RpxdConfig,
 } from "./config.ts";
 import type { ShellAssets, ShellComponents, SsrRuntime } from "./render.ts";
+import { runCloseSequence } from "./shutdown.ts";
 
 /** Options for {@link startApp}. */
 export interface StartOptions {
@@ -237,9 +238,17 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
       rsc: config.rsc === true,
       routes: routes.length + httpRoutes.length,
     },
-    async close() {
-      await handler.dispose();
-      await handle.stop();
-    },
+    // Ordered graceful shutdown: stop taking new connections, flush every warm
+    // instance's snapshot to storage (§11), run the app's own cleanup, then
+    // close the storage rpxd owns. Ordering matters — dispose writes snapshots,
+    // so storage must still be open for it, and `onShutdown` runs before we
+    // close storage in case the app touches it.
+    close: () =>
+      runCloseSequence({
+        stop: () => handle.stop(),
+        dispose: () => handler.dispose(),
+        onShutdown: config.onShutdown,
+        closeStorage: config.storage?.close?.bind(config.storage),
+      }),
   };
 }

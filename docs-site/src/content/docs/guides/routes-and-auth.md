@@ -183,6 +183,13 @@ behaves the same whether the visitor typed the URL or clicked a link. (A plain
 `throw` still routes to `__error` — `redirect` is the specific, recognised
 signal.)
 
+**The target autocompletes your routes.** `redirect("…")` suggests your app's
+registered paths — the same `Register["routes"]` union that types `Link` and
+`nav`. Unlike `Link` (which takes a path *pattern* plus typed `params`), a
+redirect target is a *final URL*, so the type stays open: registered paths
+autocomplete, while a dynamic value, a query string (`/login?next=…`), or a
+non-page path like `/403` all still type-check.
+
 ## Auth transitions re-run `setup`
 
 `setup` reads `ctx.session` once when it builds the skeleton, and `guard` /

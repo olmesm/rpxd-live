@@ -9,7 +9,14 @@
  *
  * @packageDocumentation
  */
-import type { BroadcastMessage, PubSubBus, Snapshot, StorageAdapter } from "@rpxd/core";
+import {
+  type BroadcastMessage,
+  makeEmit,
+  type PubSubBus,
+  type RpxdEventSink,
+  type Snapshot,
+  type StorageAdapter,
+} from "@rpxd/core";
 
 /** The slice of a redis client rpxd needs. Sync returns are fine for fakes. */
 export interface RedisLikeClient {
@@ -57,20 +64,53 @@ class RedisBus implements PubSubBus {
   private readonly client: RedisLikeClient;
   private readonly prefix: string;
   private readonly channels = new Map<string, ChannelEntry>();
+  private emit: RpxdEventSink = makeEmit();
+  // In-flight publishes, tracked so the test harness's settled() can await that
+  // the PUBLISH commands it fired have been accepted (and local subscribers on
+  // this node notified) — never remote-node processing, which is out of scope.
+  private readonly pending = new Set<Promise<void>>();
   constructor(client: RedisLikeClient, prefix: string) {
     this.client = client;
     this.prefix = prefix;
+  }
+
+  setEmit(emit: RpxdEventSink): void {
+    this.emit = makeEmit(emit);
   }
 
   publish(msg: BroadcastMessage): void {
     // Surface (rather than drop) a publish failure: a bare `void` on a
     // rejecting promise is an unhandled rejection, which crashes Node under the
     // default --unhandled-rejections=throw.
-    Promise.resolve(
+    const p = Promise.resolve(
       this.client.publish(`${this.prefix}bus:${msg.topic}`, JSON.stringify(msg)),
-    ).catch((err) => {
-      console.error(`[rpxd] redis publish to "${msg.topic}" failed:`, err);
-    });
+    )
+      .then(() => {})
+      .catch((err) => {
+        this.emit({
+          category: "storage",
+          type: "redis-publish-failed",
+          level: "error",
+          error: err,
+          detail: { topic: msg.topic },
+        });
+      })
+      .finally(() => {
+        this.pending.delete(p);
+      });
+    // Track without awaiting: publish stays fire-and-forget `void` (§8). Only
+    // drain() below awaits these, so a failing publish is already caught and
+    // never re-thrown at a drain() awaiter.
+    this.pending.add(p);
+  }
+
+  /**
+   * Await the PUBLISH commands fired so far to be accepted (and local
+   * subscribers notified). Scoped to this node's delivery — cross-node
+   * processing is not, and cannot be, awaited here. See {@link PubSubBus.drain}.
+   */
+  async drain(): Promise<void> {
+    await Promise.all([...this.pending]);
   }
 
   subscribe(topic: string, subscriberId: string, fn: (msg: BroadcastMessage) => void): () => void {
@@ -101,7 +141,13 @@ class RedisBus implements PubSubBus {
           try {
             msg = JSON.parse(raw) as BroadcastMessage;
           } catch (err) {
-            console.error(`[rpxd] redis: dropped malformed message on "${topic}":`, err);
+            this.emit({
+              category: "storage",
+              type: "malformed-message-dropped",
+              level: "warn",
+              error: err,
+              detail: { topic },
+            });
             return;
           }
           // Snapshot: a subscriber unsubscribing mid-fan-out can't disturb iteration.
@@ -116,7 +162,13 @@ class RedisBus implements PubSubBus {
           else entry.unsub = u;
         })
         .catch((err) => {
-          console.error(`[rpxd] redis subscribe to "${topic}" failed:`, err);
+          this.emit({
+            category: "storage",
+            type: "redis-subscribe-failed",
+            level: "error",
+            error: err,
+            detail: { topic },
+          });
         });
     }
 

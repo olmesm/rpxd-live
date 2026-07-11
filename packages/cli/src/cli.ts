@@ -114,17 +114,20 @@ const start = defineCommand({
   meta: { name: "start", description: "Serve the build from pure Bun (no Vite)" },
   args: serveArgs,
   run: async ({ args }) => {
-    const [{ startApp }, { startBanner }] = await Promise.all([
+    const [{ startApp }, { startBanner }, { installShutdownHandlers }] = await Promise.all([
       import("./start.ts"),
       import("./banner.ts"),
+      import("./shutdown.ts"),
     ]);
-    // Prod gets the locked frame, no animation; same BORING escape hatch.
+    // Prod gets the settled frame, no animation; same BORING escape hatch.
     const banner = startBanner({ command: "start" });
     const t0 = performance.now();
     const app = await startApp(process.cwd(), {
       port: resolvePort(args),
       overrides: overridesFrom(args),
     });
+    // Flush warm snapshots + run cleanup on SIGTERM/SIGINT (containers, Ctrl-C).
+    installShutdownHandlers(app.close);
     await banner.finish({
       port: app.port,
       version: cliVersion(),

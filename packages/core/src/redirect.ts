@@ -7,6 +7,8 @@
  * the framework's. `guard` is auth's home (§7).
  */
 
+import type { RedirectTarget } from "./register.ts";
+
 /**
  * The signal a rejected hook throws to redirect. Carries the target
  * `location` and HTTP `status` (302 by default). Branded so `isRedirect`
@@ -35,15 +37,19 @@ export class RedirectError extends Error {
 /**
  * Build a {@link RedirectError} to throw from `setup`/`guard`/`load` (§10).
  *
+ * `to` autocompletes your app's {@link RegisteredPath}s (like `Link`/`nav`) but
+ * still accepts any string — a redirect target is a final URL, so dynamic
+ * values, query strings, and non-page paths like `/403` are all valid.
+ *
  * @example
  * ```ts
  * .guard((_url, ctx) => {
  *   const scope = scopeFrom(ctx.session);
- *   if (!scope.user) throw redirect("/login");
+ *   if (!scope.user) throw redirect("/login"); // "/login" autocompletes
  * })
  * ```
  */
-export function redirect(to: string, status = 302): RedirectError {
+export function redirect(to: RedirectTarget, status = 302): RedirectError {
   return new RedirectError(to, status);
 }
 

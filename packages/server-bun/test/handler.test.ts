@@ -3,11 +3,12 @@ import {
   type LiveDefinition,
   memory,
   type PROTOCOL_VERSION,
+  type RpxdEvent,
   redirect,
 } from "@rpxd/core";
 import { describe, expect, it } from "vitest";
 import { signSessionId } from "../src/cookie.ts";
-import { createRpxdHandler, type SecurityEvent } from "../src/handler.ts";
+import { createRpxdHandler } from "../src/handler.ts";
 import { matchPath, matchRoute } from "../src/match.ts";
 
 interface BoardState {
@@ -972,10 +973,10 @@ describe("guard runs before setup — denied requests allocate nothing (#8)", ()
   });
 });
 
-describe("security events — observability hook (#8)", () => {
-  it("emits origin-rejected on a cross-origin control POST", async () => {
-    const events: SecurityEvent[] = [];
-    const handler = makeHandler({ onSecurityEvent: (e) => events.push(e) });
+describe("event sink — security events (#8, #73)", () => {
+  it("emits a category:security origin-rejected on a cross-origin control POST", async () => {
+    const events: RpxdEvent[] = [];
+    const handler = makeHandler({ onEvent: (e) => events.push(e) });
     await handler.fetch(
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
@@ -983,29 +984,32 @@ describe("security events — observability hook (#8)", () => {
         body: JSON.stringify({ type: "mount", path: "/org/9/board" }),
       }),
     );
-    expect(events.map((e) => e.type)).toContain("origin-rejected");
+    const rejected = events.find((e) => e.type === "origin-rejected");
+    expect(rejected).toMatchObject({ category: "security", level: "warn" });
+    expect(rejected?.detail).toMatchObject({ path: "/__rpxd/control" });
     await handler.dispose();
   });
 
   it("emits rate-limited when the throttle rejects", async () => {
-    const events: SecurityEvent[] = [];
+    const events: RpxdEvent[] = [];
     const handler = makeHandler({
       throttle: { key: () => "k", limit: { capacity: 1, refillPerSec: 0 } },
-      onSecurityEvent: (e) => events.push(e),
+      onEvent: (e) => events.push(e),
     });
     await handler.fetch(new Request(`${base}/org/7/board`, { headers: COOKIE }));
     await handler.fetch(new Request(`${base}/org/7/board`, { headers: COOKIE })); // 429
-    expect(events.map((e) => e.type)).toContain("rate-limited");
+    const limited = events.find((e) => e.type === "rate-limited");
+    expect(limited).toMatchObject({ category: "security" });
     await handler.dispose();
   });
 
   it("emits cap-evicted when a session exceeds its cap", async () => {
-    const events: SecurityEvent[] = [];
+    const events: RpxdEvent[] = [];
     const handler = makeHandler({
       maxInstancesPerSession: 1,
       warmTtlMs: 1000,
       attachTtlMs: 1000,
-      onSecurityEvent: (e) => events.push(e),
+      onEvent: (e) => events.push(e),
     });
     const m = (n: number) =>
       handler.fetch(
@@ -1017,14 +1021,36 @@ describe("security events — observability hook (#8)", () => {
       );
     await m(1);
     await m(2); // 2nd mount evicts the 1st (cap 1)
-    expect(events.map((e) => e.type)).toContain("cap-evicted");
+    const evicted = events.find((e) => e.type === "cap-evicted");
+    expect(evicted).toMatchObject({ category: "security" });
     await handler.dispose();
   });
 
-  it("swallows a throwing hook so it can't break the request", async () => {
+  it("emits a category:request request-failed when a mount crashes (#73)", async () => {
+    const events: RpxdEvent[] = [];
+    const crashDef: LiveDefinition<BoardState, "/org/$orgId/board", Record<string, unknown>> = {
+      setup: () => {
+        throw new Error("setup exploded");
+      },
+    };
+    const handler = createRpxdHandler({
+      routes: [{ path: "/org/$orgId/board", def: crashDef }],
+      storage: memory(),
+      onEvent: (e) => events.push(e),
+    });
+    const res = await handler.fetch(new Request(`${base}/org/9/board`, { headers: COOKIE }));
+    expect(res.status).toBe(500); // the crash still renders the fallback error page
+    const failed = events.find((e) => e.type === "request-failed");
+    expect(failed).toMatchObject({ category: "request", level: "error" });
+    expect(failed?.error).toBeInstanceOf(Error);
+    expect(failed?.detail).toMatchObject({ path: "/org/9/board" });
+    await handler.dispose();
+  });
+
+  it("swallows a throwing sink so it can't break the request", async () => {
     const handler = makeHandler({
-      onSecurityEvent: () => {
-        throw new Error("hook blew up");
+      onEvent: () => {
+        throw new Error("sink blew up");
       },
     });
     const res = await handler.fetch(

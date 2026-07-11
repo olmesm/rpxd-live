@@ -12,9 +12,14 @@
  */
 import type { LiveRoute, SyncState } from "@rpxd/core";
 import { configureRscRuntime, flightStream, hydrateRscFields } from "@rpxd/rsc/client";
-import type { RenderContext } from "@rpxd/server-bun";
+import { makeEmit, type RenderContext } from "@rpxd/server-bun";
 import { createElement, type FunctionComponent, type ReactElement, type ReactNode } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
+
+// Standalone SSR events (#73): the shell renderers run without an app hook, so
+// route a prod render crash through the default (console) sink under the
+// unified `request` taxonomy.
+const emit = makeEmit();
 
 let flightRuntimeReady: Promise<void> | undefined;
 
@@ -181,7 +186,13 @@ export function makeShellRenderers(shell: ShellComponents, opts: { mode?: "dev" 
           let message = info.error instanceof Error ? info.error.message : String(info.error);
           if (mode === "prod") {
             const ref = crypto.randomUUID().slice(0, 8);
-            console.error(`[rpxd] error ${ref} at ${info.path}:`, info.error);
+            emit({
+              category: "request",
+              type: "ssr-render-error",
+              level: "error",
+              error: info.error,
+              detail: { path: info.path, ref },
+            });
             message = `Internal error (ref: ${ref})`;
           }
           return renderStaticPage(

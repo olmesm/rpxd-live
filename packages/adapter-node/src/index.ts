@@ -16,8 +16,19 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import type { ServeHandle, ServeOptions, ServerAdapter, SocketLike } from "@rpxd/server-bun";
+import {
+  makeEmit,
+  type ServeHandle,
+  type ServeOptions,
+  type ServerAdapter,
+  type SocketLike,
+} from "@rpxd/server-bun";
 import { WebSocketServer } from "ws";
+
+// Standalone transport events (#73): no app hook reaches this adapter, so route
+// its recovered request/upgrade faults through the default (console) sink —
+// same output as before, now under the unified `request` taxonomy.
+const emit = makeEmit();
 
 export type { ServeHandle, ServeOptions, ServerAdapter } from "@rpxd/server-bun";
 
@@ -149,7 +160,7 @@ export function nodeAdapter(): ServerAdapter {
             else res.end();
           })
           .catch((e) => {
-            console.error("[rpxd] request failed:", e);
+            emit({ category: "request", type: "request-failed", level: "error", error: e });
             res.statusCode = 500;
             res.end("internal error");
           });
@@ -206,7 +217,7 @@ export function nodeAdapter(): ServerAdapter {
               socket.destroy();
             })
             .catch((e) => {
-              console.error("[rpxd] ws upgrade failed:", e);
+              emit({ category: "request", type: "ws-upgrade-failed", level: "error", error: e });
               socket.destroy();
             });
         });

@@ -61,6 +61,8 @@ describe("generated app: files", () => {
     for (const path of [
       "package.json",
       "tsconfig.json",
+      "Dockerfile",
+      ".dockerignore",
       "routes/index.tsx",
       "routes/todos.tsx",
       "domain/todos.ts",

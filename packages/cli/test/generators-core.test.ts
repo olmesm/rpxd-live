@@ -6,6 +6,32 @@ import { applyPlan } from "../src/generators/apply.ts";
 import { detectFeatures } from "../src/generators/detect.ts";
 import { parseFields } from "../src/generators/fields.ts";
 import { camelCase, kebabCase, pascalCase, routePlural } from "../src/generators/names.ts";
+import { appShellFiles } from "../src/generators/templates/app.ts";
+
+const fileOf = (db: boolean, path: string): string =>
+  appShellFiles({ name: "x", db, auth: db }).find((f) => f.path === path)?.contents ?? "";
+
+describe("scaffolded Dockerfile + ignores", () => {
+  it("db variant: applies the schema, execs into rpxd, and warns about ephemeral sqlite", () => {
+    const dockerfile = fileOf(true, "Dockerfile");
+    expect(dockerfile).toContain("bun run db:generate && bun run build");
+    expect(dockerfile).toContain("exec bun run start"); // exec → rpxd gets SIGTERM
+    expect(dockerfile).toContain("mount a volume at /app/prisma"); // persistence footgun noted
+  });
+
+  it("non-db variant: plain start, no db:push or exec shell", () => {
+    const dockerfile = fileOf(false, "Dockerfile");
+    expect(dockerfile).toContain('CMD ["bun", "run", "start"]');
+    expect(dockerfile).not.toContain("db:push");
+    expect(dockerfile).not.toContain("exec");
+  });
+
+  it("ignores .env from git and the docker build context (no baked secrets)", () => {
+    for (const path of [".gitignore", ".dockerignore"]) {
+      expect(fileOf(true, path)).toContain(".env");
+    }
+  });
+});
 
 describe("parseFields (field:type)", () => {
   it("maps every supported type to prisma + ts", () => {

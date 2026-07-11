@@ -92,8 +92,12 @@ export interface TestLive<S, Session, Rpc> {
   navigate(search: SearchParams): Promise<void>;
   /**
    * Resolve once everything in flight has landed: pending rpcs (including
-   * their streaming flushes), scheduled patch flushes, and the mutation
-   * queue. Await this before asserting on streamed or broadcast state.
+   * their streaming flushes), scheduled patch flushes, the mutation queue,
+   * and the storage bus's in-flight LOCAL deliveries (via `bus.drain()`, so a
+   * broadcast fired during settling — or an async bus whose delivery lands out
+   * of band — is awaited). Await this before asserting on streamed or broadcast
+   * state. The bus guarantee is this-process only; true cross-node fan-out is
+   * not modelled by the single-process harness.
    */
   settled(): Promise<void>;
   /** Tear the instance down (aborts in-flight `ctx.signal`s, §3). */
@@ -287,6 +291,13 @@ export async function testLive<S, Path extends string, Session, Component>(
         await Promise.all([...inflight]);
       }
       // Let any scheduled same-tick patch flush timers fire, then drain.
+      await new Promise<void>((r) => setTimeout(r, 0));
+      await instance.idle();
+      // Drain in-flight LOCAL bus deliveries (a broadcast fired during settling,
+      // or an async/network bus whose delivery lands out of band), then re-settle
+      // the mutation queue those deliveries feed. Scoped to this-process delivery —
+      // a single-process harness can't model true cross-node fan-out.
+      await storage.bus.drain?.();
       await new Promise<void>((r) => setTimeout(r, 0));
       await instance.idle();
       if (inflight.size > 0) return this.settled();

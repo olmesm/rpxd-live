@@ -7,6 +7,12 @@
  * @packageDocumentation
  */
 export {
+  defaultEventSink,
+  makeEmit,
+  type RpxdEvent,
+  type RpxdEventSink,
+} from "./events.ts";
+export {
   type CreateInstanceOptions,
   DEFAULT_MAX_BATCH_CALLS,
   LiveInstance,
@@ -82,7 +88,13 @@ export {
 } from "./protocol.ts";
 export { SerialQueue } from "./queue.ts";
 export { type RateLimit, RateLimitError, TokenBucket } from "./rate-limit.ts";
-export type { EventName, EventPayload, RegisteredEvent, RegisteredPath } from "./register.ts";
+export type {
+  EventName,
+  EventPayload,
+  RedirectTarget,
+  RegisteredEvent,
+  RegisteredPath,
+} from "./register.ts";
 export type {
   ConnectionStatus,
   NavProp,

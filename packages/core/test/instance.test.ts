@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import type { RpxdEvent, RpxdEventSink } from "../src/events.ts";
 import { LiveInstance } from "../src/instance.ts";
 import type { LiveDefinition, Mutator, SearchParams } from "../src/live.ts";
 import { type Envelope, PROTOCOL_VERSION, type RpcBatch } from "../src/protocol.ts";
@@ -37,7 +38,13 @@ function batch(rpc: string, payload: unknown = {}, rpcId = uid("rpc")): RpcBatch
 
 async function make(
   def: LiveDefinition<TodoState, "/t/$id", Session>,
-  opts: { storage?: StorageAdapter; key?: string; session?: Session; id?: string } = {},
+  opts: {
+    storage?: StorageAdapter;
+    key?: string;
+    session?: Session;
+    id?: string;
+    emit?: RpxdEventSink;
+  } = {},
 ) {
   const storage = opts.storage ?? memory();
   const inst = await LiveInstance.create({
@@ -47,6 +54,7 @@ async function make(
     session: opts.session ?? {},
     storage,
     storageKey: opts.key ?? uid("key"),
+    emit: opts.emit,
   });
   const envelopes: Envelope[] = [];
   inst.addListener((env) => envelopes.push(env));
@@ -426,33 +434,28 @@ describe("loadForRender render gate (§12)", () => {
     gates.first?.(); // let the superseded run drain
   });
 
-  it("logs a redirect thrown after the first patch instead of dropping it silently (§12)", async () => {
-    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const def: LiveDefinition<TodoState, "/t/$id", Session> = {
-        setup: () => initial(),
-        load: async (_url, ctx) => {
-          ctx.patchState(((s) => {
-            s.log.push("chrome");
-          }) as Mut);
-          await gate("lateRedirect"); // held until the first patch has flushed
-          throw redirect("/too-late");
-        },
-      };
-      const { inst } = await make(def);
-      await inst.loadForRender({}); // resolves at the first patch
-      gates.lateRedirect?.(); // the loader now throws its redirect mid-stream
-      await tick();
-      await tick();
-      // The dropped redirect leaves a server-side trace, and nothing crashed.
-      expect(spy).toHaveBeenCalledWith(
-        expect.stringContaining("redirect after first patch"),
-        expect.anything(),
-      );
-      expect(inst.state.log).toEqual(["chrome"]);
-    } finally {
-      spy.mockRestore();
-    }
+  it("emits a redirect thrown after the first patch instead of dropping it silently (§12)", async () => {
+    const events: RpxdEvent[] = [];
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async (_url, ctx) => {
+        ctx.patchState(((s) => {
+          s.log.push("chrome");
+        }) as Mut);
+        await gate("lateRedirect"); // held until the first patch has flushed
+        throw redirect("/too-late");
+      },
+    };
+    const { inst } = await make(def, { emit: (e) => events.push(e) });
+    await inst.loadForRender({}); // resolves at the first patch
+    gates.lateRedirect?.(); // the loader now throws its redirect mid-stream
+    await tick();
+    await tick();
+    // The dropped redirect leaves a structured server-side trace, and nothing crashed.
+    const dropped = events.find((e) => e.type === "load-redirect-ignored");
+    expect(dropped).toMatchObject({ category: "instance", level: "warn" });
+    expect(dropped?.detail).toMatchObject({ location: "/too-late" });
+    expect(inst.state.log).toEqual(["chrome"]);
   });
 
   it("an unrelated flush during an await-first load does not open the render gate", async () => {
@@ -1075,5 +1078,83 @@ describe("protocol version check (W1)", () => {
     const ack = envelopes.find((e) => e.rpcId === "v1-batch");
     expect(ack?.error).toBeUndefined();
     expect(inst.state.todos).toHaveLength(1);
+  });
+});
+
+describe("event sink (#73)", () => {
+  it("emits a structured instance/load-failed event to an injected sink", async () => {
+    const events: RpxdEvent[] = [];
+    const boom = new Error("loader exploded");
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async () => {
+        throw boom;
+      },
+    };
+    const { inst } = await make(def, { emit: (e) => events.push(e) });
+    await inst.loadForRender({});
+    const failed = events.find((e) => e.type === "load-failed");
+    expect(failed).toMatchObject({ category: "instance", level: "error", error: boom });
+  });
+
+  it("emits a storage/subscriber-threw event when a broadcast subscriber throws", async () => {
+    const events: RpxdEvent[] = [];
+    const storage = memory();
+    storage.bus.setEmit?.((e) => events.push(e));
+    storage.bus.subscribe("room:1", "sub-a", () => {
+      throw new Error("subscriber exploded");
+    });
+    storage.bus.publish({
+      topic: "room:1",
+      event: "hi",
+      payload: {},
+      senderId: "sub-b",
+      self: false,
+    });
+    const threw = events.find((e) => e.type === "subscriber-threw");
+    expect(threw).toMatchObject({ category: "storage", level: "error" });
+    expect(threw?.detail).toMatchObject({ topic: "room:1", subscriberId: "sub-a" });
+  });
+
+  it("falls back to defaultEventSink (console) when no sink is injected", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+        setup: () => initial(),
+        load: async () => {
+          throw new Error("no sink here");
+        },
+      };
+      const { inst } = await make(def); // no emit injected
+      await expect(inst.loadForRender({})).resolves.toBeUndefined();
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringContaining("instance/load-failed"),
+        expect.anything(),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("swallows a throwing sink so observability can't break the load path", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+        setup: () => initial(),
+        load: async () => {
+          throw new Error("loader failed");
+        },
+      };
+      const { inst } = await make(def, {
+        emit: () => {
+          throw new Error("sink blew up");
+        },
+      });
+      // The throwing sink must not propagate out of the load path.
+      await expect(inst.loadForRender({})).resolves.toBeUndefined();
+      expect(spy).toHaveBeenCalled(); // the sink throw was caught + reported
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

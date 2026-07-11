@@ -2,7 +2,7 @@
  * `rpxd.config.ts` surface (§14): the only non-route file in userland.
  */
 import type { RateLimit, StorageAdapter } from "@rpxd/core";
-import type { RpxdHandlerOptions, SecurityEvent } from "@rpxd/server-bun";
+import type { RpxdEventSink, RpxdHandlerOptions } from "@rpxd/server-bun";
 
 /** Transport selection (§11): SSE default, WS opt-in. */
 export interface TransportConfig {
@@ -88,6 +88,14 @@ export interface RpxdConfig {
    */
   throttle?: { key: (req: Request) => string | null; limit: RateLimit };
   /**
+   * Userland cleanup on graceful shutdown (`SIGTERM`/`SIGINT` under `rpxd
+   * start`). Runs after warm snapshots flush and before rpxd closes its own
+   * storage — the place to close resources the app owns, e.g. an auth/Prisma
+   * client: `onShutdown: () => prisma.$disconnect()`. rpxd closes the storage
+   * adapter it created itself.
+   */
+  onShutdown?: () => void | Promise<void>;
+  /**
    * Tuning knobs for the in-memory instance registry (§11): warm/attach TTLs
    * and the capacity caps that bound memory under scan floods or a runaway
    * session (#61 — see each field's doc on {@link RpxdHandlerOptions} for
@@ -110,19 +118,21 @@ export interface RpxdConfig {
     | "maxInstancesPerSession"
   >;
   /**
-   * Observability hook for {@link SecurityEvent}s (#8) — a rejected
-   * cross-origin request, a throttle rejection, a capacity-driven instance
-   * eviction/rejection. Log or meter them; the runtime swallows any throw
-   * from the hook so it can't affect the request it observes.
+   * Observability event sink (#73) — every framework event flows here: a
+   * rejected cross-origin request or throttle/capacity rejection
+   * (`category: "security"`), a crashed request or WS fault
+   * (`category: "request"`), and instance/storage faults. Log or meter them;
+   * the runtime swallows any throw from the sink so it can't affect the work
+   * it observes. When omitted, events fall back to the console default sink.
    *
    * @example
    * ```ts
    * export default defineConfig({
-   *   onSecurityEvent: (e) => logger.warn("rpxd.security", e),
+   *   onEvent: (e) => logger.log(e.level, "rpxd", e),
    * });
    * ```
    */
-  onSecurityEvent?: (event: SecurityEvent) => void;
+  onEvent?: RpxdEventSink;
 }
 
 /**
@@ -166,17 +176,17 @@ export function applyConfigOverrides(config: RpxdConfig, overrides?: ConfigOverr
 }
 
 /**
- * Map the config's instance-registry tuning knobs and security-observability
- * hook onto {@link RpxdHandlerOptions} (§14, #61 capacity caps, #8
- * `SecurityEvent`s). Pulled out of {@link startApp} as its own function so the
- * wiring is unit-testable without standing up a server — `config.instances`
- * spreads straight through (undefined fields keep the handler's defaults) and
- * `onSecurityEvent` rides along.
+ * Map the config's instance-registry tuning knobs and observability event
+ * sink onto {@link RpxdHandlerOptions} (§14, #61 capacity caps, #73 event
+ * sink). Pulled out of {@link startApp} as its own function so the wiring is
+ * unit-testable without standing up a server — `config.instances` spreads
+ * straight through (undefined fields keep the handler's defaults) and
+ * `onEvent` rides along.
  *
  * @example
  * ```ts
  * instanceHandlerOptions({ instances: { warmTtlMs: 5000 } });
- * // { warmTtlMs: 5000, onSecurityEvent: undefined }
+ * // { warmTtlMs: 5000, onEvent: undefined }
  * ```
  */
 export function instanceHandlerOptions(
@@ -188,7 +198,7 @@ export function instanceHandlerOptions(
   | "unattachedTtlMs"
   | "maxUnattachedInstances"
   | "maxInstancesPerSession"
-  | "onSecurityEvent"
+  | "onEvent"
 > {
-  return { ...config.instances, onSecurityEvent: config.onSecurityEvent };
+  return { ...config.instances, onEvent: config.onEvent };
 }
