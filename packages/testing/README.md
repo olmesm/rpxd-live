@@ -1,10 +1,20 @@
 # @rpxd/testing
 
-Unit-test harness for live objects: mount a route against the real runtime
-— real queue, real patches, real pubsub, nothing mocked — behind a typed
-facade. Mounting runs the production lifecycle in order — `guard` → `setup`
-→ `load` — so initial state is loader-populated, and a guard deny or loader
-redirect rejects the mount with the `RedirectError` the server maps to a 302.
+Unit-test your live objects. `testLive(route)` mounts a route against the
+real runtime — real queue, real patches, real pubsub, nothing mocked —
+behind a typed facade.
+
+```sh
+bun add @rpxd/testing
+```
+
+Not yet on npm — work from a clone of the repo for now.
+
+Mounting runs the production lifecycle in order: `guard` → `setup` → `load`.
+Initial state is loader-populated. A guard deny or a loader redirect rejects
+the mount with the same `RedirectError` the server maps to a 302.
+
+The harness has no test-runner dependency; the examples below use Vitest.
 
 ## Usage
 
@@ -34,21 +44,23 @@ await expect(testLive(adminRoute)).rejects.toMatchObject({ location: "/login" })
   handler throw, validation failure, or unknown rpc. `t.call(name, payload)`
   is the untyped escape hatch.
 - **`t.state` / `t.session`** — live getters onto server-confirmed state.
-- **`t.envelopes`** — every envelope emitted since mount, in order: the
-  wire, as a client connection would see it. Useful for protocol-level
-  assertions (streaming chunks, acks, `append` ops).
+- **`t.envelopes`** — every wire message emitted since mount, in order, as a
+  client connection would see it. Useful for protocol-level assertions
+  (streaming chunks, acks, `append` ops).
 - **`t.navigate(search)`** — reconciles the mounted instance to new search
   params, running `guard` then `load` exactly as a client navigation does.
 - **`t.settled()`** — resolves once in-flight rpcs, scheduled patch
   flushes, and the mutation queue have drained. Await it before asserting
   on streamed or broadcast-driven state.
 - **`t.broadcast(topic, event, payload)`** — publishes with a foreign
-  sender id, so exclude-self semantics behave exactly as in production.
-  Share one storage adapter between two `testLive` handles to test
-  multiplayer:
+  sender id, so the sender-skips-itself rule (an instance doesn't receive
+  its own broadcast) behaves exactly as in production. Share one storage
+  adapter between two `testLive` handles to test multiplayer:
 
 ```ts
 const storage = memory();
 const a = await testLive(route, { storage, id: "A" });
 const b = await testLive(route, { storage, id: "B" });
 ```
+
+Docs: https://olmesm.github.io/rpxd-live/guides/testing/
