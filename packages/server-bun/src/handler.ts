@@ -25,7 +25,7 @@ import {
   type StorageAdapter,
   TokenBucket,
 } from "@rpxd/core";
-import { readSid, SID_COOKIE, signSessionId } from "./cookie.ts";
+import { readSid, SID_COOKIE, signSessionId, timingSafeEqualStr } from "./cookie.ts";
 import { matchHttpRoute, matchRoute } from "./match.ts";
 import { type AllowedOrigins, originAllowed } from "./origin.ts";
 
@@ -824,7 +824,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         initial &&
         attach?.token != null &&
         entry.attach !== undefined &&
-        entry.attach.token === attach.token &&
+        timingSafeEqualStr(entry.attach.token, attach.token) &&
         entry.attach.expires > Date.now() &&
         attach.seq === entry.instance.seq;
       if (adopted) {

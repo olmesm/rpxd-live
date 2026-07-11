@@ -7,7 +7,15 @@
  * A second signal force-exits (impatient operator / Docker escalating to
  * SIGKILL), and a timeout backstops a wedged `close()` so we never sit past the
  * container's grace period. `exit` is injectable so the handler is unit-testable.
+ *
+ * Also owns the process-level `unhandledRejection` backstop (item 5): rpxd's
+ * dispatch boundary is already total (#112), so the library itself emits no
+ * unhandled rejections — this is a safety net for any FUTURE detached
+ * rejection (framework or app code). It belongs here, in the CLI (the process
+ * owner), not in `core`/`server-bun` — a library installing a global
+ * `process.on` is intrusive and can mask app bugs.
  */
+import { isDev, type RpxdDiagnostic } from "@rpxd/core";
 /** The ordered teardown steps `startApp().close()` runs (see {@link runCloseSequence}). */
 export interface CloseSteps {
   /** Stop accepting new connections. */
@@ -110,4 +118,38 @@ export function installShutdownHandlers(
     process.off("SIGTERM", onSignal);
     process.off("SIGINT", onSignal);
   };
+}
+
+/**
+ * The `unhandledRejection` listener: reports the rejection through the
+ * diagnostic sink, then re-raises in development (so a bug surfaces loudly)
+ * while staying up in production (a detached rejection shouldn't take the
+ * server down). Pure + injected `emit` so it's unit-testable.
+ *
+ * @example
+ * ```ts
+ * process.on("unhandledRejection", makeUnhandledRejectionHandler(emit));
+ * ```
+ */
+export function makeUnhandledRejectionHandler(emit: (d: RpxdDiagnostic) => void) {
+  return (reason: unknown) => {
+    emit({ category: "request", type: "unhandled-rejection", level: "error", error: reason });
+    if (isDev()) throw reason instanceof Error ? reason : new Error(String(reason));
+  };
+}
+
+let installed = false;
+/**
+ * Install the unhandledRejection backstop once (idempotent across HMR/dev
+ * restarts).
+ *
+ * @example
+ * ```ts
+ * installUnhandledRejectionGuard(emit); // emit is the app's configured diagnostic sink
+ * ```
+ */
+export function installUnhandledRejectionGuard(emit: (d: RpxdDiagnostic) => void): void {
+  if (installed) return;
+  installed = true;
+  process.on("unhandledRejection", makeUnhandledRejectionHandler(emit));
 }

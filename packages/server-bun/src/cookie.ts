@@ -42,6 +42,23 @@ function verifySignedSid(value: string, secret: string): string | null {
   return sid;
 }
 
+/**
+ * Constant-time string equality for security tokens (attach tokens, #61) — a
+ * length pre-check (timingSafeEqual requires equal lengths) then a byte compare
+ * that doesn't short-circuit on the first differing byte, so a token can't be
+ * recovered from response timing.
+ *
+ * @example
+ * ```ts
+ * if (timingSafeEqualStr(entry.attach.token, given)) adopt();
+ * ```
+ */
+export function timingSafeEqualStr(a: string, b: string): boolean {
+  const ea = new TextEncoder().encode(a);
+  const eb = new TextEncoder().encode(b);
+  return ea.length === eb.length && timingSafeEqual(ea, eb);
+}
+
 function cookieValue(req: Request): string | undefined {
   const cookie = req.headers.get("cookie") ?? "";
   const found = cookie

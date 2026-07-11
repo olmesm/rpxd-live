@@ -777,6 +777,27 @@ describe("SSR attach adoption (§12)", () => {
     expect(first?.full).toBeDefined(); // silent recovery via full snapshot
     await handler.dispose();
   });
+
+  it("falls back to a full snapshot when the token is wrong (still within TTL)", async () => {
+    // A mismatched token — not merely stale — must not adopt either: the
+    // constant-time compare (#61) is a drop-in replacement for `===`, so
+    // functional behavior (resync, no adoption) is unchanged.
+    const handler = makeHandler();
+    const boot = await ssrBoot(handler);
+    expect(handler.instanceCount).toBe(1);
+
+    const wrongToken = `${boot.attachToken}x`;
+    const streamRes = await handler.fetch(
+      new Request(`${base}/__rpxd/stream?attach=${wrongToken}&seq=${boot.seq}`, {
+        headers: COOKIE,
+      }),
+    );
+    const sse = new SseReader(streamRes);
+    const first = await sse.next();
+    expect(first?.full).toBeDefined(); // not adopted → full snapshot
+    expect(handler.instanceCount).toBe(1); // same instance, just not adopted
+    await handler.dispose();
+  });
 });
 
 describe("eviction (§11)", () => {

@@ -40,6 +40,7 @@ import {
   renderDevErrorPage,
   type ShellComponents,
 } from "./render.ts";
+import { installUnhandledRejectionGuard } from "./shutdown.ts";
 
 /** Options for {@link createDevServer}. */
 export interface DevServerOptions {
@@ -265,6 +266,11 @@ export async function createDevServer(
   // sits outside the handler, so route its recovered request/upgrade faults
   // through the default (console) sink under the unified `request` taxonomy.
   const emit = makeDiagnosticEmit();
+
+  // Process-owner backstop (item 5): any FUTURE detached rejection (framework
+  // or app code — rpxd's own dispatch boundary is already total, #112) is
+  // reported through the same emit rather than crashing dev silently.
+  installUnhandledRejectionGuard(emit);
 
   // Serialize reloads per route so two rapid saves whose imports resolve out
   // of order don't leave the instance on the older def (#67).

@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { installShutdownHandlers, runCloseSequence } from "../src/shutdown.ts";
+import type { RpxdDiagnostic } from "@rpxd/core";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  installShutdownHandlers,
+  installUnhandledRejectionGuard,
+  makeUnhandledRejectionHandler,
+  runCloseSequence,
+} from "../src/shutdown.ts";
 
 describe("runCloseSequence", () => {
   it("flushes snapshots before closing storage, with userland cleanup between", async () => {
@@ -87,5 +93,56 @@ describe("installShutdownHandlers", () => {
       ),
     );
     expect(code).toBe(1);
+  });
+});
+
+describe("makeUnhandledRejectionHandler", () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  afterEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  it("reports the rejection through the diagnostic sink", () => {
+    process.env.NODE_ENV = "production"; // don't let the re-throw escape the test
+    const emitted: RpxdDiagnostic[] = [];
+    const reason = new Error("detached");
+    makeUnhandledRejectionHandler((d) => emitted.push(d))(reason);
+    expect(emitted).toEqual([
+      { category: "request", type: "unhandled-rejection", level: "error", error: reason },
+    ]);
+  });
+
+  it("re-throws in development so the bug surfaces loudly", () => {
+    process.env.NODE_ENV = "development";
+    const reason = new Error("detached");
+    expect(() => makeUnhandledRejectionHandler(() => {})(reason)).toThrow(reason);
+  });
+
+  it("wraps a non-Error reason in development before re-throwing", () => {
+    process.env.NODE_ENV = "development";
+    expect(() => makeUnhandledRejectionHandler(() => {})("boom")).toThrow("boom");
+  });
+
+  it("does not throw in production — a detached rejection shouldn't take the server down", () => {
+    process.env.NODE_ENV = "production";
+    const reason = new Error("detached");
+    expect(() => makeUnhandledRejectionHandler(() => {})(reason)).not.toThrow();
+  });
+});
+
+describe("installUnhandledRejectionGuard", () => {
+  afterEach(() => {
+    process.removeAllListeners("unhandledRejection");
+  });
+
+  // The install flag is a module-level singleton (idempotent across HMR/dev
+  // restarts), so both assertions live in one test — a second, separate test
+  // could not observe "already installed" without also observing "installed".
+  it("installs the listener once; a repeated call adds no second listener", () => {
+    const before = process.listenerCount("unhandledRejection");
+    installUnhandledRejectionGuard(() => {});
+    expect(process.listenerCount("unhandledRejection")).toBe(before + 1);
+    installUnhandledRejectionGuard(() => {}); // no-op — already installed
+    expect(process.listenerCount("unhandledRejection")).toBe(before + 1);
   });
 });
