@@ -5,6 +5,7 @@
  * through any {@link ServerAdapter}.
  */
 import {
+  decodeBatch,
   defaultDiagnosticSink,
   type Envelope,
   isRedirect,
@@ -18,6 +19,8 @@ import {
   type RouteMethod,
   type RpcBatch,
   type RpxdDiagnosticSink,
+  runPipeline,
+  type Stage,
   type StorageAdapter,
   TokenBucket,
 } from "@rpxd/core";
@@ -382,6 +385,61 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       error: { name: "UnknownInstanceError", message: "unknown or expired instance" },
     };
   }
+
+  /** What {@link acceptBatch} did with an inbound rpc batch. */
+  type BatchOutcome = "accepted" | "unknown-instance" | "malformed";
+
+  /**
+   * The guarded batch-dispatch boundary (channel pipeline increment 2, closing
+   * #110 at the boundary and #65 WS parity): the SINGLE funnel both `handleRpc`
+   * (HTTP) and the WS `message()` `"calls"` branch call to accept an inbound
+   * rpc batch. Never throws or rejects, and every outcome is delivered — either
+   * through `send` (an error/unknown-instance ack) or the returned
+   * {@link BatchOutcome}, which each caller maps to its own transport status.
+   *
+   * `raw` is genuinely untrusted wire data (a parsed JSON body or WS frame),
+   * so it's decoded with {@link decodeBatch} rather than cast — a caller can
+   * no longer crash on `raw.calls` being `null`/non-array/malformed.
+   */
+  function acceptBatch(raw: unknown, sid: string, send: (env: Envelope) => void): BatchOutcome {
+    const decoded = decodeBatch(raw);
+    if (!decoded.ok) {
+      emit({
+        category: "request",
+        type: "rpc-decode-failed",
+        level: "warn",
+        detail: { reason: decoded.reason, instance: decoded.instance },
+      });
+      // Only ack when there's a real pending call to correlate it to: both
+      // `rpcId` and `instance` must have survived as strings off the wire,
+      // AND that instance must actually belong to this session — otherwise
+      // there's nothing legitimate to reject into, and no client waiting on
+      // this exact rpcId to settle.
+      if (decoded.rpcId && decoded.instance && ownedInstance(decoded.instance, sid)) {
+        send({
+          seq: 0,
+          instance: decoded.instance,
+          rpcId: decoded.rpcId,
+          error: { name: "ProtocolError", message: `malformed batch: ${decoded.reason}` },
+        });
+      }
+      return "malformed";
+    }
+
+    const entry = ownedInstance(decoded.batch.instance, sid);
+    if (!entry) {
+      send(unknownInstanceAck(decoded.batch.instance, decoded.batch.rpcId));
+      return "unknown-instance";
+    }
+
+    // Belt-and-braces: `handleBatch` is total on its own (increment 1), but a
+    // fire-and-forget call must never be able to reject unhandled.
+    void entry.instance.handleBatch(decoded.batch).catch((e) => {
+      emit({ category: "instance", type: "batch-execute-threw", level: "error", error: e });
+    });
+    return "accepted";
+  }
+
   /** sessionId → client stream id → live SSE subscriber (§7 tier-2 late mount). */
   const streamRegistry = new Map<string, Map<string, StreamHandle>>();
   let disposed = false;
@@ -896,20 +954,23 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   }
 
   async function handleRpc(req: Request, sid: string): Promise<Response> {
-    const batch = (await readJsonCapped(req, maxBodyBytes)) as RpcBatch;
-    const entry = ownedInstance(batch.instance, sid);
-    if (!entry) {
-      // The ack rides the session's stream(s), like every other ack. If no
-      // stream is open, the client resends on reconnect and is acked then.
-      if (typeof batch.instance === "string" && typeof batch.rpcId === "string") {
-        const ack = unknownInstanceAck(batch.instance, batch.rpcId);
-        for (const handle of streamRegistry.get(sid)?.values() ?? []) handle.send(ack);
-      }
-      return new Response("unknown instance", { status: 404 });
+    // Every outcome's ack (unknown-instance, malformed, or a real rpc ack)
+    // rides the session's stream(s), not this response — this is just the
+    // transport-level acknowledgement. `acceptBatch` is the shared guarded
+    // dispatch boundary (channel pipeline increment 2, #110/#65) this and the
+    // WS `message()` `"calls"` branch both funnel through.
+    const send = (env: Envelope) => {
+      for (const h of streamRegistry.get(sid)?.values() ?? []) h.send(env);
+    };
+    const outcome = acceptBatch(await readJsonCapped(req, maxBodyBytes), sid, send);
+    switch (outcome) {
+      case "accepted":
+        return new Response(null, { status: 202 });
+      case "unknown-instance":
+        return new Response("unknown instance", { status: 404 });
+      case "malformed":
+        return new Response("malformed batch", { status: 400 });
     }
-    // Fire-and-forget: the ack rides the SSE stream, not this response.
-    void entry.instance.handleBatch(batch);
-    return new Response(null, { status: 202 });
   }
 
   function defaultRender(ctx: RenderContext): Response {
@@ -929,153 +990,216 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
+  // ---------------------------------------------------------------------
+  // Channel A (#75): `fetch`'s HTTP request→response ladder as named stages
+  // over `runPipeline` (@rpxd/core) — origin gate → throttle → authenticate
+  // → dispatch, in that fixed order, exactly as the flat ladder ran it. Each
+  // stage below is the *exact* branch body moved verbatim out of the old
+  // inline `fetch`; only the shape (`{ done }` / `{ next }`) changed.
+  // `dispatchStage` never resolves its own error path — a redirect/NotFound/
+  // SessionCap/PayloadTooLarge/crash is a genuine throw, and `mapRequestError`
+  // (the old inline `catch`, verbatim) is the pipeline's terminal `onError`.
+  // ---------------------------------------------------------------------
+
+  /** Context threaded stage-to-stage; `sessionData` only exists post-auth. */
+  interface RequestCtx {
+    req: Request;
+    url: URL;
+    sid: string;
+    isNew: boolean;
+    sessionData: unknown;
+  }
+
+  /**
+   * Origin gate (#52): the control plane is same-origin by default. Runs
+   * before authenticate so the auth hook is never a cross-site side-channel.
+   * SSR GET and route() handlers are deliberately exempt (see dispatchStage).
+   */
+  const originStage: Stage<RequestCtx, Response> = (ctx) => {
+    const isControlPlane =
+      ctx.url.pathname === "/__rpxd/stream" ||
+      ctx.url.pathname === "/__rpxd/rpc" ||
+      ctx.url.pathname === "/__rpxd/control";
+    if (isControlPlane && !originAllowed(ctx.req, opts.allowedOrigins)) {
+      emitSecurity("origin-rejected", {
+        origin: ctx.req.headers.get("origin"),
+        path: ctx.url.pathname,
+      });
+      return { done: new Response("forbidden origin", { status: 403 }) };
+    }
+    return { next: ctx };
+  };
+
+  /**
+   * Throttle (#6): a per-key token bucket over the HTTP request paths (SSR
+   * GET, rpc/control POST), before authenticate so a flood can't amplify
+   * auth/mount work. The long-lived SSE stream is exempt — a native
+   * EventSource can't reconnect after a non-200, so a 429 there would
+   * permanently kill the live channel. `key(req) === null` skips a request.
+   */
+  const throttleStage: Stage<RequestCtx, Response> = (ctx) => {
+    if (opts.throttle && ctx.url.pathname !== "/__rpxd/stream") {
+      const k = opts.throttle.key(ctx.req);
+      if (k !== null) {
+        let bucket = throttleBuckets.get(k);
+        if (!bucket) {
+          // Bound the bucket map so the throttle can't itself leak memory under
+          // a key-rotating flood — drop the oldest (a reset bucket starts full,
+          // i.e. lenient, never a bypass of an active limit).
+          if (throttleBuckets.size >= MAX_THROTTLE_KEYS) {
+            const oldest = throttleBuckets.keys().next().value;
+            if (oldest !== undefined) throttleBuckets.delete(oldest);
+          }
+          bucket = new TokenBucket(opts.throttle.limit);
+          throttleBuckets.set(k, bucket);
+        }
+        if (!bucket.take()) {
+          emitSecurity("rate-limited", { key: k, path: ctx.url.pathname });
+          return { done: new Response("rate limited", { status: 429 }) };
+        }
+      }
+    }
+    return { next: ctx };
+  };
+
+  /**
+   * Authenticate (§10): runs once per request; skipped entirely (sessionData
+   * stays `{}`) when `opts.authenticate` is unset, exactly as today. A throw
+   * is a 403 — auth rejections are often intentional (logged-out) so this
+   * doesn't log the noise, but hides any unexpected internal message (#9).
+   */
+  const authStage: Stage<RequestCtx, Response> = async (ctx) => {
+    if (!opts.authenticate) return { next: ctx };
+    try {
+      const sessionData = await opts.authenticate(ctx.req, { sid: ctx.sid });
+      return { next: { ...ctx, sessionData } };
+    } catch (e) {
+      return { done: new Response(safeErrorMessage(e, "forbidden"), { status: 403 }) };
+    }
+  };
+
+  /**
+   * Dispatch (§11/§12/§14): stream/rpc/control/httpRoutes/SSR-GET/404,
+   * verbatim from the old inline `try` body — including exactly which
+   * branches are `withSession(...)`-wrapped. Deliberately does not catch: a
+   * redirect/NotFound/SessionCap/PayloadTooLarge/crash from `handleControl`,
+   * `mountInstance`, `reconcileUrl`, a route handler, or `render` propagates
+   * out as a throw for `mapRequestError` to handle.
+   */
+  const dispatchStage: Stage<RequestCtx, Response> = async (ctx) => {
+    const { req, url, sid, isNew, sessionData } = ctx;
+    if (url.pathname === "/__rpxd/stream") {
+      return { done: withSession(await handleStream(req, sid), sid, isNew) };
+    }
+    if (url.pathname === "/__rpxd/rpc" && req.method === "POST") {
+      return { done: withSession(await handleRpc(req, sid), sid, isNew) };
+    }
+    if (url.pathname === "/__rpxd/control" && req.method === "POST") {
+      return { done: withSession(await handleControl(req, sid, sessionData), sid, isNew) };
+    }
+    // HTTP routes (`route()`) — matched before SSR, any method (§ docs/
+    // routes-and-auth.md). The handler owns its own response/cookies; we
+    // still carry the sid cookie on new sessions.
+    if (opts.httpRoutes && opts.httpRoutes.length > 0) {
+      const hit = matchHttpRoute(
+        opts.httpRoutes.map((r) => r.path),
+        url.pathname,
+      );
+      if (hit) {
+        const reg = opts.httpRoutes.find((r) => r.path === hit.path) as HttpRouteRegistration;
+        const method = req.method.toUpperCase() as RouteMethod;
+        const fn = reg.def.handlers[method] ?? reg.def.handlers.ALL;
+        if (!fn) {
+          return {
+            done: withSession(new Response("method not allowed", { status: 405 }), sid, isNew),
+          };
+        }
+        const res = await fn(req, { params: hit.params, session: sessionData, sid });
+        return { done: withSession(res, sid, isNew) };
+      }
+    }
+    if (req.method === "GET") {
+      // SSR (§12): setup+guard+load run during SSR; the connection adopts the warm
+      // instance via the attach token.
+      const search: Record<string, string> = {};
+      url.searchParams.forEach((v, k) => {
+        search[k] = v;
+      });
+      const entry = await mountInstance(sid, sessionData, url.pathname, search);
+      const renderCtx: RenderContext = {
+        path: entry.path,
+        params: entry.params,
+        search,
+        state: entry.instance.state,
+        session: entry.instance.session,
+        seq: entry.instance.seq,
+        instance: entry.instance.id,
+        attachToken: entry.attach?.token ?? "",
+      };
+      const render = opts.render ?? defaultRender;
+      return { done: withSession(await render(renderCtx), sid, isNew) };
+    }
+    return { done: new Response("not found", { status: 404 }) };
+  };
+
+  /**
+   * The pipeline's terminal error stage (`runPipeline`'s `onError`) — the old
+   * inline `catch (e)` block, verbatim, reading `ctx.url`/`ctx.sid`/
+   * `ctx.isNew` in place of the closed-over `url`/`sid`/`isNew` locals it used
+   * to read.
+   */
+  async function mapRequestError(err: unknown, ctx: RequestCtx): Promise<Response> {
+    const { url, sid, isNew } = ctx;
+    // Oversized rpc/control body (§11 ingress DoS guard): reject before it
+    // reaches a handler.
+    if (err instanceof PayloadTooLargeError) {
+      return withSession(new Response(err.message, { status: 413 }), sid, isNew);
+    }
+    // `setup`/`guard`/`load` threw redirect() (§10): a full page load follows a real 302.
+    if (isRedirect(err)) {
+      return withSession(
+        new Response(null, { status: err.status, headers: { location: err.location } }),
+        sid,
+        isNew,
+      );
+    }
+    // The session is at its instance cap with every slot subscribed (C) —
+    // shed load like the throttle does, on both the control and GET paths.
+    if (err instanceof SessionCapError) {
+      return withSession(new Response(err.message, { status: 429 }), sid, isNew);
+    }
+    if (err instanceof NotFoundError) {
+      if (opts.renderNotFound) {
+        return withSession(await opts.renderNotFound({ path: url.pathname }), sid, isNew);
+      }
+      return new Response("not found", { status: 404 });
+    }
+    // A real crash (not a redirect/not-found): report it server-side
+    // regardless of how it's rendered (#9), so it's never silently swallowed.
+    emit({
+      category: "request",
+      type: "request-failed",
+      level: "error",
+      error: err,
+      detail: { path: url.pathname },
+    });
+    // setup/load rejection → error route (§10). The app's page owns disclosure.
+    if (opts.renderError) {
+      return withSession(await opts.renderError({ path: url.pathname, error: err }), sid, isNew);
+    }
+    // Fallback: a generic body so error/stack messages don't leak (unless debugErrors).
+    return new Response(safeErrorMessage(err, "internal error"), { status: 500 });
+  }
+
   return {
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
       const { sid, isNew } = sessionOf(req);
-
-      // Origin gate (#52): the control plane is same-origin by default. Checked
-      // before authenticate so the auth hook is never a cross-site side-channel.
-      // SSR GET and route() handlers are deliberately exempt (see below).
-      const isControlPlane =
-        url.pathname === "/__rpxd/stream" ||
-        url.pathname === "/__rpxd/rpc" ||
-        url.pathname === "/__rpxd/control";
-      if (isControlPlane && !originAllowed(req, opts.allowedOrigins)) {
-        emitSecurity("origin-rejected", { origin: req.headers.get("origin"), path: url.pathname });
-        return new Response("forbidden origin", { status: 403 });
-      }
-
-      // Throttle (#6): a per-key token bucket over the HTTP request paths (SSR
-      // GET, rpc/control POST), before authenticate so a flood can't amplify
-      // auth/mount work. The long-lived SSE stream is exempt — a native
-      // EventSource can't reconnect after a non-200, so a 429 there would
-      // permanently kill the live channel. `key(req) === null` skips a request.
-      if (opts.throttle && url.pathname !== "/__rpxd/stream") {
-        const k = opts.throttle.key(req);
-        if (k !== null) {
-          let bucket = throttleBuckets.get(k);
-          if (!bucket) {
-            // Bound the bucket map so the throttle can't itself leak memory under
-            // a key-rotating flood — drop the oldest (a reset bucket starts full,
-            // i.e. lenient, never a bypass of an active limit).
-            if (throttleBuckets.size >= MAX_THROTTLE_KEYS) {
-              const oldest = throttleBuckets.keys().next().value;
-              if (oldest !== undefined) throttleBuckets.delete(oldest);
-            }
-            bucket = new TokenBucket(opts.throttle.limit);
-            throttleBuckets.set(k, bucket);
-          }
-          if (!bucket.take()) {
-            emitSecurity("rate-limited", { key: k, path: url.pathname });
-            return new Response("rate limited", { status: 429 });
-          }
-        }
-      }
-
-      let sessionData: unknown = {};
-      if (opts.authenticate) {
-        try {
-          sessionData = await opts.authenticate(req, { sid });
-        } catch (e) {
-          // Auth rejections are often intentional (logged-out) — don't log the
-          // noise, but hide any unexpected internal message from the client (#9).
-          return new Response(safeErrorMessage(e, "forbidden"), { status: 403 });
-        }
-      }
-
-      try {
-        if (url.pathname === "/__rpxd/stream") {
-          return withSession(await handleStream(req, sid), sid, isNew);
-        }
-        if (url.pathname === "/__rpxd/rpc" && req.method === "POST") {
-          return withSession(await handleRpc(req, sid), sid, isNew);
-        }
-        if (url.pathname === "/__rpxd/control" && req.method === "POST") {
-          return withSession(await handleControl(req, sid, sessionData), sid, isNew);
-        }
-        // HTTP routes (`route()`) — matched before SSR, any method (§ docs/
-        // routes-and-auth.md). The handler owns its own response/cookies; we
-        // still carry the sid cookie on new sessions.
-        if (opts.httpRoutes && opts.httpRoutes.length > 0) {
-          const hit = matchHttpRoute(
-            opts.httpRoutes.map((r) => r.path),
-            url.pathname,
-          );
-          if (hit) {
-            const reg = opts.httpRoutes.find((r) => r.path === hit.path) as HttpRouteRegistration;
-            const method = req.method.toUpperCase() as RouteMethod;
-            const fn = reg.def.handlers[method] ?? reg.def.handlers.ALL;
-            if (!fn) {
-              return withSession(new Response("method not allowed", { status: 405 }), sid, isNew);
-            }
-            const res = await fn(req, { params: hit.params, session: sessionData, sid });
-            return withSession(res, sid, isNew);
-          }
-        }
-        if (req.method === "GET") {
-          // SSR (§12): setup+guard+load run during SSR; the connection adopts the warm
-          // instance via the attach token.
-          const search: Record<string, string> = {};
-          url.searchParams.forEach((v, k) => {
-            search[k] = v;
-          });
-          const entry = await mountInstance(sid, sessionData, url.pathname, search);
-          const ctx: RenderContext = {
-            path: entry.path,
-            params: entry.params,
-            search,
-            state: entry.instance.state,
-            session: entry.instance.session,
-            seq: entry.instance.seq,
-            instance: entry.instance.id,
-            attachToken: entry.attach?.token ?? "",
-          };
-          const render = opts.render ?? defaultRender;
-          return withSession(await render(ctx), sid, isNew);
-        }
-        return new Response("not found", { status: 404 });
-      } catch (e) {
-        // Oversized rpc/control body (§11 ingress DoS guard): reject before it
-        // reaches a handler.
-        if (e instanceof PayloadTooLargeError) {
-          return withSession(new Response(e.message, { status: 413 }), sid, isNew);
-        }
-        // `setup`/`guard`/`load` threw redirect() (§10): a full page load follows a real 302.
-        if (isRedirect(e)) {
-          return withSession(
-            new Response(null, { status: e.status, headers: { location: e.location } }),
-            sid,
-            isNew,
-          );
-        }
-        // The session is at its instance cap with every slot subscribed (C) —
-        // shed load like the throttle does, on both the control and GET paths.
-        if (e instanceof SessionCapError) {
-          return withSession(new Response(e.message, { status: 429 }), sid, isNew);
-        }
-        if (e instanceof NotFoundError) {
-          if (opts.renderNotFound) {
-            return withSession(await opts.renderNotFound({ path: url.pathname }), sid, isNew);
-          }
-          return new Response("not found", { status: 404 });
-        }
-        // A real crash (not a redirect/not-found): report it server-side
-        // regardless of how it's rendered (#9), so it's never silently swallowed.
-        emit({
-          category: "request",
-          type: "request-failed",
-          level: "error",
-          error: e,
-          detail: { path: url.pathname },
-        });
-        // setup/load rejection → error route (§10). The app's page owns disclosure.
-        if (opts.renderError) {
-          return withSession(await opts.renderError({ path: url.pathname, error: e }), sid, isNew);
-        }
-        // Fallback: a generic body so error/stack messages don't leak (unless debugErrors).
-        return new Response(safeErrorMessage(e, "internal error"), { status: 500 });
-      }
+      return runPipeline<RequestCtx, Response>(
+        { req, url, sid, isNew, sessionData: {} },
+        [originStage, throttleStage, authStage, dispatchStage],
+        (err, ctx) => mapRequestError(err, ctx),
+      );
     },
 
     /** Stop timers and dispose every instance (final snapshots included). */
@@ -1111,7 +1235,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           // there's no rpcId to ack until it parses, and no legit client sends
           // an over-cap frame.
           if (raw.length > maxBodyBytes) return;
-          const msg = JSON.parse(raw) as
+          let msg:
             | RpcBatch
             | {
                 type: "resync" | "url" | "mount" | "release";
@@ -1119,11 +1243,27 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                 path?: string;
                 search?: Record<string, string>;
               };
+          try {
+            msg = JSON.parse(raw);
+          } catch {
+            // An unparseable frame (garbled client, transport corruption): report
+            // it through the sink from here rather than letting it escape to
+            // ws.ts's generic catch, which logs but can't tell the client
+            // anything and carries no `reason` to distinguish it from any other
+            // failure mode.
+            emit({
+              category: "request",
+              type: "ws-message-failed",
+              level: "warn",
+              detail: { reason: "unparseable-frame" },
+            });
+            return;
+          }
           if ("calls" in msg) {
-            const entry = ownedInstance(msg.instance, sid);
-            if (entry) void entry.instance.handleBatch(msg);
-            else if (typeof msg.instance === "string" && typeof msg.rpcId === "string")
-              send(unknownInstanceAck(msg.instance, msg.rpcId));
+            // The guarded dispatch boundary (channel pipeline increment 2,
+            // #110/#65) — same funnel `handleRpc` (HTTP) uses. The socket's own
+            // `send` is the sink for the malformed/unknown-instance acks.
+            acceptBatch(msg, sid, send);
             return;
           }
           if (msg.type === "mount" && msg.path) {
@@ -1134,8 +1274,8 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
               subscribeInstance(entry);
             } catch (e) {
               // Answer denials on the socket (mirroring the `url` branch) —
-              // thrown out, they die in the transport's generic catch and the
-              // client waits forever.
+              // thrown out, they'd otherwise die in the transport's generic
+              // catch and the client waits forever.
               const warm = sessions.get(sid)?.get(msg.path);
               if (isRedirect(e)) {
                 send({
@@ -1149,7 +1289,22 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                   instance: "",
                   error: { name: e.name, message: e.message },
                 });
-              } else throw e;
+              } else if (e instanceof NotFoundError) {
+                // #65 WS mount parity: mounting an unregistered path 404s over
+                // SSE/control (`handleControl` lets it propagate to the `fetch`
+                // catch); over WS it must answer the socket the same way rather
+                // than silently dying in the transport's generic catch.
+                send({
+                  seq: 0,
+                  instance: "",
+                  error: { name: e.name, message: e.message },
+                });
+              } else {
+                // A genuinely unexpected error: keep `message()` total (no
+                // outcome may escape unhandled) by reporting it through the
+                // sink instead of throwing.
+                emit({ category: "request", type: "ws-message-failed", level: "error", error: e });
+              }
             }
             return;
           }
@@ -1240,6 +1395,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
 class NotFoundError extends Error {
   constructor(pathname: string) {
     super(`No route matches ${pathname}`);
+    this.name = "NotFoundError";
   }
 }
 
