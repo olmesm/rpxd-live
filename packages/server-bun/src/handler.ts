@@ -4,6 +4,8 @@
  * warm-TTL eviction. Web-standard `Request`/`Response` only — served
  * through any {@link ServerAdapter}.
  */
+
+import { randomBytes } from "node:crypto";
 import {
   decodeBatch,
   defaultDiagnosticSink,
@@ -86,20 +88,32 @@ export interface RpxdHandlerOptions {
    */
   allowedOrigins?: AllowedOrigins;
   /**
-   * Session-cookie attributes (B1). `secure` marks the `rpxd_sid` cookie
+   * Session-cookie attributes (B1, S1). `secure` marks the `rpxd_sid` cookie
    * `Secure` (HTTPS-only) — **default `true`**. Browsers still accept it on
    * `http://localhost` (a secure context) and behind a TLS-terminating proxy;
    * set `false` only for non-localhost HTTP dev, where the sid would otherwise
    * ride cleartext. The dev server / scaffold wire this from `NODE_ENV`.
+   *
+   * `sign` controls HMAC-signing the `rpxd_sid` cookie — **default `true`**:
+   * the sid is always signed, in development (an ephemeral in-memory secret
+   * when none is configured) and production (a configured
+   * {@link RpxdHandlerOptions.sessionSecret} required) alike, so the signing
+   * path is never dev/prod-divergent. Set `false` to explicitly run
+   * unsigned — the sid becomes forgeable — for the rare app that manages its
+   * own session integrity and deliberately doesn't want rpxd to sign.
    */
-  cookie?: { secure?: boolean };
+  cookie?: { secure?: boolean; sign?: boolean };
   /**
-   * Secret for HMAC-signing the `rpxd_sid` cookie (B2). When set, the sid is
+   * Secret for HMAC-signing the `rpxd_sid` cookie (B2, S1). When set, the sid is
    * signed and verified — a forged or unsigned cookie is rejected as a fresh
    * session, closing session fixation and `${sid}:${path}` namespace collision.
-   * Falls back to `process.env.RPXD_SESSION_SECRET`. When neither is set the sid
-   * is unsigned (pre-B2 behavior) and the handler warns once. Signing is
-   * integrity, not confidentiality — pair with the `Secure` cookie for the latter.
+   * Falls back to `process.env.RPXD_SESSION_SECRET`. When neither is set,
+   * signing still happens by default: development gets an ephemeral
+   * process-lifetime secret (dev/prod fidelity — signing, and RSC branding
+   * #95, run exactly as in prod), while production refuses to start (set
+   * `RPXD_SESSION_SECRET`, or opt out deliberately with `cookie: { sign: false
+   * }`). Signing is integrity, not confidentiality — pair with the `Secure`
+   * cookie for the latter.
    */
   sessionSecret?: string;
   /** SSR renderer (§12). Defaults to a minimal HTML shell embedding the bootstrap payload. */
@@ -333,22 +347,34 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   const attachTtlMs = opts.attachTtlMs ?? 10_000;
   // Secure session cookie by default (B1) — opt out only for non-localhost HTTP dev.
   const cookieSecure = opts.cookie?.secure ?? true;
-  // HMAC-signed sid (B2): unforgeable when a secret is set. Falls back to env;
-  // unset or empty → unsigned + a one-time warning (the sid stays forgeable).
-  // `||` (not `??`) collapses an empty-string secret to `undefined` so the
-  // write, read, and warning paths all agree it means "unsigned".
-  const sessionSecret = opts.sessionSecret || process.env.RPXD_SESSION_SECRET || undefined;
-  if (!sessionSecret) {
-    // Secure by default (S1): an unsigned sid is forgeable, so refuse to boot
-    // outside development rather than silently downgrade in prod/staging/unset.
-    if (!isDev()) {
+  // Sign by default (S1): the only way to run unsigned is the explicit escape
+  // hatch below, so an unsigned sid is never an accidental default.
+  const explicitUnsigned = opts.cookie?.sign === false;
+  // HMAC-signed sid (B2): unforgeable when a secret is set. `||` (not `??`)
+  // collapses an empty-string secret to `undefined` so it's treated the same
+  // as "no secret configured" below, rather than signing with an empty key.
+  let sessionSecret = opts.sessionSecret || process.env.RPXD_SESSION_SECRET || undefined;
+  if (!sessionSecret && !explicitUnsigned) {
+    if (isDev()) {
+      // Dev/prod fidelity: no configured secret in dev → an ephemeral in-memory
+      // secret so signing (and RSC branding, #95) runs exactly as in prod. It
+      // changes per process start — a scaffolded app's .env (S2) gives a stable
+      // one; a bare handler just gets fresh sessions across restarts.
+      sessionSecret = randomBytes(32).toString("hex");
+      warnEphemeralDevSecret();
+    } else {
+      // Secure by default (S1): an unsigned sid is forgeable, so refuse to boot
+      // outside development rather than silently downgrade in prod/staging/unset.
       throw new Error(
-        "rpxd: refusing to start — the session cookie is unsigned outside development. " +
-          "Set RPXD_SESSION_SECRET (32+ random bytes) in production, or NODE_ENV=development for local dev.",
+        "rpxd: refusing to start — no session-cookie signing secret. " +
+          "Set RPXD_SESSION_SECRET (32+ random bytes) in production, " +
+          "NODE_ENV=development for local dev (ephemeral secret), " +
+          "or cookie: { sign: false } to run unsigned deliberately.",
       );
     }
-    warnUnsignedSid(); // development only: keep the existing one-time warning
   }
+  // explicitUnsigned → sessionSecret stays undefined → the existing unsigned read/write path runs.
+  if (explicitUnsigned) warnUnsignedSid();
   const debugErrors = opts.debugErrors ?? false; // #9: hide internal errors from clients by default
   /** Throttle buckets, keyed by the app's `throttle.key(req)` (#6, in-process). */
   const throttleBuckets = new Map<string, TokenBucket>();
@@ -1437,12 +1463,30 @@ class SessionCapError extends Error {
 }
 
 let unsignedSidWarned = false;
-/** Warn once per process that the session cookie is unsigned (B2). */
+/**
+ * Warn once per process that cookie signing was explicitly disabled (S1). Only
+ * fires for the deliberate `cookie: { sign: false }` escape hatch — signing is
+ * on by default, so this no longer fires for an unconfigured secret (that case
+ * now signs, via an ephemeral dev secret or a required prod one).
+ */
 function warnUnsignedSid(): void {
   if (unsignedSidWarned) return;
   unsignedSidWarned = true;
   console.warn(
-    "[rpxd] no session secret set — the rpxd_sid cookie is unsigned and forgeable. " +
-      "Set `sessionSecret` (or the RPXD_SESSION_SECRET env var) to sign it (B2).",
+    "[rpxd] cookie signing explicitly disabled (cookie.sign:false) — the sid is forgeable.",
+  );
+}
+
+let ephemeralDevSecretWarned = false;
+/**
+ * Warn once per process that dev is running on an ephemeral, process-lifetime
+ * session secret (S1) — config-time, so `console.*` is the intentional
+ * exception (CLAUDE.md "Conventions").
+ */
+function warnEphemeralDevSecret(): void {
+  if (ephemeralDevSecretWarned) return;
+  ephemeralDevSecretWarned = true;
+  console.info(
+    "[rpxd] using an ephemeral dev session secret — set RPXD_SESSION_SECRET for sessions stable across restarts.",
   );
 }

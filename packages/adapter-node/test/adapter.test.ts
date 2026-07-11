@@ -329,7 +329,14 @@ describe("nodeAdapter", () => {
   });
 
   it("upgrades a websocket and delivers the initial envelope", async () => {
-    const handler = createRpxdHandler({ routes: [{ path: "/", def }], warmTtlMs: 10 });
+    // fixed literal cookie below (shared between the mount fetch and the WS
+    // upgrade) needs a stable, unsigned sid — see S1 (session-cookie signing
+    // now on by default under dev's ephemeral secret).
+    const handler = createRpxdHandler({
+      routes: [{ path: "/", def }],
+      warmTtlMs: 10,
+      cookie: { sign: false },
+    });
     const ws = wsTransport(handler);
     const handle = nodeAdapter().serve({
       port: 0,

@@ -14,7 +14,19 @@ const COOKIE = "rpxd_sid=dev-ws-session";
 let server: DevServer;
 
 beforeAll(async () => {
-  server = await createDevServer(root, { port: 0 });
+  // S1: signing is on by default (an ephemeral per-instance secret in dev),
+  // which would reject the fixed literal `COOKIE` above as forged on every
+  // request. This suite is about the WS transport, not cookie signing, so
+  // opt into the explicit unsigned escape hatch. `configOverride` shallow-merges
+  // `session`, so this also replaces kitchen-sink's own `session.authenticate` —
+  // reinstate a minimal one (just `sid`, no real auth backend) since the todos
+  // domain layer scopes rows by `ctx.session.sid` (see domain/scope.ts).
+  server = await createDevServer(root, {
+    port: 0,
+    configOverride: {
+      session: { authenticate: (_req, { sid }) => ({ sid }), cookie: { sign: false } },
+    },
+  });
 });
 
 afterAll(async () => {

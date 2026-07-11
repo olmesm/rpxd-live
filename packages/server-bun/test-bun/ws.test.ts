@@ -33,7 +33,12 @@ let handle: ServeHandle;
 const COOKIE = "rpxd_sid=ws-session";
 
 beforeAll(() => {
-  handler = createRpxdHandler({ routes: [{ path: "/", def }], warmTtlMs: 50 });
+  // fixed literal cookies throughout this file need a stable, unsigned sid.
+  handler = createRpxdHandler({
+    routes: [{ path: "/", def }],
+    warmTtlMs: 50,
+    cookie: { sign: false },
+  });
   const ws = wsTransport(handler);
   handle = bunAdapter().serve({
     port: 0,
@@ -218,6 +223,7 @@ describe("guarded batch-dispatch boundary (channel pipeline increment 2, #110/#6
     const localHandler = createRpxdHandler({
       routes: [{ path: "/", def }],
       onDiagnostic: (e) => events.push(e),
+      cookie: { sign: false },
     });
     const localWs = wsTransport(localHandler);
     const local = bunAdapter().serve({

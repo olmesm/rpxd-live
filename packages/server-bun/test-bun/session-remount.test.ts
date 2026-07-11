@@ -22,6 +22,7 @@ describe("session-change re-mount", () => {
       routes: [{ path: "/", def }],
       authenticate: (req, { sid }) => ({ sid, user: req.headers.get("x-user") ?? undefined }),
       warmTtlMs: 10_000,
+      cookie: { sign: false }, // fixed literal cookie below needs a stable, unsigned sid
     });
     const cookie = "rpxd_sid=fixed-sid"; // pin the session so all hit one instance key
     const get = (user?: string) =>

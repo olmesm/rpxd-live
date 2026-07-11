@@ -22,6 +22,14 @@ beforeAll(async () => {
     configOverride: {
       instances: { maxInstancesPerSession: 1 },
       onDiagnostic: (e) => events.push(e),
+      // S1: signing is on by default (an ephemeral per-instance secret in dev),
+      // which would reject the fixed literal `COOKIE` below as forged on every
+      // request. This test is about instances.*/onDiagnostic config forwarding,
+      // not cookie signing, so opt into the explicit unsigned escape hatch.
+      // `configOverride` shallow-merges, so this also drops kitchen-sink's own
+      // `session.authenticate` — harmless here, neither route this file mounts
+      // is guarded.
+      session: { cookie: { sign: false } },
     },
   });
 }, 60_000);

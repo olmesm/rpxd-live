@@ -35,6 +35,13 @@ function makeHandler(
     routes: [{ path: "/org/$orgId/board", def: boardDef }],
     warmTtlMs: 1000,
     attachTtlMs: 1000,
+    // S1: signing is on by default, and vitest runs NODE_ENV=development (see
+    // vitest.config.ts), so a bare handler would otherwise get an ephemeral
+    // per-instance secret — the fixed literal `cookieOf(sid)` cookies this
+    // file uses to simulate stable sessions across requests would no longer
+    // verify. This suite doesn't test cookie signing, so opt into the explicit
+    // unsigned escape hatch.
+    cookie: { sign: false },
     ...overrides,
   });
 }
@@ -187,6 +194,7 @@ describe("duplicate concurrent mounts — one key, one entry", () => {
       storage,
       warmTtlMs: 1000,
       attachTtlMs: 100,
+      cookie: { sign: false }, // fixed literal cookie below needs a stable, unsigned sid
     });
     const req = () =>
       new Request(`${base}/__rpxd/control`, {
