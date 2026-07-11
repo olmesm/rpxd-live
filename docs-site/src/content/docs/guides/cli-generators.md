@@ -5,14 +5,16 @@ sidebar:
   order: 11
 ---
 
-The `rpxd` CLI ships three generators alongside `dev`/`build`/`start`. They are
-**file scaffolders**: they write files and _print_ anything that touches a file
-you own (`rpxd.config.ts`, `package.json`). They never patch those two in
-place, and they never overwrite an existing file unless you pass `--force` —
-the framework maintains the mirror, not the logic (see
-[Routes & auth](/rpxd-live/guides/routes-and-auth/)). `prisma/schema.prisma` is
-the one exception: when your app has a database, generators **append** models
-to it directly (append-only — existing models are never rewritten).
+The `rpxd` CLI can scaffold a new app, a working page, and auth wiring — one
+command each: `init`, `scaffold`, and `auth`, shipped alongside
+`dev`/`build`/`start`.
+
+All three are **file scaffolders** with the same guarantees. They write new
+files, and they _print_ anything that touches a file you own (`rpxd.config.ts`,
+`package.json`) rather than patching it. They never overwrite an existing file
+unless you pass `--force`. The one exception is `prisma/schema.prisma`: when
+your app has a database, generators **append** models to it directly —
+append-only, so existing models are never rewritten.
 
 ## Write one by hand first
 
@@ -35,7 +37,7 @@ bunx @rpxd/cli init my-app        # auth + Prisma/SQLite by default
 cd my-app && bun install && bun run setup && bun run dev
 ```
 
-`init` scaffolds the documented userland tree — `routes/`, `domain/`,
+`init` scaffolds the documented app tree — `routes/`, `domain/`,
 `adapters/`, `prisma/`, `rpxd.config.ts` — with a runnable welcome route so the
 app boots immediately.
 
@@ -93,11 +95,12 @@ map to TypeScript and Prisma:
 
 **Auth apps protect pages by default.** When the app has auth, a scaffolded
 page's `guard` redirects to `/login` when signed out, and the generated test
-signs in so it still passes — pass `--no-protected` for a public page. Without
-auth, pages are public (there's no login route to bounce to), and `--protected`
-is ignored with a note. An `http` route has no `guard` gate, so protection never
-applies to it. (The auth-generated account page is the one exception: its state
-*is* the signed-in user, so its redirect lives in `setup` rather than `guard`.)
+signs in so it still passes. Pass `--no-protected` for a public page. Without
+auth, pages are public — there's no login route to bounce to — and
+`--protected` is ignored with a note. An `http` route has no `guard` gate, so
+protection never applies to it. One exception: the auth-generated account page.
+Its state *is* the signed-in user, so its redirect lives in `setup` rather than
+`guard`.
 
 ### Relationships
 

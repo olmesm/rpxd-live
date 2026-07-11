@@ -5,10 +5,11 @@ sidebar:
   order: 2
 ---
 
-rpxd is Bun-first, but nothing in the runtime is Bun-only past the adapter
-boundary. The handler is web-standard (`Request`/`Response`/`ReadableStream`),
-so `@rpxd/adapter-node` runs the same server on **Node ≥ 24** — the floor the
-package's `engines` enforces and CI tests against.
+rpxd is Bun-first, but the only Bun-only code is the thin adapter that binds
+the runtime to an HTTP server. The handler is web-standard
+(`Request`/`Response`/`ReadableStream`), so `@rpxd/adapter-node` runs the same
+server on **Node ≥ 24** — the floor the package's `engines` enforces and CI
+tests against.
 
 ## When you'd choose Node
 
@@ -18,10 +19,8 @@ standardizes on it. If you're greenfield, Bun is the default and the fast path.
 The addressable surface is otherwise identical: same framework, same wire
 protocol, same storage seam.
 
-Node ≥ 24 is required because rpxd runs its TypeScript source directly, with no
-build step and no `--experimental-transform-types` — the source is kept erasable
-(no enums, parameter properties, or runtime namespaces), which unflagged Node ≥
-24 executes as-is.
+Node ≥ 24 is required because rpxd runs its TypeScript source directly, with
+no build step — unflagged support for that landed in Node 24.
 
 ## The two swaps
 

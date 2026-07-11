@@ -5,9 +5,11 @@ sidebar:
   order: 7
 ---
 
-Filters, sort, and a search box are all just search params read by the
-[loader (`load`)](/rpxd-live/guides/loading-data/). Each is a `nav.patch`; the URL
-stays the source of truth, so the view is shareable and back-button-correct.
+This page builds filter tabs, a sort menu, and a debounced search box. All
+three are just search params read by the
+[loader (`load`)](/rpxd-live/guides/loading-data/). Each change is a
+`nav.patch`; the URL stays the source of truth, so the view is shareable and
+back-button-correct.
 
 ```tsx
 export default live("/issues")

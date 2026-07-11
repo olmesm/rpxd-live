@@ -8,38 +8,44 @@ sidebar:
 rpxd's security posture is mostly "secure by default, with an explicit
 opt-out": the session cookie, the control-plane origin check, and the
 capacity caps all ship locked down. This page is the map of every
-security-relevant knob and what it defends against; the two written up in
+security-relevant knob and what it defends against. The two written up in
 full depth — the cookie and the origin policy — live in
 [HTTP routes & authentication](/rpxd-live/guides/routes-and-auth/) and are
 linked below rather than repeated.
 
 ## Session cookie
 
-`rpxd_sid` is always `HttpOnly` and `SameSite=Lax`, and `Secure` by
-default — HTTPS-only, plus `http://localhost` (a secure context) and behind a
-TLS-terminating proxy; only non-localhost HTTP dev needs
-`session.cookie.secure: false`. Set `RPXD_SESSION_SECRET` (or
-`session.secret` in `rpxd.config.ts`) to HMAC-sign the sid: a forged or
-unsigned cookie is then rejected as a brand-new session, closing session
-fixation and the `${sid}:${path}` storage-namespace collision. Without a
-secret the sid is unsigned and the server warns once on startup — set one in
-production. Signing is integrity, not confidentiality; it pairs with the
-`Secure` cookie for that. Full detail:
+`rpxd_sid` is always `HttpOnly` and `SameSite=Lax`, and `Secure` by default.
+`Secure` means HTTPS-only — browsers still accept it on `http://localhost` (a
+secure context) and behind a TLS-terminating proxy, so only non-localhost HTTP
+dev needs `session.cookie.secure: false`.
+
+Set `RPXD_SESSION_SECRET` (or `session.secret` in `rpxd.config.ts`) to
+HMAC-sign the sid. A forged or unsigned cookie is then rejected as a brand-new
+session. That closes session fixation, and it stops an attacker who invents a
+sid from reaching another session's stored snapshots — storage is keyed by
+sid. Without a secret the sid is unsigned and the server warns once on
+startup — set one in production. Signing is integrity, not confidentiality; it
+pairs with the `Secure` cookie for that. Full detail:
 [Session-cookie security](/rpxd-live/guides/routes-and-auth/#session-cookie-security).
 
 ## Cross-site protection — the origin policy
 
-The control plane (`/__rpxd/ws|stream|rpc|control`) carries ambient
-credentials, and the same-origin policy does **not** apply to WebSocket
-handshakes — without a check, a malicious page could open a duplex socket
-with a logged-in victim's cookies. rpxd gates the control plane same-origin
-by default, checked *before* `authenticate` runs, so the auth hook is never a
-cross-site side-channel; a rejected request gets `403`. An absent `Origin`
-header (native apps, server-to-server calls, CLIs) is allowed — the attack is
-browser-only. SSR `GET` navigation and `route()` handlers are never gated — a
-top-level nav is legitimately cross-site. Widen the allowlist with an exact
-array, a predicate (for wildcard subdomains / proxy-aware matching), or
-`["*"]` to opt back into any-origin. Full detail:
+The **control plane** — rpxd's own endpoints,
+`/__rpxd/ws|stream|rpc|control` — carries ambient credentials: the browser
+attaches the session cookie automatically, no matter which site initiated the
+request. And the same-origin policy does **not** apply to WebSocket
+handshakes. Without a check, a malicious page could open a socket carrying a
+logged-in victim's cookies.
+
+So rpxd gates the control plane same-origin by default; a rejected request
+gets `403`. The check runs *before* `authenticate`, so the auth hook is never
+a cross-site side-channel. An absent `Origin` header (native apps,
+server-to-server calls, CLIs) is allowed — the attack is browser-only. SSR
+`GET` navigation and `route()` handlers are never gated, since a top-level nav
+is legitimately cross-site. Widen the allowlist with an exact array, a
+predicate (for wildcard subdomains / proxy-aware matching), or `["*"]` to opt
+back into any-origin. Full detail:
 [Cross-site protection](/rpxd-live/guides/routes-and-auth/#cross-site-protection--the-origin-policy).
 
 ## Throttling
@@ -112,10 +118,10 @@ for the full error-handling map.
 ## Observability: `onDiagnostic`
 
 Every rejection or capacity eviction above emits an `RpxdDiagnostic` if you
-provide `onDiagnostic` — the framework-wide diagnostic sink (#73), a single
-place to log or meter the whole runtime instead of re-deriving it from access
-logs. The security surface is `category: "security"`, whose taxonomy is exactly
-four types:
+provide `onDiagnostic` — the framework-wide diagnostic sink, a single place to
+log or meter the whole runtime instead of re-deriving it from access logs. The
+security surface is `category: "security"`, whose taxonomy is exactly four
+types:
 
 | `type` | Fired when |
 | --- | --- |

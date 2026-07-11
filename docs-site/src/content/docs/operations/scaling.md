@@ -112,11 +112,12 @@ redis(client, { prefix: "myapp:prod:" });
 
 A publish that fails is **logged, not thrown** (an uncaught rejection would
 crash Node under its default policy). The practical consequence: a dropped
-broadcast costs its peers one *live* update — the event never reaches their warm
-instances. It is not healed by a `resync`, which returns the current in-memory
-state (still missing the event); it's healed the next time those instances
-**re-mount** — a cold wake, a navigation, or a full reload re-runs `setup`/`load`,
-which read fresh truth from your database. Broadcasts are the real-time layer;
+broadcast costs its peers one *live* update — the event never reaches their
+warm (in-memory) instances. A `resync` does not heal it, because resync
+returns the current in-memory state, which is still missing the event. What
+heals it is the next **re-mount**: a cold wake, a navigation, or a full reload
+re-runs `setup`/`load`, which read fresh truth from your database. Broadcasts
+are the real-time layer;
 the database is the source of truth. Design `on` handlers as event application
 over data you can also re-derive from a load, and a missed broadcast degrades to
 "a moment stale until the next load," never to permanent divergence.
@@ -126,10 +127,12 @@ over data you can also re-derive from a load, and a missed broadcast degrades to
 One thing does *not* span nodes: the opt-in request **throttle** is an
 in-process token bucket. In a multi-node deployment each node meters its own
 share, so N nodes multiply the effective limit by N. **Rate-limit at the proxy
-or edge** for a global ceiling. (And note the throttle key must derive from a
-trusted source — a raw `X-Forwarded-For` is client-spoofable, so an attacker
-rotating it gets a fresh bucket per request; key on a socket peer address or a
-proxy-set header you control.)
+or edge** for a global ceiling.
+
+The throttle key must also derive from a trusted source. A raw
+`X-Forwarded-For` is client-spoofable — an attacker rotating it gets a fresh
+bucket per request. Key on a socket peer address or a proxy-set header you
+control.
 
 ## Rolling deploys
 

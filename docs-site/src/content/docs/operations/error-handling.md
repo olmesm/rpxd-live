@@ -26,12 +26,12 @@ server responses that never reach a live-object handler at all.
 
 ## rpc calls reject
 
-`rpc.*` calls return a promise per batch: it resolves on ack, and **rejects**
-with the ack error on a handler throw, a validation failure, or an unknown rpc
-name (`packages/client/src/store.ts`, `LiveStore#call`). This is documented in
+`rpc.*` calls return a promise per batch: it resolves on the ack (the server's
+acknowledgment of the batch), and **rejects** with the ack error on a handler
+throw, a validation failure, or an unknown rpc name. This is documented in
 the [testing guide](/rpxd-live/guides/testing/) for the harness's `t.rpc.*`,
 but the same contract holds for the browser's `rpc.*` render prop — it's the
-same `LiveStore` underneath.
+same store underneath.
 
 ```tsx
 try {
@@ -47,9 +47,9 @@ Client-side `.input()` validation runs *before* the optimistic update and
 before anything is queued, so a rejected schema never shows an optimistic row
 that then has to roll back — the promise just rejects immediately. Server-side
 validation, a handler throw, and a `.rateLimit()` exhaustion all reject later,
-on the ack: the optimistic view rolls back for free (the rendered `state` is
-always `replay(pending, confirmed)`, so dropping the failed op *is* the
-rollback — nothing to undo).
+on the ack. There the optimistic view rolls back for free: the rendered
+`state` is always the pending optimistic ops replayed over confirmed state, so
+dropping the failed op *is* the rollback — nothing to undo.
 
 ## `sync.errors` + dismissing them
 
@@ -110,7 +110,8 @@ demo: it streams rows in as they parse, then a deliberately malformed row
 throws mid-stream, and `.onError` repairs `importing`/`error` while the
 already-imported rows stay in state.
 
-**Whole-rpc all-or-nothing is control flow, not a flag** — see
+**Want the whole rpc to be all-or-nothing? Use plain control flow** — do the
+fallible work first, then `patchState` once at the end. See
 [Async handlers & streaming](/rpxd-live/guides/async-handlers-streaming/) and
 the design note below. `.onError` repairs live-object *state*; it never
 touches your database. If a handler's fallible work writes to storage, wrap
@@ -150,8 +151,7 @@ the client by default: production returns a generic `500` (or `403` for a
 denied `authenticate`/`guard`), and the actual error is logged server-side via
 `console.error`. Set `debugErrors: true` (the dev server does this
 automatically) to echo the real message in the fallback plain-text body
-instead of the generic one — `packages/server-bun/src/handler.ts`,
-`safeErrorMessage()` and the `debugErrors` option. Note this only affects the
+instead of the generic one. Note this only affects the
 built-in plain-text fallback; a custom `renderError` owns its own disclosure
 and should apply the same default-safe rule itself.
 
@@ -159,7 +159,7 @@ and should apply the same default-safe rule itself.
 
 `.rateLimit({ capacity, refillPerSec })` on an rpc chain (or `defaultRateLimit`
 app-wide, applied to any rpc that doesn't declare its own) attaches a
-per-instance token bucket (`packages/core/src/rate-limit.ts`, `TokenBucket`).
+per-instance token bucket.
 An exhausted bucket throws `RateLimitError` from inside the same dispatch path
 as a handler throw — so it surfaces exactly the same way: the `rpc.*` promise
 rejects (`error.name === "RateLimitError"`) and the error lands in
@@ -178,8 +178,8 @@ for the full throttle/security picture.
 
 There's no transaction flag on the fluent chain. Whole-rpc all-or-nothing is
 plain control flow: do the fallible work first (or wrap it in `try/catch`),
-accumulate results in locals, and call `patchState` once at the end — a throw
-before that terminal write applies nothing, which is exactly what a rollback
+accumulate results in locals, and call `patchState` once at the end. A throw
+before that terminal write applies nothing — exactly what a rollback
 buffer would have bought you, with no extra API to learn. `.onError` remains
 for repairing state after a throw that *did* leave some `patchState` calls
 applied earlier in the handler. The full reasoning — including why this is
