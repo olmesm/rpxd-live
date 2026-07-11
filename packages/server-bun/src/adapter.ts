@@ -21,6 +21,14 @@ export interface SocketLike<T = unknown> {
   data: T;
   send(message: string): void;
   close(): void;
+  /**
+   * Bytes queued on the socket but not yet flushed to the peer — the egress
+   * byte budget's measure (§11 slow-consumer guard; `maxBufferedBytes`).
+   * Bun's `ServerWebSocket` provides it natively; the Node adapter maps it to
+   * the `ws` package's `bufferedAmount`. Optional: without it the budget is
+   * simply unenforced on that socket (never a false kill).
+   */
+  getBufferedAmount?(): number;
 }
 
 /** Socket lifecycle callbacks for the ws transport (§11). */

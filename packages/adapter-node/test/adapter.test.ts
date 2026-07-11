@@ -12,7 +12,7 @@ import type { LiveDefinition } from "@rpxd/core";
 import { createRpxdHandler, wsTransport } from "@rpxd/server-bun";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { nodeAdapter, writeChunk } from "../src/index.ts";
+import { nodeAdapter, writeChunk, writeWebResponse } from "../src/index.ts";
 
 /** A live (not-yet-departed) node response double with the flags `writeChunk` consults. */
 function fakeRes(overrides: Record<string, unknown>): ServerResponse {
@@ -23,6 +23,63 @@ function fakeRes(overrides: Record<string, unknown>): ServerResponse {
     ...overrides,
   }) as unknown as ServerResponse;
 }
+
+describe("writeWebResponse — body-error reap", () => {
+  it("destroys the response when the body stream errors while parked on backpressure", async () => {
+    // The egress-budget kill (server-bun) errors the body stream of a stalled
+    // client. That client never fires 'drain', so the parked writeChunk can't
+    // observe the rejection — the adapter must destroy the response to unstick
+    // the loop and reap the socket, or every killed laggard leaks a connection.
+    let destroyed = false;
+    const res = fakeRes({
+      write: () => false, // every write parks — a fully stalled socket
+      setHeader: () => {},
+      end: () => {},
+      destroy(this: ServerResponse) {
+        destroyed = true;
+        (this as unknown as { destroyed: boolean }).destroyed = true;
+        this.emit("close");
+      },
+    });
+    let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        ctrl = c;
+      },
+    });
+    ctrl.enqueue(new Uint8Array([1])); // first chunk parks the write loop
+    const done = writeWebResponse(res, new Response(body));
+    await new Promise((r) => setTimeout(r, 20)); // loop is parked on 'drain'
+    ctrl.error(new Error("egress buffer exceeded maxBufferedBytes"));
+    const settled = await Promise.race([
+      done.then(() => true),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 500)),
+    ]);
+    expect(destroyed).toBe(true); // socket reaped, not left half-open
+    expect(settled).toBe(true); // and the write loop actually exited
+  });
+
+  it("does not destroy on a normally completed body", async () => {
+    let destroyed = false;
+    const res = fakeRes({
+      write: () => true,
+      setHeader: () => {},
+      end: () => {},
+      destroy() {
+        destroyed = true;
+      },
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new Uint8Array([1]));
+        c.close();
+      },
+    });
+    await writeWebResponse(res, new Response(body));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(destroyed).toBe(false); // clean end stays a clean end
+  });
+});
 
 describe("writeChunk backpressure", () => {
   it("resolves immediately when the socket accepts the write", async () => {

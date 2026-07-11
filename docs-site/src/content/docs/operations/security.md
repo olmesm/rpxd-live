@@ -70,8 +70,9 @@ entrypoint entirely. Rate-limit the upgrade itself at the edge for WS apps.
 
 ## Capacity caps as DoS hardening
 
-Independent of throttling, the instance registry bounds itself so scan
-traffic or a single runaway session can't grow memory unbounded:
+Independent of throttling, the instance registry and its connections bound
+themselves so scan traffic, a single runaway session, or a stalled client
+can't grow memory unbounded:
 
 - **`maxUnattachedInstances`** (default 1024) — a hard cap on instances no
   client has ever attached to (a cookieless GET from a crawler or bot warms
@@ -85,6 +86,20 @@ traffic or a single runaway session can't grow memory unbounded:
   room; if every held instance is subscribed to a live connection, the mount
   is rejected (`429` on HTTP, an error envelope on WS) instead of pinning
   unbounded instances.
+- **`maxBufferedBytes`** (default 8 MiB) — a per-connection egress byte
+  budget. A client that reads its stream slower than the server produces
+  updates buffers the difference in server memory. Past the budget the
+  connection is killed and the client's automatic reconnect recovers with a
+  fresh snapshot. Healthy connections buffer next to nothing, so only stalled
+  ones ever approach it. Keep the budget comfortably above your largest full
+  state snapshot — a smaller budget would kill every reconnect too. `null`
+  disables it. One honest caveat: enforcement needs the runtime to expose how
+  many bytes a connection has buffered. WebSocket connections (Bun and Node)
+  and SSE on the Node adapter report it continuously; SSE on Bun does not —
+  Bun buffers streamed responses internally — so there the budget only
+  catches a single over-budget burst, such as a snapshot larger than the
+  budget at connect time. On Bun, pair the budget with `transport: ws()` or a
+  proxy idle policy if slow-reader protection matters to you.
 
 Each instance also holds its own internal work queue — everything that
 touches its state runs through it: patchState writes, the URL loader, rpc
@@ -134,7 +149,7 @@ for the full error-handling map.
 Every rejection or capacity eviction above emits an `RpxdDiagnostic` if you
 provide `onDiagnostic` — the framework-wide diagnostic sink, a single place to
 log or meter the whole runtime instead of re-deriving it from access logs. The
-security surface is `category: "security"`, whose taxonomy is exactly four
+security surface is `category: "security"`, whose taxonomy is exactly five
 types:
 
 | `type` | Fired when |
@@ -143,6 +158,7 @@ types:
 | `rate-limited` | `throttle` bucket exhausted for a key |
 | `cap-evicted` | An idle/un-attached instance was shed to stay under a capacity cap |
 | `cap-rejected` | A mount was rejected — every slot at `maxInstancesPerSession` was subscribed |
+| `stream-overflow` | A connection was killed for buffering more than `maxBufferedBytes` unsent |
 
 `onDiagnostic` also receives `request`-, `instance`-, and `storage`-category
 diagnostics (crashed requests, WS faults, flush/broadcast/snapshot failures, a

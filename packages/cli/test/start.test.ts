@@ -23,6 +23,15 @@ describe("instanceHandlerOptions (RpxdConfig -> RpxdHandlerOptions wiring)", () 
     });
   });
 
+  it("forwards the egress byte budget (maxBufferedBytes), including the null opt-out", () => {
+    expect(instanceHandlerOptions({ instances: { maxBufferedBytes: 1024 } }).maxBufferedBytes).toBe(
+      1024,
+    );
+    expect(
+      instanceHandlerOptions({ instances: { maxBufferedBytes: null } }).maxBufferedBytes,
+    ).toBeNull();
+  });
+
   it("forwards onDiagnostic", () => {
     const onDiagnostic = vi.fn();
     const config: RpxdConfig = { onDiagnostic };

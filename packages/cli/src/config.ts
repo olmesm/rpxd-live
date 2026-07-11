@@ -102,13 +102,14 @@ export interface RpxdConfig {
    */
   onShutdown?: () => void | Promise<void>;
   /**
-   * Tuning knobs for the in-memory instance registry (§11): warm/attach TTLs,
-   * the capacity caps that bound memory under scan floods or a runaway
-   * session (#61), and each instance's queue-backlog observability
-   * (`warnQueueDepth`) plus its opt-in broadcast-backlog cap
-   * (`maxBroadcastBacklog`) — see each field's doc on
-   * {@link RpxdHandlerOptions} for defaults and behavior. Forwarded straight
-   * through; omit a field to keep its handler default.
+   * Tuning knobs for the in-memory instance registry (§11) and its
+   * connections: warm/attach TTLs, the capacity caps that bound memory under
+   * scan floods or a runaway session (#61), each instance's queue-backlog
+   * observability (`warnQueueDepth`) plus its opt-in broadcast-backlog cap
+   * (`maxBroadcastBacklog`), and the per-connection egress byte budget that
+   * bounds what a stalled client can buffer (`maxBufferedBytes`) — see each
+   * field's doc on {@link RpxdHandlerOptions} for defaults and behavior.
+   * Forwarded straight through; omit a field to keep its handler default.
    *
    * @example
    * ```ts
@@ -124,6 +125,7 @@ export interface RpxdConfig {
     | "unattachedTtlMs"
     | "maxUnattachedInstances"
     | "maxInstancesPerSession"
+    | "maxBufferedBytes"
     | "warnQueueDepth"
     | "maxBroadcastBacklog"
   >;
@@ -245,6 +247,7 @@ export function instanceHandlerOptions(
   | "unattachedTtlMs"
   | "maxUnattachedInstances"
   | "maxInstancesPerSession"
+  | "maxBufferedBytes"
   | "warnQueueDepth"
   | "maxBroadcastBacklog"
   | "onDiagnostic"
