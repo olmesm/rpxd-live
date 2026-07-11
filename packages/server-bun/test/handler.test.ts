@@ -1457,3 +1457,66 @@ describe("tier-2 soft reload — late mount over the live stream (§7)", () => {
     await handler.dispose();
   });
 });
+
+describe("request pipeline (Channel A, #75)", () => {
+  // The refactor of `fetch` into named stages (origin → throttle → auth →
+  // dispatch) over `runPipeline` (@rpxd/core) is behavior-preserving — these
+  // three tests pin the *ordering* in a way a flat ladder can't cleanly
+  // assert: each earlier stage must short-circuit before any later stage's
+  // side effect (an authenticate call, a dispatch handler run) occurs.
+
+  it("origin gate precedes auth — a rejected cross-origin control POST never invokes authenticate", async () => {
+    let authCalls = 0;
+    const handler = makeHandler({
+      authenticate: () => {
+        authCalls++;
+        return {};
+      },
+    });
+    const res = await handler.fetch(
+      new Request(`${base}/__rpxd/control`, {
+        method: "POST",
+        headers: { ...COOKIE, origin: "http://evil.example" },
+        body: JSON.stringify({ type: "mount", path: "/org/9/board" }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(authCalls).toBe(0);
+    await handler.dispose();
+  });
+
+  it("throttle precedes auth — a throttled request never invokes authenticate", async () => {
+    let authCalls = 0;
+    const handler = makeHandler({
+      throttle: { key: () => "k", limit: { capacity: 0, refillPerSec: 0 } },
+      authenticate: () => {
+        authCalls++;
+        return {};
+      },
+    });
+    const res = await handler.fetch(new Request(`${base}/org/7/board`, { headers: COOKIE }));
+    expect(res.status).toBe(429);
+    expect(authCalls).toBe(0);
+    await handler.dispose();
+  });
+
+  it("auth precedes dispatch — an authenticate rejection never runs the route's setup", async () => {
+    let setupRuns = 0;
+    const guardedDef: LiveDefinition<{ ok: boolean }, "/guarded", Record<string, unknown>> = {
+      setup: () => {
+        setupRuns++;
+        return { ok: true };
+      },
+    };
+    const handler = createRpxdHandler({
+      routes: [{ path: "/guarded", def: guardedDef }],
+      authenticate: () => {
+        throw new Error("nope");
+      },
+    });
+    const res = await handler.fetch(new Request(`${base}/guarded`, { headers: COOKIE }));
+    expect(res.status).toBe(403);
+    expect(setupRuns).toBe(0);
+    await handler.dispose();
+  });
+});
