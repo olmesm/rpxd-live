@@ -8,6 +8,7 @@ import {
   decodeBatch,
   defaultDiagnosticSink,
   type Envelope,
+  isDev,
   isRedirect,
   isSuperseded,
   type LiveDefinition,
@@ -335,7 +336,17 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   // `||` (not `??`) collapses an empty-string secret to `undefined` so the
   // write, read, and warning paths all agree it means "unsigned".
   const sessionSecret = opts.sessionSecret || process.env.RPXD_SESSION_SECRET || undefined;
-  if (!sessionSecret) warnUnsignedSid();
+  if (!sessionSecret) {
+    // Secure by default (S1): an unsigned sid is forgeable, so refuse to boot
+    // outside development rather than silently downgrade in prod/staging/unset.
+    if (!isDev()) {
+      throw new Error(
+        "rpxd: refusing to start — the session cookie is unsigned outside development. " +
+          "Set RPXD_SESSION_SECRET (32+ random bytes) in production, or NODE_ENV=development for local dev.",
+      );
+    }
+    warnUnsignedSid(); // development only: keep the existing one-time warning
+  }
   const debugErrors = opts.debugErrors ?? false; // #9: hide internal errors from clients by default
   /** Throttle buckets, keyed by the app's `throttle.key(req)` (#6, in-process). */
   const throttleBuckets = new Map<string, TokenBucket>();

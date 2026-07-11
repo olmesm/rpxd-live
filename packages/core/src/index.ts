@@ -13,6 +13,7 @@ export {
   type RpxdDiagnostic,
   type RpxdDiagnosticSink,
 } from "./diagnostics.ts";
+export { isDev } from "./env.ts";
 export {
   type CreateInstanceOptions,
   DEFAULT_MAX_BATCH_CALLS,

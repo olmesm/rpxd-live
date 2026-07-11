@@ -97,7 +97,13 @@ const dev = defineCommand({
     description: "Start the dev server (Vite + rpxd runtime). BORING=me skips the banner",
   },
   args: serveArgs,
-  run: ({ args }) => runDev(resolvePort(args), overridesFrom(args)),
+  run: ({ args }) => {
+    // The dev server must run as development (S1, isDev()) so the
+    // secure-by-default secret guard warns instead of refusing to start
+    // without RPXD_SESSION_SECRET; `??=` respects an explicit override.
+    process.env.NODE_ENV ??= "development";
+    return runDev(resolvePort(args), overridesFrom(args));
+  },
 });
 
 const build = defineCommand({
