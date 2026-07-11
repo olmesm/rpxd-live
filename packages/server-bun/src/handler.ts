@@ -5,6 +5,7 @@
  * through any {@link ServerAdapter}.
  */
 import {
+  decodeBatch,
   defaultDiagnosticSink,
   type Envelope,
   isRedirect,
@@ -382,6 +383,61 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       error: { name: "UnknownInstanceError", message: "unknown or expired instance" },
     };
   }
+
+  /** What {@link acceptBatch} did with an inbound rpc batch. */
+  type BatchOutcome = "accepted" | "unknown-instance" | "malformed";
+
+  /**
+   * The guarded batch-dispatch boundary (channel pipeline increment 2, closing
+   * #110 at the boundary and #65 WS parity): the SINGLE funnel both `handleRpc`
+   * (HTTP) and the WS `message()` `"calls"` branch call to accept an inbound
+   * rpc batch. Never throws or rejects, and every outcome is delivered — either
+   * through `send` (an error/unknown-instance ack) or the returned
+   * {@link BatchOutcome}, which each caller maps to its own transport status.
+   *
+   * `raw` is genuinely untrusted wire data (a parsed JSON body or WS frame),
+   * so it's decoded with {@link decodeBatch} rather than cast — a caller can
+   * no longer crash on `raw.calls` being `null`/non-array/malformed.
+   */
+  function acceptBatch(raw: unknown, sid: string, send: (env: Envelope) => void): BatchOutcome {
+    const decoded = decodeBatch(raw);
+    if (!decoded.ok) {
+      emit({
+        category: "request",
+        type: "rpc-decode-failed",
+        level: "warn",
+        detail: { reason: decoded.reason, instance: decoded.instance },
+      });
+      // Only ack when there's a real pending call to correlate it to: both
+      // `rpcId` and `instance` must have survived as strings off the wire,
+      // AND that instance must actually belong to this session — otherwise
+      // there's nothing legitimate to reject into, and no client waiting on
+      // this exact rpcId to settle.
+      if (decoded.rpcId && decoded.instance && ownedInstance(decoded.instance, sid)) {
+        send({
+          seq: 0,
+          instance: decoded.instance,
+          rpcId: decoded.rpcId,
+          error: { name: "ProtocolError", message: `malformed batch: ${decoded.reason}` },
+        });
+      }
+      return "malformed";
+    }
+
+    const entry = ownedInstance(decoded.batch.instance, sid);
+    if (!entry) {
+      send(unknownInstanceAck(decoded.batch.instance, decoded.batch.rpcId));
+      return "unknown-instance";
+    }
+
+    // Belt-and-braces: `handleBatch` is total on its own (increment 1), but a
+    // fire-and-forget call must never be able to reject unhandled.
+    void entry.instance.handleBatch(decoded.batch).catch((e) => {
+      emit({ category: "instance", type: "batch-execute-threw", level: "error", error: e });
+    });
+    return "accepted";
+  }
+
   /** sessionId → client stream id → live SSE subscriber (§7 tier-2 late mount). */
   const streamRegistry = new Map<string, Map<string, StreamHandle>>();
   let disposed = false;
@@ -896,20 +952,23 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   }
 
   async function handleRpc(req: Request, sid: string): Promise<Response> {
-    const batch = (await readJsonCapped(req, maxBodyBytes)) as RpcBatch;
-    const entry = ownedInstance(batch.instance, sid);
-    if (!entry) {
-      // The ack rides the session's stream(s), like every other ack. If no
-      // stream is open, the client resends on reconnect and is acked then.
-      if (typeof batch.instance === "string" && typeof batch.rpcId === "string") {
-        const ack = unknownInstanceAck(batch.instance, batch.rpcId);
-        for (const handle of streamRegistry.get(sid)?.values() ?? []) handle.send(ack);
-      }
-      return new Response("unknown instance", { status: 404 });
+    // Every outcome's ack (unknown-instance, malformed, or a real rpc ack)
+    // rides the session's stream(s), not this response — this is just the
+    // transport-level acknowledgement. `acceptBatch` is the shared guarded
+    // dispatch boundary (channel pipeline increment 2, #110/#65) this and the
+    // WS `message()` `"calls"` branch both funnel through.
+    const send = (env: Envelope) => {
+      for (const h of streamRegistry.get(sid)?.values() ?? []) h.send(env);
+    };
+    const outcome = acceptBatch(await readJsonCapped(req, maxBodyBytes), sid, send);
+    switch (outcome) {
+      case "accepted":
+        return new Response(null, { status: 202 });
+      case "unknown-instance":
+        return new Response("unknown instance", { status: 404 });
+      case "malformed":
+        return new Response("malformed batch", { status: 400 });
     }
-    // Fire-and-forget: the ack rides the SSE stream, not this response.
-    void entry.instance.handleBatch(batch);
-    return new Response(null, { status: 202 });
   }
 
   function defaultRender(ctx: RenderContext): Response {
@@ -1111,7 +1170,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           // there's no rpcId to ack until it parses, and no legit client sends
           // an over-cap frame.
           if (raw.length > maxBodyBytes) return;
-          const msg = JSON.parse(raw) as
+          let msg:
             | RpcBatch
             | {
                 type: "resync" | "url" | "mount" | "release";
@@ -1119,11 +1178,27 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                 path?: string;
                 search?: Record<string, string>;
               };
+          try {
+            msg = JSON.parse(raw);
+          } catch {
+            // An unparseable frame (garbled client, transport corruption): report
+            // it through the sink from here rather than letting it escape to
+            // ws.ts's generic catch, which logs but can't tell the client
+            // anything and carries no `reason` to distinguish it from any other
+            // failure mode.
+            emit({
+              category: "request",
+              type: "ws-message-failed",
+              level: "warn",
+              detail: { reason: "unparseable-frame" },
+            });
+            return;
+          }
           if ("calls" in msg) {
-            const entry = ownedInstance(msg.instance, sid);
-            if (entry) void entry.instance.handleBatch(msg);
-            else if (typeof msg.instance === "string" && typeof msg.rpcId === "string")
-              send(unknownInstanceAck(msg.instance, msg.rpcId));
+            // The guarded dispatch boundary (channel pipeline increment 2,
+            // #110/#65) — same funnel `handleRpc` (HTTP) uses. The socket's own
+            // `send` is the sink for the malformed/unknown-instance acks.
+            acceptBatch(msg, sid, send);
             return;
           }
           if (msg.type === "mount" && msg.path) {
@@ -1134,8 +1209,8 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
               subscribeInstance(entry);
             } catch (e) {
               // Answer denials on the socket (mirroring the `url` branch) —
-              // thrown out, they die in the transport's generic catch and the
-              // client waits forever.
+              // thrown out, they'd otherwise die in the transport's generic
+              // catch and the client waits forever.
               const warm = sessions.get(sid)?.get(msg.path);
               if (isRedirect(e)) {
                 send({
@@ -1149,7 +1224,22 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                   instance: "",
                   error: { name: e.name, message: e.message },
                 });
-              } else throw e;
+              } else if (e instanceof NotFoundError) {
+                // #65 WS mount parity: mounting an unregistered path 404s over
+                // SSE/control (`handleControl` lets it propagate to the `fetch`
+                // catch); over WS it must answer the socket the same way rather
+                // than silently dying in the transport's generic catch.
+                send({
+                  seq: 0,
+                  instance: "",
+                  error: { name: e.name, message: e.message },
+                });
+              } else {
+                // A genuinely unexpected error: keep `message()` total (no
+                // outcome may escape unhandled) by reporting it through the
+                // sink instead of throwing.
+                emit({ category: "request", type: "ws-message-failed", level: "error", error: e });
+              }
             }
             return;
           }
@@ -1240,6 +1330,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
 class NotFoundError extends Error {
   constructor(pathname: string) {
     super(`No route matches ${pathname}`);
+    this.name = "NotFoundError";
   }
 }
 

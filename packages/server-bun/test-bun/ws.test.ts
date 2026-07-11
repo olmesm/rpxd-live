@@ -3,7 +3,7 @@
  * WebSocket client, same protocol as SSE — only framing differs.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import type { Envelope, LiveDefinition } from "@rpxd/core";
+import type { Envelope, LiveDefinition, RpxdDiagnostic } from "@rpxd/core";
 import { bunAdapter, type ServeHandle } from "../src/adapter.ts";
 import { createRpxdHandler } from "../src/handler.ts";
 import { wsTransport } from "../src/ws.ts";
@@ -51,11 +51,14 @@ afterAll(async () => {
   await handle.stop();
 });
 
-function openSocket(): Promise<{ socket: WebSocket; next(timeoutMs?: number): Promise<Envelope> }> {
+function openSocket(
+  cookie: string = COOKIE,
+  port: number = handle.port,
+): Promise<{ socket: WebSocket; next(timeoutMs?: number): Promise<Envelope> }> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://localhost:${handle.port}/__rpxd/ws`, {
+    const socket = new WebSocket(`ws://localhost:${port}/__rpxd/ws`, {
       // Bun extension: pass the session cookie on the upgrade request
-      headers: { cookie: COOKIE },
+      headers: { cookie },
     } as unknown as string[]);
     const queue: Envelope[] = [];
     const waiters: ((env: Envelope) => void)[] = [];
@@ -166,6 +169,111 @@ describe("ws transport (§11)", () => {
     const resynced = await next();
     expect(resynced.full).toBeDefined();
     expect((resynced.full?.state as S).items).toContain("over-ws");
+
+    socket.close();
+  });
+});
+
+describe("guarded batch-dispatch boundary (channel pipeline increment 2, #110/#65)", () => {
+  it("keeps the socket alive on a malformed `calls` batch and error-acks it", async () => {
+    const cookie = "rpxd_sid=ws-malformed-calls";
+    const mountRes = await fetch(`http://localhost:${handle.port}/__rpxd/control`, {
+      method: "POST",
+      headers: { cookie },
+      body: JSON.stringify({ type: "mount", path: "/" }),
+    });
+    const { instance } = await mountRes.json();
+
+    const { socket, next } = await openSocket(cookie);
+    await next(); // full snapshot from the mount above
+
+    socket.send(JSON.stringify({ v: 1, instance, rpcId: "c1", calls: null }));
+    const ack = await next();
+    expect(ack.rpcId).toBe("c1");
+    expect(ack.error?.name).toBe("ProtocolError");
+
+    // The socket is still alive — a following valid frame still works.
+    socket.send(
+      JSON.stringify({
+        v: 1,
+        instance,
+        rpcId: "c2",
+        calls: [{ rpc: "add", payload: { item: "still-alive" } }],
+      }),
+    );
+    const ok = await next();
+    expect(ok.rpcId).toBe("c2");
+    expect(ok.patches?.[0]?.value).toBe("still-alive");
+
+    socket.close();
+  });
+
+  it("keeps the socket alive on an unparseable JSON frame and reports it via the diagnostic sink", async () => {
+    // A dedicated handler+server (not the shared `beforeAll` one) so the
+    // parse failure's diagnostic can be captured — the point of this test is
+    // that `message()` itself reports `reason: "unparseable-frame"` rather
+    // than relying on ws.ts's generic transport catch (which logs but tells
+    // the client nothing and carries no `reason`).
+    const events: RpxdDiagnostic[] = [];
+    const localHandler = createRpxdHandler({
+      routes: [{ path: "/", def }],
+      onDiagnostic: (e) => events.push(e),
+    });
+    const localWs = wsTransport(localHandler);
+    const local = bunAdapter().serve({
+      port: 0,
+      websocket: localWs.websocket,
+      fetch: async (req, upgrade) => {
+        const upgraded = await localWs.handleUpgrade(req, upgrade);
+        if (upgraded) return upgraded.status === 101 ? undefined : upgraded;
+        return localHandler.fetch(req);
+      },
+    });
+    try {
+      const cookie = "rpxd_sid=ws-unparseable-frame";
+      const mountRes = await fetch(`http://localhost:${local.port}/__rpxd/control`, {
+        method: "POST",
+        headers: { cookie },
+        body: JSON.stringify({ type: "mount", path: "/" }),
+      });
+      const { instance } = await mountRes.json();
+
+      const { socket, next } = await openSocket(cookie, local.port);
+      await next(); // full snapshot from the mount above
+
+      socket.send("{"); // unparseable JSON frame
+
+      // The socket is still alive — a following valid frame still works.
+      socket.send(
+        JSON.stringify({
+          v: 1,
+          instance,
+          rpcId: "still-ok",
+          calls: [{ rpc: "add", payload: { item: "after-garbage" } }],
+        }),
+      );
+      const ok = await next();
+      expect(ok.rpcId).toBe("still-ok");
+      expect(ok.patches?.[0]?.value).toBe("after-garbage");
+
+      const failed = events.find((e) => e.type === "ws-message-failed");
+      expect(failed).toMatchObject({ category: "request", level: "warn" });
+      expect(failed?.detail).toMatchObject({ reason: "unparseable-frame" });
+
+      socket.close();
+    } finally {
+      await localHandler.dispose();
+      await local.stop();
+    }
+  });
+
+  it("answers a WS mount of an unregistered path with an error envelope (#65 WS mount parity)", async () => {
+    const cookie = "rpxd_sid=ws-mount-404";
+    const { socket, next } = await openSocket(cookie);
+
+    socket.send(JSON.stringify({ type: "mount", path: "/definitely-not-registered" }));
+    const env = await next();
+    expect(env.error?.name).toBe("NotFoundError");
 
     socket.close();
   });
