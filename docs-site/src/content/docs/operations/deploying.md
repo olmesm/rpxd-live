@@ -5,11 +5,11 @@ sidebar:
   order: 1
 ---
 
-Shipping rpxd is two commands and a short checklist. The runtime is web-standard
-(`Request`/`Response`/`ReadableStream`), the transport is one long-lived
-connection per session, and the only genuinely non-default piece of production
-config is the reverse proxy — because SSE and WebSocket connections stay open,
-and most proxies buffer and time out by default.
+Shipping rpxd is two commands and a short checklist. The runtime is
+web-standard (`Request`/`Response`/`ReadableStream`), and the transport is one
+long-lived connection per session. The only genuinely non-default piece of
+production config is the reverse proxy: SSE and WebSocket connections stay
+open, and most proxies buffer and time out by default.
 
 ## Build & start
 
@@ -71,8 +71,9 @@ Most reverse proxies buffer responses and apply a read timeout — both of which
 break a stream that is *supposed* to stay open and dribble bytes. Configure the
 proxy to:
 
-- **Turn response buffering off** on the rpxd control plane so envelopes reach
-  the browser as they're written, not in proxy-sized chunks.
+- **Turn response buffering off** on rpxd's own endpoints (`/__rpxd/*`) so
+  envelopes — the patch messages on the stream — reach the browser as they're
+  written, not in proxy-sized chunks.
 - **Disable or greatly extend read timeouts** on `/__rpxd/stream` — an idle-ish
   stream is normal, not a hung upstream.
 - **Pass the WebSocket upgrade through** on `/__rpxd/ws` (the `Upgrade` /
@@ -131,8 +132,8 @@ On `SIGTERM` / `SIGINT` — a `docker stop`, a Kubernetes pod eviction, `Ctrl-C`
 3. **`onShutdown`** — your userland cleanup hook (below),
 4. **close storage** — rpxd closes the storage handle it opened itself.
 
-The ordering is load-bearing: snapshots are written in step 2, so storage stays
-open through it; `onShutdown` runs in step 3, before rpxd closes storage, in case
+The order matters: snapshots are written in step 2, so storage stays open
+through it. `onShutdown` runs in step 3, before rpxd closes storage, in case
 your cleanup still touches it. A second signal, or a shutdown that overruns the
 timeout, force-exits — a wedged hook can't hang the process forever.
 

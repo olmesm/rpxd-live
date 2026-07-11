@@ -5,9 +5,12 @@ sidebar:
   order: 7
 ---
 
-One page. Transport-agnostic. This document is normative for `@rpxd/core`
-(server) and `@rpxd/client`; both implement exactly this and nothing more. Spec
-references: §2, §6, §11.
+You don't need this page to use rpxd — it's the contract for implementers and
+the curious. One page, transport-agnostic, and normative for `@rpxd/core`
+(server) and `@rpxd/client`: both implement exactly this and nothing more.
+Section references (§) point into
+[the spec](https://github.com/olmesm/rpxd-live/blob/main/spec.md); this page
+covers spec §2, §6, and §11.
 
 ## Model
 
@@ -18,10 +21,10 @@ The protocol is identical on either transport — only framing differs (SSE
 `data:` lines vs WS messages).
 
 `PROTOCOL_VERSION = 1`. There is **no connect-time handshake**: the version
-rides every rpc batch (`RpcBatch.v`, below). A batch whose `v` doesn't match the
-server is rejected with an error ack — `error: { name: "ProtocolError" }` on the
-batch's `rpcId`, no handler runs, confirmed state is untouched. The version is
-bumped only on a breaking change to the envelope shape.
+rides every rpc batch (`RpcBatch.v`, below). A batch whose `v` doesn't match
+the server is rejected with an error ack — `error: { name: "ProtocolError" }`
+on the batch's `rpcId`. No handler runs; confirmed state is untouched. The
+version is bumped only on a breaking change to the envelope shape.
 
 ## Downstream: the envelope
 
@@ -102,11 +105,11 @@ type RpcBatch = {
 - A batch carrying more than `maxBatchCalls` calls (default 256) is rejected
   wholesale — no call runs — with a `PayloadTooLargeError` ack. See
   [Ingress limits](#ingress-limits).
-- A batch naming an **unknown or unowned instance** (a stale id after eviction
-  or a redeploy) is error-acked — `error: { name: "UnknownInstanceError" }` at
-  `seq: 0`, delivered over the session's stream/socket — so the pending call
-  rejects instead of hanging. No handler runs; every batch still gets exactly
-  one ack.
+- A batch naming an **unknown or unowned instance** — a stale id after eviction
+  or a redeploy — is error-acked with `error: { name: "UnknownInstanceError" }`
+  at `seq: 0`, delivered over the session's stream/socket. The pending call
+  therefore rejects instead of hanging. No handler runs; every batch still gets
+  exactly one ack.
 
 ## Ingress limits
 
@@ -136,9 +139,9 @@ query params (below).
 ```ts
 type Control =
   | { type: "resync"; instance: string }                                        // gap recovery / late attach
-  | { type: "mount"; path: string; search: Record<string, string>; stream?: string } // cold / tier-2 mount
+  | { type: "mount"; path: string; search: Record<string, string>; stream?: string } // cold / same-route mount
   | { type: "url"; instance: string; search: Record<string, string> }           // nav.patch → guard + load
-  | { type: "release"; instance: string; stream: string };                      // tier-2 abandons an instance
+  | { type: "release"; instance: string; stream: string };                      // same-route nav abandons an instance
 ```
 
 - **SSR adoption (§12)** happens at connect: the stream/WS URL carries
@@ -150,7 +153,7 @@ type Control =
   and requests no comparison: the server always answers with a full snapshot.
 - `mount` returns `{ instance, seq, path, params }` (or `{ redirect }` on a
   `setup`/`guard` deny). Its optional `stream` id and the `release` message drive
-  a **tier-2 soft reload**: a same-route path change joins a fresh instance to the
+  a **soft reload**: a same-route path change joins a fresh instance to the
   open stream and releases the old one, so the transport survives.
 - `url` reconciles the instance to a new URL — `guard` then `load` (§7); a deny
   comes back as `{ redirect }` (SSE control response) or a `redirect` envelope (WS).
@@ -178,8 +181,9 @@ type Control =
   and `route()` handlers are **not** gated — a top-level navigation is
   legitimately cross-site.
 - The server evicts an instance when subscribers reach 0, after a warm TTL
-  (~60s): snapshot to storage, drop from memory. Cold wake re-runs `mount`
-  (snapshots are session continuity, not cache — spec §9).
+  (~60s): snapshot to storage, drop from memory. Cold wake re-runs `mount` (see
+  [snapshots are continuity, not cache](/rpxd-live/concepts/persistence/#snapshots-are-continuity-not-cache);
+  spec §9).
 - **Disconnect mid-handler does not abort the handler.** A dropped stream only
   unsubscribes and re-arms the warm-TTL evict timer; the handler keeps running to
   completion, and its ack is produced and **cached** for re-ack. `ctx.signal`

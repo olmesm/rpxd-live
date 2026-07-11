@@ -5,10 +5,14 @@ sidebar:
   order: 10
 ---
 
-Everything here is demonstrated end to end in `examples/kitchen-sink` (sign up /
-in / out, user-scoped todos, a protected route). Auth is **Better Auth** over
-**Prisma 7 / SQLite**, wired in `adapters/` — swap `adapters/auth.ts` for another
-library at the same seam and everything else stays.
+This page shows how to add login to an rpxd app, protect a page, and serve
+plain HTTP endpoints (webhooks, auth callbacks) with `route()`.
+
+Everything here is demonstrated end to end in the kitchen-sink example: sign up
+/ in / out, user-scoped todos, a protected route. The example's auth is
+**Better Auth** over **Prisma 7 / SQLite**, wired in `adapters/`. Swap
+`adapters/auth.ts` for another library at the same spot and everything else
+stays.
 
 ## `routes/` holds two file kinds
 
@@ -20,8 +24,9 @@ Files under `routes/` come in two kinds, distinguished by what the file exports:
 | `*.ts`          | `route(...)`     | a plain HTTP request/response route |
 
 HTTP routes are matched **before** the SSR / `404` fallthrough. Both kinds get
-the same [routing](/rpxd-live/guides/routing/) treatment: the filename is truth, the in-file path literal is the
-watcher-maintained mirror, and each gets an entry in `.rpxd/routes.gen.ts`
+the same [routing](/rpxd-live/guides/routing/) treatment: the filename decides
+the path, the in-file path literal is kept in sync by the `rpxd dev` watcher,
+and each gets an entry in `.rpxd/routes.gen.ts`
 (pages under `routeModules` / `routeTree`, HTTP routes under a separate
 `routeHandlers` map — HTTP routes are never navigable or SSR'd). Nothing about
 the domain layer changes — routes of either kind still call `domain/`, never
@@ -31,10 +36,9 @@ the domain layer changes — routes of either kind still call `domain/`, never
 
 `route()` is to request/response endpoints what `live()` is to pages: one fluent
 surface, path params typed from the literal, and the same `scope` the live layer
-resolves. It is **thin on purpose** — `live()` earns its depth by threading state
-→ payloads → optimistic → render props → client facade; a `route()` threads
-almost none of that, so its whole value is uniformity and path typing. Don't
-gold-plate it.
+resolves. It is deliberately thin. `live()` threads state, payloads, optimistic
+functions, and render props through its chain; a `route()` has almost none of
+that to thread. Its value is uniformity and path typing.
 
 ```ts
 // routes/api.webhooks.stripe.ts  → /api/webhooks/stripe
@@ -119,11 +123,11 @@ route.
    That config already exists in the library, in `auth.ts`, and it moves fast.
    Wrapping it buys nothing and breaks every release.
 
-2. **The framework maintains the mirror, not the logic.** The routing watcher may own
-   a route's *derived* bits — its path literal, its `routes.gen.ts` entry —
-   because those are projections of the filename, safe to rewrite. It must never
-   own `auth.ts`, the scope shape, or a handler body: those are yours to edit,
-   the same way nobody generates your `.setup()` body.
+2. **The framework maintains derived files, never your logic.** The routing
+   watcher may own a route's *derived* bits — its path literal, its
+   `routes.gen.ts` entry — because those follow from the filename and are safe
+   to rewrite. It must never own `auth.ts`, the scope shape, or a handler body.
+   Those are yours to edit, the same way nobody generates your `.setup()` body.
 
 ## Enforcing auth — the `guard`
 
@@ -175,13 +179,13 @@ export default live("/account")
 ```
 
 **`redirect()` works from `setup` and `guard`, on both entry points.** A full
-page load gets a real `302` (crawlable, no flash, no protected component
-shipped); a soft `Link` / `nav.patch` navigation gets the deny as a
-`{ redirect }` JSON control frame (SSE) or a `redirect` envelope (WS), which the
-client router turns into a soft navigation. So `throw redirect("/login")`
-behaves the same whether the visitor typed the URL or clicked a link. (A plain
-`throw` still routes to `__error` — `redirect` is the specific, recognised
-signal.)
+page load gets a real `302` — crawlable, no flash, and the protected component
+is never shipped. A soft `Link` / `nav.patch` navigation instead receives the
+deny over the live connection (a `{ redirect }` control message on SSE, a
+`redirect` message on WebSocket), and the client router turns it into a soft
+navigation. So `throw redirect("/login")` behaves the same whether the visitor
+typed the URL or clicked a link. (A plain `throw` still routes to `__error` —
+`redirect` is the specific, recognised signal.)
 
 **The target autocompletes your routes.** `redirect("…")` suggests your app's
 registered paths — the same `Register["routes"]` union that types `Link` and
@@ -238,14 +242,14 @@ more ways:
 
 Two more request-level guards:
 
-- **Throttle.** An opt-in per-key token bucket (`throttle` in `rpxd.config.ts`)
-  — you supply the key from a **trusted** source (a proxy-set header; the key
-  function receives only the `Request`, so validate `X-Forwarded-For` at your
-  proxy — a raw one is spoofable). Over-limit HTTP requests get `429`; the
-  long-lived SSE stream is exempt, and with `transport: ws()` only the initial
-  navigation is metered (frames after the socket upgrade bypass the HTTP
-  entrypoint). In-process, so multi-node deployments should rate-limit at the
-  proxy/edge.
+- **Throttle.** An opt-in per-key token bucket (`throttle` in `rpxd.config.ts`).
+  You supply the key, and it must come from a **trusted** source such as a
+  proxy-set header. The key function receives only the `Request`, so validate
+  `X-Forwarded-For` at your proxy — a raw one is spoofable. Over-limit HTTP
+  requests get `429`. The long-lived SSE stream is exempt, and with
+  `transport: ws()` only the initial navigation is metered — frames after the
+  socket upgrade bypass the HTTP entrypoint. The bucket is in-process, so
+  multi-node deployments should rate-limit at the proxy/edge.
 - **Error disclosure.** A crash returns a generic `500` (the real error logged
   server-side), and a rejected auth a generic `403`, by default — internal
   messages never reach the client. `bun run dev` echoes the detail locally (the
@@ -298,9 +302,9 @@ TLS-terminating proxy the server sees `http`, so a strict scheme compare would
 be unreliable. Use the `allowedOrigins` predicate form when you need
 scheme- or proxy-aware matching.
 
-## The userland tree
+## Your app's tree
 
-Everything above, laid out — the `examples/kitchen-sink` shape plus the auth
+Everything above, laid out — the kitchen-sink example's shape plus the auth
 files:
 
 ```
@@ -327,5 +331,5 @@ my-app/
 ```
 
 Dependency direction stays one-way: `routes/` → `domain/` → `adapters/`. Routes
-touch `adapters/` only at the two seams that *are* the web layer's job — the
+touch `adapters/` only at the two points that *are* the web layer's job — the
 `authenticate` hook and the `api.auth` delegation.

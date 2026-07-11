@@ -10,11 +10,12 @@ RSC fields are behind the opt-in `rsc: true` flag and default to `rsc: false`.
 They are strictly opt-in, so nothing in the core runtime depends on them.
 :::
 
-RSC fields let a piece of state be a **server-rendered component subtree** — the
-markdown renderer, the syntax highlighter, and their heavy dependencies stay on
-the server and never ship to the client. The React Flight format is the
-serialization; rpxd's [patches](/rpxd-live/concepts/wire-protocol/) are the
-transport.
+RSC (React Server Components) fields let a piece of state be a
+**server-rendered component subtree** — the markdown renderer, the syntax
+highlighter, and their heavy dependencies stay on the server and never ship to
+the client. React's Flight format (the RSC serialization) serializes the
+subtree, and rpxd's ordinary
+[patch stream](/rpxd-live/concepts/wire-protocol/) carries it to the client.
 
 ## How it works
 
@@ -51,8 +52,7 @@ check is purely structural, not a forgeable brand. This is safe today because
 only app-authored values and genuine `rsc()` output ever reach state, and
 rpxd never decodes client input into state. But RSC/Flight deserialization
 has been a high-severity sink in other frameworks (see CVE-2025-55182), so
-treat `$rsc` as reserved as a defense-in-depth measure. A non-forgeable
-brand for this marker is tracked as a follow-up in issue #95.
+treat `$rsc` as reserved as a defense-in-depth measure.
 :::
 
 ## Constraints

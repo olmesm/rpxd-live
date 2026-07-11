@@ -5,11 +5,11 @@ sidebar:
   order: 12
 ---
 
-rpxd is TDD-first: you write the failing test before the implementation. That's
-practical because a live object is testable without a browser or a running
-server — [`@rpxd/testing`](https://olmesm.github.io/rpxd-live/) mounts a route
-against the **real** runtime (real queue, real patches, real pubsub, nothing
-mocked) behind a typed facade.
+This page shows how to test a live object without a browser or a running
+server. rpxd is TDD-first — you write the failing test before the
+implementation — and [`@rpxd/testing`](https://olmesm.github.io/rpxd-live/)
+makes that practical: it mounts a route against the **real** runtime (real
+queue, real patches, real pubsub, nothing mocked) behind a typed handle.
 
 ## The `testLive` harness
 
@@ -37,7 +37,8 @@ it("adds a todo", async () => {
 
 `t.rpc.*` carries the route's **exact** rpc record — the same keys and payload
 types the component's `rpc` prop has, so a wrong name or payload is a compile
-error.
+error. Each call sends one batch (one rpc request) and resolves on the **ack**,
+the server's acknowledgment of that rpc.
 
 ### The handle
 
@@ -49,7 +50,7 @@ error.
 | `t.envelopes` | Every envelope emitted since mount, in order — [the wire](/rpxd-live/concepts/wire-protocol/) as a client would see it. |
 | `t.settled()` | Resolves once in-flight rpcs, scheduled patch flushes, and the mutation queue have drained. Await it before asserting on streamed or broadcast-driven state. |
 | `t.navigate(search)` | Runs `guard` then `load` with new search params (see [routing](/rpxd-live/guides/routing/)), awaiting the stream to settle. |
-| `t.broadcast(topic, event, payload)` | Injects a broadcast as if a **peer** instance published it ([pubsub](/rpxd-live/concepts/pubsub/)) — exclude-self semantics behave exactly as in production. |
+| `t.broadcast(topic, event, payload)` | Injects a broadcast as if a **peer** instance published it ([pubsub](/rpxd-live/concepts/pubsub/)) — exclude-self (the sender doesn't receive its own broadcast) behaves exactly as in production. |
 | `t.dispose()` | Aborts in-flight `ctx.signal` and tears the instance down. |
 
 Options: `testLive(route, { params, session, search, storage, id })` — typed
@@ -89,9 +90,10 @@ await p;
 ### URL loads and guards
 
 The mount already ran `guard` → `load` with the initial `search`, so a loader's
-first write is assertable straight away — and `navigate` runs the same pair for
-a subsequent URL change. Give a protected route a `session` to get past its
-guard; a deny **rejects** the mount with the redirect the server would 302 to:
+first write is assertable straight away. `navigate` runs the same pair for a
+subsequent URL change. To get past a protected route's guard, give it a
+`session`. A denied mount **rejects** with the redirect the server would 302
+to:
 
 ```ts
 const t = await testLive(accountRoute, {
@@ -109,8 +111,9 @@ await expect(testLive(accountRoute)).rejects.toMatchObject({ location: "/login" 
 
 ### Multiplayer
 
-Share one `storage` adapter between two handles with distinct `id`s; broadcasts
-cross the pubsub bus exactly as in production, exclude-self included:
+Share one `storage` adapter between two handles with distinct `id`s. Broadcasts
+cross the pubsub bus exactly as in production — including exclude-self, where
+the sender doesn't receive its own broadcast:
 
 ```ts
 import { memory } from "@rpxd/core";

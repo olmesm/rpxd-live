@@ -5,9 +5,10 @@ sidebar:
   order: 5
 ---
 
-`mount` runs during SSR, so the first paint is real server-rendered HTML — no
-connect-spinner, crawlable — and the live connection then **adopts the warm
-instance** rather than mounting again.
+`mount` runs during SSR, so the first paint is real server-rendered HTML: no
+connect-spinner, and crawlable. The instance that rendered the page stays warm
+(in memory) on the server, and the live connection then **adopts** it —
+attaches to that same instance — rather than mounting again.
 
 ## The flow
 
@@ -15,8 +16,10 @@ instance** rather than mounting again.
    `{ snapshot, seq, attachToken }`.
 2. The client connects and presents the `attachToken` (a `control` message —
    see the [wire protocol](/rpxd-live/concepts/wire-protocol/)).
-3. Within the pending-attach TTL (~10s) the server **adopts** the SSR-warmed
-   instance and resumes the stream from `seq`. No second mount.
+3. Within the pending-attach TTL (~10s — the window the server holds the
+   warmed instance for its client) the server **adopts** the SSR-warmed
+   instance and resumes the stream from `seq`, the per-instance message
+   counter. No second mount.
 4. If the token is expired or unknown, the server does **not** re-mount — it
    resyncs the still-warm instance and pushes a `full` snapshot instead. No
    second `guard`/`setup`/`load` run; the same instance just catches the

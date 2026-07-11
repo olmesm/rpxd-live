@@ -5,15 +5,16 @@ sidebar:
   order: 9
 ---
 
-rpxd's `routes/` is your web edge — one live object per page, `setup` / `load` /
-handlers / `render`. It says nothing about where your business logic and data
-access live. This is the convention we recommend for that other half: a
-**service layer** of bounded modules that own all real work.
+This page is a recommended way to organise your app's logic: keep routes thin,
+and put all real work in a **service layer** of bounded modules under
+`domain/`. rpxd's `routes/` is the web-facing layer — one live object per page,
+`setup` / `load` / handlers / `render` — and it says nothing about where your
+business logic and data access live. This convention covers that other half.
 
 It is a **convention only** — no runtime, no codegen, no framework awareness.
 The framework never touches your database (see
 [config & tooling](/rpxd-live/getting-started/installation/)); this is purely
-how you organise userland modules. Adopt it, adapt it, or ignore it.
+how you organise your own modules. Adopt it, adapt it, or ignore it.
 
 ## The layers
 
@@ -49,24 +50,23 @@ layer off the database directly buys you:
 
 - **Thin edge, fat core.** The handler validates (`input`), calls a domain fn,
   then `patchState` / `broadcast`. All real work — queries, invariants, joins —
-  lives in `domain/`. (This is the
-  [reducer](/rpxd-live/guides/the-fluent-chain/) discipline's "chatty client =
-  missing reducer" pushed one layer deeper.)
+  lives in `domain/`. It's the same instinct that puts
+  [reducers](/rpxd-live/guides/the-fluent-chain/) on the server instead of in a
+  chatty client, applied one layer deeper.
 - **Swappable persistence.** Swap the client in `adapters/db.ts` (the example
   uses Prisma/SQLite) and nothing under `routes/` changes.
 - **Tests without the harness.** The pure parts (e.g. `scopeFrom`) unit-test
-  with no `live()`, ctx, or db (see
-  `examples/kitchen-sink/test-bun/scope.test.ts`); the DB-backed queries are
+  with no `live()`, ctx, or db; the DB-backed queries are
   integration-tested end to end by the Playwright suite. Mock at the domain
   boundary — coarse and stable — instead of reaching for a db handle on `ctx`.
   ([Testing](/rpxd-live/guides/testing/) covers the `testLive` harness and the
   test tiers.)
 - **Transactions land where they belong.** A DB transaction opens and closes
-  *inside* a domain function. Keeping the db off `ctx` follows from this: a
-  transaction that lived on `ctx` would span a handler's awaits, and since
-  awaits don't block the instance (see
-  [async handlers & streaming](/rpxd-live/guides/async-handlers-streaming/))
-  it would hold a connection open across unrelated rpcs.
+  *inside* a domain function. This is also why the db stays off `ctx`. A
+  transaction on `ctx` would span a handler's awaits — and because awaits don't
+  block the instance (see
+  [async handlers & streaming](/rpxd-live/guides/async-handlers-streaming/)),
+  it would hold a connection open while unrelated rpcs run.
 
 ```tsx
 // routes/index.tsx — the edge
@@ -120,9 +120,9 @@ session: { authenticate: (_req, { sid }) => ({ sid }) },
 Routes derive the scope from `ctx.session` (`scopeFrom`) and pass it down;
 domain functions scope their queries by it (`db.todo.findMany({ where: { owner
 } })` — the same pattern as `findMany({ where: { orgId } })`). A bare `sid` today extends
-to `{ user, org }` tomorrow without rewriting every signature. Keeping this a
-plain value passed *into* domain functions — rather than the db on `ctx` — is why
-two sessions never see each other's todos from one shared database.
+to `{ user, org }` tomorrow without rewriting every signature. The scope is a
+plain value passed *into* domain functions, not a db handle on `ctx` — and that
+is why two sessions never see each other's todos in one shared database.
 
 ## Naming
 

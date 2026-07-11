@@ -5,9 +5,11 @@ sidebar:
   order: 7
 ---
 
-Filters, sort, and a search box are all just search params read by the
-[loader (`load`)](/rpxd-live/guides/loading-data/). Each is a `nav.patch`; the URL
-stays the source of truth, so the view is shareable and back-button-correct.
+This page builds filter tabs, a sort menu, and a debounced search box. All
+three are just search params read by the
+[loader (`load`)](/rpxd-live/guides/loading-data/). Each change is a
+`nav.patch`; the URL stays the source of truth, so the view is shareable and
+back-button-correct.
 
 ```tsx
 export default live("/issues")
@@ -28,11 +30,11 @@ export default live("/issues")
   ));
 ```
 
-The synchronous projection (`filter`/`sort`/`loading`) flips the tab instantly
-and lands in the SSR first paint; the awaited rows stream in after (see
-[SSR](/rpxd-live/concepts/ssr/)). If the
-rows must be crawlable, `await` them before the first `patchState` instead — the
-renderer then waits for that patch. The
+The first `patchState` runs synchronously, so `filter`/`sort`/`loading` flip
+the tab instantly and land in the SSR first paint. The awaited rows stream in
+after (see [SSR](/rpxd-live/concepts/ssr/)). If the rows must be crawlable,
+`await` them before the first `patchState` instead — the renderer then waits
+for that patch. The
 [kitchen-sink example](/rpxd-live/examples/kitchen-sink/) is a working version of this.
 
 ## Reset the cursor when a filter changes
@@ -80,8 +82,9 @@ racing:
 
 ## Empty and error states
 
-Filtering routinely produces empty results — render them off state, the same way
-as loading and errors (there's no ack, it's all state the loader writes):
+Filtering routinely produces empty results. Render them off state, the same way
+as loading and errors — the loader sends no completion message; everything is
+state it writes:
 
 ```tsx
 {state.loading ? <Spinner />

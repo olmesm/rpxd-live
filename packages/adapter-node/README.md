@@ -1,15 +1,22 @@
 # @rpxd/adapter-node
 
-The Node `ServerAdapter` (§14) — the `node:http` mirror of
-[`@rpxd/server-bun`](../server-bun)'s `bunAdapter`. The rpxd runtime handler is
-web-standard (`Request`/`Response`/`ReadableStream`) with no Bun types past the
-adapter boundary, so this is a small `node:http` request bridge plus WS
-upgrades through the [`ws`](https://github.com/websockets/ws) package (noServer).
+Run an rpxd app on Node.js (Node ≥ 24).
 
-Requires **Node ≥ 24** (stable, unflagged TypeScript execution — the floor CI
-tests against, and what `engines` enforces). The rpxd source is kept erasable
-(no parameter properties, enums, or runtime namespaces) so Node runs it
-directly with no build step and no `--experimental-transform-types`.
+```sh
+bun add @rpxd/adapter-node
+```
+
+Not yet on npm — work from a clone of the repo for now.
+
+`rpxd start` picks this adapter automatically when it isn't running on Bun, so
+most apps never import it directly. Import it yourself to embed rpxd in your
+own `node:http` server.
+
+The rpxd runtime handler is web-standard (`Request`/`Response`/
+`ReadableStream`) with no Bun types, so this adapter is just a small
+`node:http` request bridge plus WebSocket upgrades through the
+[`ws`](https://github.com/websockets/ws) package. Node 24+ runs the TypeScript
+source directly — no build step needed.
 
 ```ts
 import { createRpxdHandler, wsTransport } from "@rpxd/server-bun";
@@ -27,6 +34,7 @@ await handle.ready; // node:http binds on the next tick
 console.log(`live on :${handle.port}`);
 ```
 
-`rpxd start` selects this adapter automatically when not running on Bun. For
-durable snapshots on Node, pair it with `sqliteNode` from
-[`@rpxd/storage-sqlite/node`](../storage-sqlite) (`better-sqlite3`).
+For durable snapshots on Node, pair it with `sqliteNode` from
+[`@rpxd/storage-sqlite/node`](../storage-sqlite) (built on `better-sqlite3`).
+
+Docs: https://olmesm.github.io/rpxd-live/operations/node/

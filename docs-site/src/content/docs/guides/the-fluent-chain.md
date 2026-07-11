@@ -5,10 +5,11 @@ sidebar:
   order: 1
 ---
 
-`live()` is a fluent chain where each step *locks* something for the next. The
-whole contract — state shape, payload types, the client-facing `rpc` facade — is
-inferred. You write no type annotations, and unknown rpc names or wrong payloads
-are compile errors.
+This page walks the whole `live()` chain — every step a page is built from,
+and how types flow between them. Each step locks something in for the next:
+the state shape, the payload types, the `rpc` object your component calls. All
+of it is inferred. You write no type annotations, and unknown rpc names or
+wrong payloads are compile errors.
 
 ```tsx
 export default live("/org/$orgId/board")
@@ -49,7 +50,8 @@ export default live("/org/$orgId/board")
 
 ### `.setup((ctx) => state)`
 
-Runs server-side on page load (and on cold wake), **synchronously**. Returns the
+Runs server-side on page load (and on a cold wake — when an instance is
+rebuilt from scratch), **synchronously**. Returns the
 initial state skeleton; its shape **locks the state type** for `guard`, `load`,
 every `rpc`, `on`, and `render`. Path params (`orgId`) are typed from the path
 literal, on `ctx.params`. Call `ctx.subscribe` here to join pubsub topics. Being
@@ -70,11 +72,12 @@ it doesn't write state.
 
 The **URL-keyed loader** — the single place URL-dependent data loads. Runs once
 after `setup` (first paint) and again on every `nav.patch`. A search change
-(`nav.patch`) streams new data in over the reused connection with **no `setup`**,
-state preserved; a same-route path change reruns `setup`+`load` (fresh state, the
-connection survives). Writes **page state** via `ctx.patchState`; `ctx.session`
-is read-only. Loading and errors are ordinary state the loader writes — there's
-no ack.
+(`nav.patch`) runs only the loader: `setup` does not rerun, state is preserved,
+and the new data streams in over the same connection. A same-route path change
+reruns both `setup` and `load` with fresh state; the connection still survives.
+The loader writes **page state** via `ctx.patchState`; `ctx.session` is
+read-only. Loading and errors are ordinary state the loader writes — there is
+no completion message to wait for.
 
 The **first argument is the whole URL** — `{ params, search }`. `search`
 (`?filter=…`) is untyped view state (`Record<string, string | undefined>`);
@@ -82,16 +85,17 @@ The **first argument is the whole URL** — `{ params, search }`. `search`
 in `setup` and rpc handlers — see `ctx.params.orgId` in the example above.
 
 It's **latest-wins**: a newer invocation aborts the prior run's `ctx.signal` and
-drops its late flushes, so rapid filter/page changes resolve to the last URL.
+drops its late writes, so rapid filter/page changes resolve to the last URL.
 Pass `ctx.signal` to `fetch` so a superseded load stops early. Because the URL
-is the query key, filtering and pagination are shareable, bookmarkable, and
-rebuilt from the URL on cold wake.
+holds the filters and pages, those views are shareable and bookmarkable, and an
+instance rebuilt from scratch (a cold wake) restores them from the URL.
 
 During SSR the first document carries state through the loader's **first
-patch**, then the rest streams (no flag). Patch synchronously before the first
-`await` and that projection renders immediately, streaming the data in after
-hydration (fast TTFB); `await` the data *before* the first `patchState` and the
-renderer waits for it, so the first document is crawlable and data-complete.
+patch**; everything after it streams. There is no flag — placement decides.
+Patch synchronously before the first `await` and that early state renders
+immediately, with the data streaming in after hydration (fast first paint).
+Or `await` the data *before* the first `patchState`: the renderer waits for it,
+so the first document is crawlable and data-complete.
 
 See [Loading data](/rpxd-live/guides/loading-data/) for the full model and the
 [pagination](/rpxd-live/guides/pagination/),
@@ -142,11 +146,9 @@ Plain React. Props are fully typed:
 ## Why zero annotations
 
 Each `.rpc(name, ...)` extends an accumulated `{ name → payload }` record. By
-`.render()`, that record has become the `rpc` facade's type. The same types flow
-through `optimistic`, `handler`, `onError`, **and** the client `rpc.*`
-signature — with no codegen step. The fluent chain is construction-time only; it
-evaluates to the same long-form object the server consumes at runtime. The
-contract is locked by the type tests in
+`.render()`, that record has become the type of the `rpc` prop. The same types
+flow through `optimistic`, `handler`, `onError`, **and** the client `rpc.*`
+signature — with no codegen step. The contract is locked by the type tests in
 [`packages/core/test/live.test-d.ts`](https://github.com/olmesm/rpxd-live/blob/main/packages/core/test/live.test-d.ts).
 
 Here's the mechanic in miniature — **hover the identifiers** to see the inferred

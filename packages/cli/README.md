@@ -1,14 +1,17 @@
 # @rpxd/cli
 
-The rpxd app shell and command line: `rpxd dev`/`build`/`start` to run an app,
-`rpxd init`/`auth`/`scaffold` to generate one, and `defineConfig`. This is the
-package an rpxd app actually runs — zero config, no entry files to write.
+The rpxd command line and app shell: `rpxd dev`/`build`/`start` run an app,
+`rpxd init`/`auth`/`scaffold` generate one, and `defineConfig` types your
+config. This is the package an rpxd app actually runs — zero config, no entry
+files to write.
 
 ## Getting started
 
 ```sh
 bun add @rpxd/cli @rpxd/core @rpxd/client react react-dom
 ```
+
+Not yet on npm — work from a clone of the repo for now.
 
 ```
 my-app/
@@ -21,7 +24,7 @@ my-app/
 ```
 
 ```sh
-bunx rpxd dev      # Vite + the live runtime on one port, reducer HMR
+bunx rpxd dev      # Vite + the live runtime on one port; edits hot-reload
 bunx rpxd build    # dist/client (hashed assets) + dist/server (SSR bundle)
 bunx rpxd start    # serve the build with pure Bun — no Vite at runtime
 ```
@@ -59,18 +62,20 @@ export default defineConfig({
   transport: ws(),                // default: sse()
   session: { authenticate: async (req, { sid }) => ({ sid, user: await userFrom(req) }) },
   rateLimit: { capacity: 20, refillPerSec: 5 },
-  rsc: true,                      // Flight RSC fields (§16)
+  rsc: true,                      // React Server Components fields
 });
 ```
 
 ## What the shell gives you
 
-- **Framework-owned entries** — the client entry and SSR runtime are
-  virtual modules; hydration, live connection, soft navigation, and (with
-  `rsc: true`) island hydration are wired for you.
+- **Framework-owned entries** — you never write a client entry or an SSR
+  runtime; both are generated. Hydration, the live connection, and soft
+  navigation are wired for you (and island hydration too, with `rsc: true`).
 - **Dev**: one process, one port — Vite middleware (HMR, codegen watcher)
-  plus the live wire. Reducer edits hot-swap without losing instance state.
-  Runtime errors get a sourcemapped overlay.
-- **Prod**: `start` is transport-only; the server bundle owns rendering.
-  Runtime errors render your `__error` page with a generic message + ref id
-  while the real error goes to the server log.
+  plus the live wire. Edits to your route handlers hot-swap without losing
+  instance state. Runtime errors get a sourcemapped overlay.
+- **Prod**: `start` only serves; the server bundle owns rendering. Runtime
+  errors render your `__error` page with a generic message and a reference
+  id, while the real error goes to the server log.
+
+Docs: https://olmesm.github.io/rpxd-live/

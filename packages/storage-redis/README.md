@@ -1,8 +1,14 @@
 # @rpxd/storage-redis
 
-Durable snapshots plus a **network** pubsub bus — the adapter for
-multi-node deployments. Broadcasts crossing nodes is what kills instance
-affinity (§8): any node can host any session.
+Durable snapshots in Redis plus a network pubsub bus — the adapter for
+multi-node deployments. Broadcasts cross nodes, so any node can host any
+session.
+
+```sh
+bun add @rpxd/storage-redis
+```
+
+Not yet on npm — work from a clone of the repo for now.
 
 ```ts
 import { redis } from "@rpxd/storage-redis";
@@ -11,8 +17,9 @@ export default defineConfig({ storage: redis(client) });
 ```
 
 `redis()` takes a minimal client interface rather than depending on a
-specific package — node-redis and ioredis both satisfy it with a thin
-wrapper:
+specific package. node-redis and ioredis both satisfy it with a thin
+wrapper — [Scaling](https://olmesm.github.io/rpxd-live/operations/scaling/)
+has ready-made wrappers for both.
 
 ```ts
 interface RedisLikeClient {
@@ -28,5 +35,7 @@ interface RedisLikeClient {
 }
 ```
 
-Note: most redis clients need a **separate connection** for subscribe mode
-— have your wrapper's `subscribe` use a duplicated client if yours does.
+Note: most Redis clients need a **separate connection** for subscribe mode.
+If yours does, have your wrapper's `subscribe` use a duplicated client.
+
+Docs: https://olmesm.github.io/rpxd-live/
