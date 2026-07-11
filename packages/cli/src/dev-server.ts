@@ -50,13 +50,13 @@ export interface DevServerOptions {
   /**
    * Config fields merged (shallow) over the loaded `rpxd.config.ts` — the
    * injection seam for tests and embedding, where the config can't come from
-   * a file (e.g. an `onSecurityEvent` spy, or capacity caps under test).
+   * a file (e.g. an `onEvent` spy, or capacity caps under test).
    *
    * @example
    * ```ts
    * await createDevServer(root, {
    *   port: 0,
-   *   configOverride: { onSecurityEvent: (e) => events.push(e) },
+   *   configOverride: { onEvent: (e) => events.push(e) },
    * });
    * ```
    */
@@ -256,7 +256,7 @@ export async function createDevServer(
       return renderDevErrorPage(info.path, info.error);
     },
     defaultRateLimit: config.rateLimit,
-    ...instanceHandlerOptions(config), // dev honors instances.* + onSecurityEvent too
+    ...instanceHandlerOptions(config), // dev honors instances.* + onEvent too
   });
 
   // Dev-bridge transport events (#73): the node http/upgrade bridge below sits
