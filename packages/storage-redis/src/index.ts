@@ -11,9 +11,9 @@
  */
 import {
   type BroadcastMessage,
-  makeEmit,
+  makeDiagnosticEmit,
   type PubSubBus,
-  type RpxdEventSink,
+  type RpxdDiagnosticSink,
   type Snapshot,
   type StorageAdapter,
 } from "@rpxd/core";
@@ -64,7 +64,7 @@ class RedisBus implements PubSubBus {
   private readonly client: RedisLikeClient;
   private readonly prefix: string;
   private readonly channels = new Map<string, ChannelEntry>();
-  private emit: RpxdEventSink = makeEmit();
+  private emit: RpxdDiagnosticSink = makeDiagnosticEmit();
   // In-flight publishes, tracked so the test harness's settled() can await that
   // the PUBLISH commands it fired have been accepted (and local subscribers on
   // this node notified) — never remote-node processing, which is out of scope.
@@ -74,8 +74,8 @@ class RedisBus implements PubSubBus {
     this.prefix = prefix;
   }
 
-  setEmit(emit: RpxdEventSink): void {
-    this.emit = makeEmit(emit);
+  setEmit(emit: RpxdDiagnosticSink): void {
+    this.emit = makeDiagnosticEmit(emit);
   }
 
   publish(msg: BroadcastMessage): void {

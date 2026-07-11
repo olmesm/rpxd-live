@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import type { RpxdEvent, RpxdEventSink } from "../src/events.ts";
+import type { RpxdDiagnostic, RpxdDiagnosticSink } from "../src/diagnostics.ts";
 import { LiveInstance } from "../src/instance.ts";
 import type { LiveDefinition, Mutator, SearchParams } from "../src/live.ts";
 import { type Envelope, PROTOCOL_VERSION, type RpcBatch } from "../src/protocol.ts";
@@ -43,7 +43,7 @@ async function make(
     key?: string;
     session?: Session;
     id?: string;
-    emit?: RpxdEventSink;
+    emit?: RpxdDiagnosticSink;
   } = {},
 ) {
   const storage = opts.storage ?? memory();
@@ -435,7 +435,7 @@ describe("loadForRender render gate (§12)", () => {
   });
 
   it("emits a redirect thrown after the first patch instead of dropping it silently (§12)", async () => {
-    const events: RpxdEvent[] = [];
+    const events: RpxdDiagnostic[] = [];
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
       load: async (_url, ctx) => {
@@ -1081,9 +1081,9 @@ describe("protocol version check (W1)", () => {
   });
 });
 
-describe("event sink (#73)", () => {
-  it("emits a structured instance/load-failed event to an injected sink", async () => {
-    const events: RpxdEvent[] = [];
+describe("diagnostic sink (#73)", () => {
+  it("emits a structured instance/load-failed diagnostic to an injected sink", async () => {
+    const events: RpxdDiagnostic[] = [];
     const boom = new Error("loader exploded");
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
@@ -1097,8 +1097,8 @@ describe("event sink (#73)", () => {
     expect(failed).toMatchObject({ category: "instance", level: "error", error: boom });
   });
 
-  it("emits a storage/subscriber-threw event when a broadcast subscriber throws", async () => {
-    const events: RpxdEvent[] = [];
+  it("emits a storage/subscriber-threw diagnostic when a broadcast subscriber throws", async () => {
+    const events: RpxdDiagnostic[] = [];
     const storage = memory();
     storage.bus.setEmit?.((e) => events.push(e));
     storage.bus.subscribe("room:1", "sub-a", () => {
@@ -1116,7 +1116,7 @@ describe("event sink (#73)", () => {
     expect(threw?.detail).toMatchObject({ topic: "room:1", subscriberId: "sub-a" });
   });
 
-  it("falls back to defaultEventSink (console) when no sink is injected", async () => {
+  it("falls back to defaultDiagnosticSink (console) when no sink is injected", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const def: LiveDefinition<TodoState, "/t/$id", Session> = {

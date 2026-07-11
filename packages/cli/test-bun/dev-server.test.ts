@@ -1,27 +1,27 @@
 /**
  * TDD acceptance for the dev server's config forwarding (§14): `rpxd dev`
- * must apply the same `instances.*` capacity knobs and `onEvent` observability
+ * must apply the same `instances.*` capacity knobs and `onDiagnostic` observability
  * sink that `rpxd start` does — the wiring is one spread, but only a booted
  * dev server proves it reaches the running handler. Injected through
  * `configOverride`, the test/embedding seam over `rpxd.config.ts`.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { fileURLToPath } from "node:url";
-import type { RpxdEvent } from "@rpxd/server-bun";
+import type { RpxdDiagnostic } from "@rpxd/server-bun";
 import { createDevServer, type DevServer } from "../src/index.ts";
 
 const exampleRoot = fileURLToPath(new URL("../../../examples/kitchen-sink", import.meta.url));
 const COOKIE = "rpxd_sid=dev-config-session";
 
 let server: DevServer;
-const events: RpxdEvent[] = [];
+const events: RpxdDiagnostic[] = [];
 
 beforeAll(async () => {
   server = await createDevServer(exampleRoot, {
     port: 0,
     configOverride: {
       instances: { maxInstancesPerSession: 1 },
-      onEvent: (e) => events.push(e),
+      onDiagnostic: (e) => events.push(e),
     },
   });
 }, 60_000);
@@ -40,8 +40,8 @@ async function mount(path: string): Promise<Response> {
   });
 }
 
-describe("rpxd dev applies instances.* and onEvent from config", () => {
-  it("forwards onEvent: a cross-origin control-plane POST fires origin-rejected", async () => {
+describe("rpxd dev applies instances.* and onDiagnostic from config", () => {
+  it("forwards onDiagnostic: a cross-origin control-plane POST fires origin-rejected", async () => {
     const res = await fetch(`${base()}/__rpxd/rpc`, {
       method: "POST",
       headers: {

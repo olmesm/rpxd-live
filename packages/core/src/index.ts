@@ -7,11 +7,11 @@
  * @packageDocumentation
  */
 export {
-  defaultEventSink,
-  makeEmit,
-  type RpxdEvent,
-  type RpxdEventSink,
-} from "./events.ts";
+  defaultDiagnosticSink,
+  makeDiagnosticEmit,
+  type RpxdDiagnostic,
+  type RpxdDiagnosticSink,
+} from "./diagnostics.ts";
 export {
   type CreateInstanceOptions,
   DEFAULT_MAX_BATCH_CALLS,

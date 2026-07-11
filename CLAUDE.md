@@ -61,11 +61,14 @@ normative spec is `spec.md`; the wire protocol is
   (that would block the instance, §8). The bus's optional `drain()` is the only
   awaitable seam; the test harness's `settled()` awaits it (scoped to
   local, this-process delivery — not cross-node fan-out).
-- Framework events (rejections, denials, dropped messages, recovered errors)
-  emit through the event sink — `RpxdEvent`/`RpxdEventSink` from `@rpxd/core`,
-  installed app-side via server-bun's `onEvent` (#73) — never bare `console.*`.
-  Every server emit site builds one `makeEmit(sink)` (which swallows a throwing
-  sink) and reports a `{ category, type, level, detail?, error? }` event; core,
-  instances, and storage adapters take an injected emit and fall back to
-  `defaultEventSink` standalone. `console.*` is only for that default sink and
-  the browser-side client (`packages/client`), which has no server hook.
+- Framework diagnostics (rejections, denials, dropped messages, recovered
+  errors) emit through the diagnostic sink — `RpxdDiagnostic`/`RpxdDiagnosticSink`
+  from `@rpxd/core`, installed app-side via server-bun's `onDiagnostic` (#73) —
+  never bare `console.*`. Every server emit site builds one
+  `makeDiagnosticEmit(sink)` (which swallows a throwing sink) and reports a
+  `{ category, type, level, detail?, error? }` diagnostic; core, instances, and
+  storage adapters take an injected emit and fall back to
+  `defaultDiagnosticSink` standalone. `console.*` is only for that default sink
+  and the browser-side client (`packages/client`), which has no server hook.
+  These framework diagnostics are distinct from the domain "events" of the
+  typed-broadcast feature (`Register.events` / `ctx.broadcast`).

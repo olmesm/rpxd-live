@@ -1,6 +1,6 @@
 ---
 title: Security
-description: The consolidated security surface — session-cookie hardening, the cross-site origin policy, throttling, capacity caps as DoS hardening, error disclosure, and the onEvent observability sink.
+description: The consolidated security surface — session-cookie hardening, the cross-site origin policy, throttling, capacity caps as DoS hardening, error disclosure, and the onDiagnostic observability sink.
 sidebar:
   order: 4
 ---
@@ -109,12 +109,13 @@ default-safe rule itself. See
 [The `__error` page and `debugErrors`](/rpxd-live/operations/error-handling/#the-__error-page-and-debugerrors)
 for the full error-handling map.
 
-## Observability: `onEvent`
+## Observability: `onDiagnostic`
 
-Every rejection or capacity eviction above emits an `RpxdEvent` if you provide
-`onEvent` — the framework-wide event sink (#73), a single place to log or meter
-the whole runtime instead of re-deriving it from access logs. The security
-surface is `category: "security"`, whose taxonomy is exactly four types:
+Every rejection or capacity eviction above emits an `RpxdDiagnostic` if you
+provide `onDiagnostic` — the framework-wide diagnostic sink (#73), a single
+place to log or meter the whole runtime instead of re-deriving it from access
+logs. The security surface is `category: "security"`, whose taxonomy is exactly
+four types:
 
 | `type` | Fired when |
 | --- | --- |
@@ -123,16 +124,16 @@ surface is `category: "security"`, whose taxonomy is exactly four types:
 | `cap-evicted` | An idle/un-attached instance was shed to stay under a capacity cap |
 | `cap-rejected` | A mount was rejected — every slot at `maxInstancesPerSession` was subscribed |
 
-`onEvent` also receives `request`-, `instance`-, and `storage`-category events
-(crashed requests, WS faults, flush/broadcast/snapshot failures); filter on
-`category` when you only want the security ones. The runtime swallows any throw
-from the sink, so a broken logger can't affect the work it's observing:
+`onDiagnostic` also receives `request`-, `instance`-, and `storage`-category
+diagnostics (crashed requests, WS faults, flush/broadcast/snapshot failures);
+filter on `category` when you only want the security ones. The runtime swallows
+any throw from the sink, so a broken logger can't affect the work it's observing:
 
 ```ts
 // rpxd.config.ts
 export default defineConfig({
-  onEvent: (e) => {
-    if (e.category === "security") logger.warn(`rpxd.security.${e.type}`, e.detail);
+  onDiagnostic: (d) => {
+    if (d.category === "security") logger.warn(`rpxd.security.${d.type}`, d.detail);
   },
 });
 ```

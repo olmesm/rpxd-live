@@ -4,7 +4,7 @@
  * These cover the pure `originAllowed` predicate and the WS upgrade gate; the
  * SSE/POST paths are exercised in `handler.test.ts`.
  */
-import type { LiveDefinition, RpxdEvent } from "@rpxd/core";
+import type { LiveDefinition, RpxdDiagnostic } from "@rpxd/core";
 import { describe, expect, it } from "vitest";
 import { createRpxdHandler } from "../src/handler.ts";
 import { originAllowed } from "../src/origin.ts";
@@ -82,10 +82,10 @@ describe("ws upgrade origin gate (#52)", () => {
   });
 
   it("emits a category:security origin-rejected on a rejected upgrade (#8, #73)", async () => {
-    const events: RpxdEvent[] = [];
+    const events: RpxdDiagnostic[] = [];
     const handler = createRpxdHandler({
       routes: [{ path: "/", def }],
-      onEvent: (e) => events.push(e),
+      onDiagnostic: (e) => events.push(e),
     });
     const ws = wsTransport(handler);
     await ws.handleUpgrade(

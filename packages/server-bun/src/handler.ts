@@ -5,19 +5,19 @@
  * through any {@link ServerAdapter}.
  */
 import {
-  defaultEventSink,
+  defaultDiagnosticSink,
   type Envelope,
   isRedirect,
   isSuperseded,
   type LiveDefinition,
   LiveInstance,
-  makeEmit,
+  makeDiagnosticEmit,
   memory,
   type RateLimit,
   type RouteDefinition,
   type RouteMethod,
   type RpcBatch,
-  type RpxdEventSink,
+  type RpxdDiagnosticSink,
   type StorageAdapter,
   TokenBucket,
 } from "@rpxd/core";
@@ -51,11 +51,11 @@ export interface RenderContext {
 }
 
 /**
- * The `security`-category event `type`s the runtime emits (#8, now part of the
- * unified event sink #73) — a rejected cross-origin request, a throttle
+ * The `security`-category diagnostic `type`s the runtime emits (#8, now part of
+ * the unified diagnostic sink #73) — a rejected cross-origin request, a throttle
  * rejection, a capacity-driven instance eviction, and a mount rejected at the
- * per-session cap. They reach the app as {@link RpxdEvent}s with
- * `category: "security"` through {@link RpxdHandlerOptions.onEvent}.
+ * per-session cap. They reach the app as {@link RpxdDiagnostic}s with
+ * `category: "security"` through {@link RpxdHandlerOptions.onDiagnostic}.
  */
 type SecurityEventType = "origin-rejected" | "rate-limited" | "cap-evicted" | "cap-rejected";
 
@@ -160,26 +160,26 @@ export interface RpxdHandlerOptions {
    */
   throttle?: { key: (req: Request) => string | null; limit: RateLimit };
   /**
-   * The app's event sink (#73) — the single observability seam for every
-   * framework event: `security` rejections (cross-origin, throttle, capacity),
-   * `request` failures, recovered `instance` errors, and `storage` faults.
-   * Generalizes the former `onSecurityEvent` hook (#8); filter on
-   * `event.category === "security"` for the old behavior. The runtime swallows
+   * The app's diagnostic sink (#73) — the single observability seam for every
+   * framework diagnostic: `security` rejections (cross-origin, throttle,
+   * capacity), `request` failures, recovered `instance` errors, and `storage`
+   * faults. Generalizes the former `onSecurityEvent` hook (#8); filter on
+   * `d.category === "security"` for the old behavior. The runtime swallows
    * any throw from the sink so observability can't affect the request, and
    * threads this same sink into every instance and the storage adapter. When
-   * omitted, events fall back to `defaultEventSink` (console).
+   * omitted, diagnostics fall back to `defaultDiagnosticSink` (console).
    *
    * @example
    * ```ts
    * createRpxdHandler({
    *   routes,
-   *   onEvent: (e) => {
-   *     if (e.category === "security") metrics.increment(`rpxd.sec.${e.type}`);
+   *   onDiagnostic: (d) => {
+   *     if (d.category === "security") metrics.increment(`rpxd.sec.${d.type}`);
    *   },
    * });
    * ```
    */
-  onEvent?: RpxdEventSink;
+  onDiagnostic?: RpxdDiagnosticSink;
   defaultRateLimit?: RateLimit;
   /**
    * Max bytes an rpc/control request body (or WS frame) may carry before it's
@@ -317,11 +317,11 @@ export function encodeSse(env: Envelope): string {
  */
 export function createRpxdHandler(opts: RpxdHandlerOptions) {
   const storage = opts.storage ?? memory();
-  // One wrapped sink (#73) for the handler's own events, threaded into every
-  // instance and the storage bus so the whole runtime reports through it. The
-  // wrap catches any throw from the app sink — observability never breaks a
-  // request. Falls back to the console sink when no `onEvent` is set.
-  const emit = makeEmit(opts.onEvent ?? defaultEventSink);
+  // One wrapped sink (#73) for the handler's own diagnostics, threaded into
+  // every instance and the storage bus so the whole runtime reports through it.
+  // The wrap catches any throw from the app sink — observability never breaks a
+  // request. Falls back to the console sink when no `onDiagnostic` is set.
+  const emit = makeDiagnosticEmit(opts.onDiagnostic ?? defaultDiagnosticSink);
   storage.bus.setEmit?.(emit);
   const warmTtlMs = opts.warmTtlMs ?? 60_000;
   const attachTtlMs = opts.attachTtlMs ?? 10_000;

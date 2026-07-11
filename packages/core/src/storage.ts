@@ -3,7 +3,7 @@
  * Adapters: `memory()` here (default); sqlite/redis/session live in their own
  * packages and implement the same interface.
  */
-import { makeEmit, type RpxdEventSink } from "./events.ts";
+import { makeDiagnosticEmit, type RpxdDiagnosticSink } from "./diagnostics.ts";
 
 /** A broadcast in flight on the bus (§8). */
 export interface BroadcastMessage {
@@ -42,14 +42,14 @@ export interface PubSubBus {
    */
   drain?(): Promise<void>;
   /**
-   * Inject the app's event sink (#73) so bus-internal faults — a throwing
+   * Inject the app's diagnostic sink (#73) so bus-internal faults — a throwing
    * subscriber, a dropped malformed message, a failed network publish — report
-   * as structured `storage`-category events instead of bare `console.error`.
-   * The server calls this once with its `onEvent`-derived emit; standalone the
-   * bus falls back to {@link defaultEventSink}. Optional so pre-#73 adapters
-   * still satisfy the interface.
+   * as structured `storage`-category diagnostics instead of bare `console.error`.
+   * The server calls this once with its `onDiagnostic`-derived emit; standalone
+   * the bus falls back to {@link defaultDiagnosticSink}. Optional so pre-#73
+   * adapters still satisfy the interface.
    */
-  setEmit?(emit: RpxdEventSink): void;
+  setEmit?(emit: RpxdDiagnosticSink): void;
 }
 
 /**
@@ -100,10 +100,10 @@ export interface StorageAdapter {
  */
 export class LocalBus implements PubSubBus {
   #topics = new Map<string, Map<string, (msg: BroadcastMessage) => void>>();
-  #emit: RpxdEventSink = makeEmit();
+  #emit: RpxdDiagnosticSink = makeDiagnosticEmit();
 
-  setEmit(emit: RpxdEventSink): void {
-    this.#emit = makeEmit(emit);
+  setEmit(emit: RpxdDiagnosticSink): void {
+    this.#emit = makeDiagnosticEmit(emit);
   }
 
   publish(msg: BroadcastMessage): void {

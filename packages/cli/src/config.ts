@@ -2,7 +2,7 @@
  * `rpxd.config.ts` surface (§14): the only non-route file in userland.
  */
 import type { RateLimit, StorageAdapter } from "@rpxd/core";
-import type { RpxdEventSink, RpxdHandlerOptions } from "@rpxd/server-bun";
+import type { RpxdDiagnosticSink, RpxdHandlerOptions } from "@rpxd/server-bun";
 
 /** Transport selection (§11): SSE default, WS opt-in. */
 export interface TransportConfig {
@@ -118,21 +118,21 @@ export interface RpxdConfig {
     | "maxInstancesPerSession"
   >;
   /**
-   * Observability event sink (#73) — every framework event flows here: a
-   * rejected cross-origin request or throttle/capacity rejection
+   * Observability diagnostic sink (#73) — every framework diagnostic flows
+   * here: a rejected cross-origin request or throttle/capacity rejection
    * (`category: "security"`), a crashed request or WS fault
    * (`category: "request"`), and instance/storage faults. Log or meter them;
    * the runtime swallows any throw from the sink so it can't affect the work
-   * it observes. When omitted, events fall back to the console default sink.
+   * it observes. When omitted, diagnostics fall back to the console default sink.
    *
    * @example
    * ```ts
    * export default defineConfig({
-   *   onEvent: (e) => logger.log(e.level, "rpxd", e),
+   *   onDiagnostic: (d) => logger.log(d.level, "rpxd", d),
    * });
    * ```
    */
-  onEvent?: RpxdEventSink;
+  onDiagnostic?: RpxdDiagnosticSink;
 }
 
 /**
@@ -176,17 +176,17 @@ export function applyConfigOverrides(config: RpxdConfig, overrides?: ConfigOverr
 }
 
 /**
- * Map the config's instance-registry tuning knobs and observability event
- * sink onto {@link RpxdHandlerOptions} (§14, #61 capacity caps, #73 event
+ * Map the config's instance-registry tuning knobs and observability diagnostic
+ * sink onto {@link RpxdHandlerOptions} (§14, #61 capacity caps, #73 diagnostic
  * sink). Pulled out of {@link startApp} as its own function so the wiring is
  * unit-testable without standing up a server — `config.instances` spreads
  * straight through (undefined fields keep the handler's defaults) and
- * `onEvent` rides along.
+ * `onDiagnostic` rides along.
  *
  * @example
  * ```ts
  * instanceHandlerOptions({ instances: { warmTtlMs: 5000 } });
- * // { warmTtlMs: 5000, onEvent: undefined }
+ * // { warmTtlMs: 5000, onDiagnostic: undefined }
  * ```
  */
 export function instanceHandlerOptions(
@@ -198,7 +198,7 @@ export function instanceHandlerOptions(
   | "unattachedTtlMs"
   | "maxUnattachedInstances"
   | "maxInstancesPerSession"
-  | "onEvent"
+  | "onDiagnostic"
 > {
-  return { ...config.instances, onEvent: config.onEvent };
+  return { ...config.instances, onDiagnostic: config.onDiagnostic };
 }
