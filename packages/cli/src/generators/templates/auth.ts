@@ -16,10 +16,20 @@ const authAdapter = (): string => `/**
 import { betterAuth } from "better-auth";
 import { authAdapter } from "./db";
 
+// Secret comes from .env (generated) / the deploy environment. rpxd is secure
+// by default: development may fall back, production must set BETTER_AUTH_SECRET.
+const authSecret =
+  process.env.BETTER_AUTH_SECRET ??
+  (process.env.NODE_ENV === "development"
+    ? "dev-only-insecure-secret" // never reached when .env exists
+    : (() => {
+        throw new Error("Set BETTER_AUTH_SECRET in production (see .env / your deploy env).");
+      })());
+
 export const auth = betterAuth({
   database: authAdapter,
   emailAndPassword: { enabled: true },
-  secret: process.env.BETTER_AUTH_SECRET ?? "dev-secret-change-me-0123456789abcdef",
+  secret: authSecret,
   trustedOrigins: (request?: Request) => (request ? [new URL(request.url).origin] : []),
 });
 `;
