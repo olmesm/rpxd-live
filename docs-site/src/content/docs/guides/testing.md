@@ -50,7 +50,7 @@ the server's acknowledgment of that rpc.
 | `t.envelopes` | Every envelope emitted since mount, in order — [the wire](/rpxd-live/concepts/wire-protocol/) as a client would see it. |
 | `t.settled()` | Resolves once in-flight rpcs, scheduled patch flushes, and the mutation queue have drained. Await it before asserting on streamed or broadcast-driven state. |
 | `t.navigate(search)` | Runs `guard` then `load` with new search params (see [routing](/rpxd-live/guides/routing/)), awaiting the stream to settle. |
-| `t.broadcast(topic, event, payload)` | Injects a broadcast as if a **peer** instance published it ([pubsub](/rpxd-live/concepts/pubsub/)) — exclude-self semantics behave exactly as in production. |
+| `t.broadcast(topic, event, payload)` | Injects a broadcast as if a **peer** instance published it ([pubsub](/rpxd-live/concepts/pubsub/)) — exclude-self (the sender doesn't receive its own broadcast) behaves exactly as in production. |
 | `t.dispose()` | Aborts in-flight `ctx.signal` and tears the instance down. |
 
 Options: `testLive(route, { params, session, search, storage, id })` — typed
