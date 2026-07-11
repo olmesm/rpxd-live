@@ -39,6 +39,13 @@ jobs:
       - name: Release manifests
         run: bun scripts/check-release-manifests.ts
 
+      # Informational only: nudges PR authors toward adding a changeset, but
+      # a missing one must never fail CI (that would wedge every PR that
+      # doesn't touch a published package, e.g. docs-only or example-only
+      # changes) — hence `|| true`.
+      - name: Changeset status
+        run: bunx changeset status --since=origin/main || true
+
       - name: Unit tests
         run: bun run test
 
