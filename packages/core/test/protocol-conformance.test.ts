@@ -187,6 +187,14 @@ describe("wire-protocol conformance (the wire protocol guide)", () => {
       error: { name: "ProtocolError", message: "x" },
     } satisfies Envelope;
     const redirectEnv = { seq: 4, instance: "i", redirect: "/login" } satisfies Envelope;
+    // A denied WS mount answers unbound (`instance: ""`) with the frame's
+    // mountId echoed for correlation (#65).
+    const mountDenyEnv = {
+      seq: 0,
+      instance: "",
+      redirect: "/login",
+      mountId: "m1",
+    } satisfies Envelope;
     const b = {
       v: PROTOCOL_VERSION,
       instance: "i",
@@ -200,6 +208,7 @@ describe("wire-protocol conformance (the wire protocol guide)", () => {
     expect(patchEnv.patches?.[0]?.op).toBe("replace");
     expect(errEnv.error?.name).toBe("ProtocolError");
     expect(redirectEnv.redirect).toBe("/login");
+    expect(mountDenyEnv.mountId).toBe("m1");
 
     // `RpcCall` has no `tempIds` — tempIds are client-local, never on the wire (W4).
     const withExcess = {

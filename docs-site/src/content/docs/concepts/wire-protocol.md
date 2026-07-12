@@ -46,6 +46,8 @@ type Envelope = {
   error?: { name: string; message: string; rpc?: string };
   /** Runtime redirect target (§10): a `guard`/`load` deny during a URL change — the client soft-navigates. */
   redirect?: string;
+  /** WS only: echo of the mount frame's `mountId`, correlating the outcome of a socket mount that never bound an instance. */
+  mountId?: string;
 };
 
 type Patch = {
@@ -139,7 +141,7 @@ query params (below).
 ```ts
 type Control =
   | { type: "resync"; instance: string }                                        // gap recovery / late attach
-  | { type: "mount"; path: string; search: Record<string, string>; stream?: string } // cold / same-route mount
+  | { type: "mount"; path: string; search: Record<string, string>; stream?: string; mountId?: string } // cold / same-route mount
   | { type: "url"; instance: string; search: Record<string, string> }           // nav.patch → guard + load
   | { type: "release"; instance: string; stream: string };                      // same-route nav abandons an instance
 ```
@@ -155,6 +157,12 @@ type Control =
   `setup`/`guard` deny). Its optional `stream` id and the `release` message drive
   a **soft reload**: a same-route path change joins a fresh instance to the
   open stream and releases the old one, so the transport survives.
+- Over WS, `mount` has no response slot — the outcome arrives as envelopes on
+  the socket. A mount that denies or fails before binding an instance answers
+  with `instance: ""`, which the client's bound-instance filter can never
+  match. The frame's optional `mountId` closes that gap: the server echoes it
+  on the resulting `redirect`/`error` envelope, and the client correlates the
+  outcome to its in-flight mount by id.
 - `url` reconciles the instance to a new URL — `guard` then `load` (§7); a deny
   comes back as `{ redirect }` (SSE control response) or a `redirect` envelope (WS).
 

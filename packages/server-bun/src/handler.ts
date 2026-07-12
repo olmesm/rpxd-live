@@ -1415,6 +1415,8 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                 instance?: string;
                 path?: string;
                 search?: Record<string, string>;
+                /** Client correlation id for `mount` (#65) — echoed on the outcome envelope. */
+                mountId?: string;
               };
           try {
             msg = JSON.parse(raw);
@@ -1450,17 +1452,23 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
               // thrown out, they'd otherwise die in the transport's generic
               // catch and the client waits forever.
               const warm = sessions.get(sid)?.get(msg.path);
+              // A failed mount usually has no bound instance to address the
+              // outcome to, so echo the frame's correlation id (#65) — the
+              // client matches it against its in-flight mount.
+              const mountId = msg.mountId;
               if (isRedirect(e)) {
                 send({
                   seq: warm?.instance.seq ?? 0,
                   instance: warm?.instance.id ?? "",
                   redirect: e.location,
+                  ...(mountId !== undefined && { mountId }),
                 });
               } else if (e instanceof SessionCapError) {
                 send({
                   seq: 0,
                   instance: "",
                   error: { name: e.name, message: e.message },
+                  ...(mountId !== undefined && { mountId }),
                 });
               } else if (e instanceof NotFoundError) {
                 // #65 WS mount parity: mounting an unregistered path 404s over
@@ -1471,6 +1479,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                   seq: 0,
                   instance: "",
                   error: { name: e.name, message: e.message },
+                  ...(mountId !== undefined && { mountId }),
                 });
               } else {
                 // A genuinely unexpected error: keep `message()` total (no

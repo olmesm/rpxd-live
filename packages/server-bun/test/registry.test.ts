@@ -281,4 +281,43 @@ describe("WS mount — guard redirects answer on the socket (§10)", () => {
     sock.close();
     await handler.dispose();
   });
+
+  it("echoes the mount frame's mountId on the redirect envelope (#65 correlation)", async () => {
+    // A denied mount has no bound instance to address the redirect to
+    // (`instance: ""`), so the client can only correlate it via the mountId it
+    // sent on the frame.
+    const guardedDef: LiveDefinition<{ ok: boolean }, "/guarded", Record<string, unknown>> = {
+      setup: () => ({ ok: true }),
+      guard: () => {
+        throw redirect("/login");
+      },
+    };
+    const handler = createRpxdHandler({ routes: [{ path: "/guarded", def: guardedDef }] });
+    const sent: Envelope[] = [];
+    const sock = handler.socket("ws-redir-id", {}, (env) => sent.push(env));
+    await sock.message(JSON.stringify({ type: "mount", path: "/guarded", mountId: "m7" }));
+    const env = sent.find((e) => e.redirect);
+    expect(env?.redirect).toBe("/login");
+    expect(env?.instance).toBe(""); // no warm entry — nothing to bind to
+    expect(env?.mountId).toBe("m7");
+    sock.close();
+    await handler.dispose();
+  });
+
+  it("echoes mountId on cap and not-found error envelopes too (#65)", async () => {
+    const handler = makeHandler({ maxInstancesPerSession: 1 });
+    const sent: Envelope[] = [];
+    const sock = handler.socket("ws-err-id", {}, (env) => sent.push(env));
+    // Not-found first — once the cap is full, the (earlier) cap check would
+    // reject an unmatched path as SessionCapError before the route lookup.
+    await sock.message(JSON.stringify({ type: "mount", path: "/nowhere", mountId: "m-404" }));
+    const notFound = sent.find((e) => e.error?.name === "NotFoundError");
+    expect(notFound?.mountId).toBe("m-404");
+    await sock.message(JSON.stringify({ type: "mount", path: "/org/1/board" }));
+    await sock.message(JSON.stringify({ type: "mount", path: "/org/2/board", mountId: "m-cap" }));
+    const cap = sent.find((e) => e.error?.name === "SessionCapError");
+    expect(cap?.mountId).toBe("m-cap");
+    sock.close();
+    await handler.dispose();
+  });
 });
