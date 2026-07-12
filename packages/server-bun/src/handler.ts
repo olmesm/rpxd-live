@@ -243,9 +243,13 @@ export interface RpxdHandlerOptions {
    * - **SSE on Bun** — enforced only for bursts that land before the runtime
    *   drains the queue (e.g. a connect-time snapshot over budget). Bun
    *   buffers streamed responses internally without honoring `desiredSize`
-   *   (verified against Bun 1.3), so gradual lag is invisible there until Bun
-   *   exposes response backpressure — prefer `transport: ws()` or a
-   *   proxy-level idle policy for laggard protection on Bun.
+   *   (verified against Bun 1.3.11: with a TCP-stalled client, Bun drains
+   *   40+ MiB from a push stream — and accepts it unblocked in direct
+   *   mode — while `desiredSize` never drops; no upstream ticket exists as
+   *   of that version, and Bun's streams doc claims otherwise). Gradual lag
+   *   is invisible there until Bun exposes response backpressure — prefer
+   *   `transport: ws()` or a proxy-level idle policy for laggard protection
+   *   on Bun.
    */
   maxBufferedBytes?: number | null;
   /**

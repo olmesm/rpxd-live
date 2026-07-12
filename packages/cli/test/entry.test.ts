@@ -26,4 +26,15 @@ describe("client entry template (§11 transport parity)", () => {
     expect(source).toContain("hydrateRscFields");
     expect(source).toContain('transport: "ws"');
   });
+
+  it("marks the document hydrated after hydrateRoot (the e2e interaction gate)", () => {
+    // A click that lands before hydration is silently lost (no handler yet) or
+    // triggers a native form submit — the flaky-e2e root cause. The entry must
+    // stamp a marker AFTER hydrateRoot so tests (and apps) can wait for it.
+    const source = entrySource({});
+    const hydrate = source.indexOf("hydrateRoot(");
+    const marker = source.indexOf('dataset.rpxdHydrated = "true"');
+    expect(hydrate).toBeGreaterThan(-1);
+    expect(marker).toBeGreaterThan(hydrate); // stamped after hydration commits
+  });
 });

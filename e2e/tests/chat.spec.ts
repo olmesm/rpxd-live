@@ -1,5 +1,6 @@
 /** Multiplayer via pubsub (§8): two sessions, broadcast fan-out. */
 import { type BrowserContext, expect, test } from "@playwright/test";
+import { gotoHydrated } from "./helpers";
 
 test("two sessions see each other's messages (single-code-path, self:true)", async ({
   browser,
@@ -9,8 +10,10 @@ test("two sessions see each other's messages (single-code-path, self:true)", asy
   const alice = pages[0] as (typeof pages)[number];
   const bob = pages[1] as (typeof pages)[number];
 
-  await alice.goto("/chat");
-  await bob.goto("/chat");
+  // Wait for hydration on both pages — a pre-hydration submit is a native
+  // form navigation, not an rpc, and the message silently never sends.
+  await gotoHydrated(alice, "/chat");
+  await gotoHydrated(bob, "/chat");
 
   await alice.fill('input[name="text"]', "hello from alice");
   await alice.click('button[type="submit"]');
