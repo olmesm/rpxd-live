@@ -59,6 +59,12 @@ export interface Envelope {
   error?: EnvelopeError;
   /** Runtime redirect target (§10): a `guard`/`load` deny during a URL change — client soft-navs. */
   redirect?: string;
+  /**
+   * Echo of the WS `mount` frame's correlation id (#65): a denied socket mount
+   * has no bound instance to address (`instance: ""`), so the client matches
+   * the redirect/error outcome to its in-flight mount by this id instead.
+   */
+  mountId?: string;
 }
 
 /** Error surface of a failed rpc batch — feeds `sync.errors` on the client. */

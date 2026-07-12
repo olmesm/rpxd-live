@@ -370,6 +370,50 @@ describe("ws transport (§11 opt-in)", () => {
     expect(redirects).toEqual(["/403"]);
   });
 
+  it("correlates an unbound mount-deny redirect by mountId (#65)", async () => {
+    // A socket mount that denies with no warm instance answers with
+    // `instance: ""` — the bound-instance filter can never match it, so the
+    // client correlates via the mountId it sent on the mount frame.
+    const redirects: string[] = [];
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      if (body?.type === "mount") return Response.json({ instance: "srv-i2", seq: 1 });
+      return new Response(null, { status: 202 });
+    }) as unknown as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      transport: "ws",
+      base: "http://app.test",
+      bootstrap,
+      onRedirect: (loc) => redirects.push(loc),
+      webSocket: (url) => new FakeWebSocket(url) as unknown as never,
+      fetchImpl,
+    });
+    conn.connect();
+    const ws = FakeWebSocket.instances.at(-1) as FakeWebSocket;
+    ws.emit("open");
+
+    await conn.remount("/t/2", {});
+    const frame = ws.sent.map((m) => JSON.parse(m)).find((m) => m.type === "mount") as {
+      mountId?: string;
+    };
+    expect(typeof frame.mountId).toBe("string");
+
+    // A stale/foreign mountId on an unbound redirect must NOT navigate…
+    ws.emit(
+      "message",
+      JSON.stringify({ seq: 0, instance: "", redirect: "/elsewhere", mountId: "other" }),
+    );
+    expect(redirects).toEqual([]);
+    // …the in-flight mount's own id must.
+    ws.emit(
+      "message",
+      JSON.stringify({ seq: 0, instance: "", redirect: "/login", mountId: frame.mountId }),
+    );
+    expect(redirects).toEqual(["/login"]);
+    conn.close();
+  });
+
   it("a 4403 policy close goes terminal error, no retry (W7)", () => {
     vi.useFakeTimers();
     const { conn, socket } = makeWsConnection();

@@ -116,6 +116,13 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   readonly #streamId = randomId();
   /** Monotonic remount tag — a superseded tier-2 remount must not rebind the store (§7). */
   #remountRunId = 0;
+  /**
+   * Correlation id of the in-flight socket `mount` frame (#65). A mount that
+   * denies before binding answers with `instance: ""`, which the bound-instance
+   * filter can never match — the server echoes this id instead. Single slot:
+   * latest-wins (§7) already says only the newest mount owns the outcome.
+   */
+  #pendingMountId: string | null = null;
   #store: LiveStore<S, Session>;
   /** Runtime-redirect sink (§10) — seeded from opts, settable for SSR connections. */
   #onRedirect: ((location: string) => void) | undefined;
@@ -332,8 +339,11 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     this.#store = this.#makeStore(parsed.instance);
     if (this.#opts.transport === "ws" && this.#socketOpen && this.#socket) {
       // The socket *is* the stream: join the new instance to it (warm-reuse of
-      // the just-mounted instance) so its snapshot arrives on this socket.
-      this.#socket.send(JSON.stringify({ type: "mount", path, search }));
+      // the just-mounted instance) so its snapshot arrives on this socket. The
+      // mountId correlates a deny that has no instance to answer on (#65).
+      const mountId = `m${runId}`;
+      this.#pendingMountId = mountId;
+      this.#socket.send(JSON.stringify({ type: "mount", path, search, mountId }));
     } else {
       // SSE: the server joined the new instance to this stream by id at mount;
       // resync *after* the swap so the fresh store receives its full snapshot.
@@ -364,9 +374,20 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     if (body?.redirect) this.#navigateSafely(body.redirect);
   }
 
-  /** A `redirect` envelope (WS runtime deny, §10) for the bound instance → soft-nav. */
+  /**
+   * A `redirect` envelope (WS runtime deny, §10) → soft-nav. Matches either the
+   * bound instance, or — for a mount denied before any instance bound — the
+   * in-flight socket mount's correlation id (#65). A stale mountId (superseded
+   * remount) matches neither and is dropped, per latest-wins (§7).
+   */
   #handleRedirectEnvelope(env: Envelope): boolean {
-    if (!env.redirect || env.instance !== this.#instance) return false;
+    if (!env.redirect) return false;
+    if (env.mountId !== undefined && env.mountId === this.#pendingMountId) {
+      this.#pendingMountId = null;
+      this.#navigateSafely(env.redirect);
+      return true;
+    }
+    if (env.instance !== this.#instance) return false;
     this.#navigateSafely(env.redirect);
     return true;
   }
