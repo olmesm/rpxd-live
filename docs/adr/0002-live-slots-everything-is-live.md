@@ -343,9 +343,14 @@ none in prod; regression: single mounts unbatched.
 ### 12. Release/mount pair cancellation (slot survival race)
 
 The item-11 queue cancels same-identity release+mount pairs before the wire
-(React remounts across page swaps become no-ops); across ticks, release then
-mount, ordered. **TDD (failing-first):** same-tick unmount+remount → zero
-control messages, store rebinds to same instance id; server
+(React remounts across page swaps become no-ops) — **but a cancelled pair
+whose props differ must still forward a `patchProps`**, or a slot shared
+across pages keeps the previous page's props (a stale-capability bug: e.g. a
+chat slot keeping the old page's tools). Across ticks, release then mount,
+ordered. **TDD (failing-first):** same-tick unmount+remount, same props →
+zero control messages, store rebinds to same instance id; same-tick
+unmount+remount, **changed props** → zero mount/release but exactly one
+`url` props patch, and `load` reruns with the new props (item 8); server
 mount/release/re-mount → same `entry.instance.id`, `setup` once, pre-nav
 state in the resync snapshot.
 
@@ -404,15 +409,39 @@ as its worked example; both diagnostics link to it by name.
 
 ## Future direction (recorded, not planned): agent tools follow navigation
 
-The dashboard shape points at agent-first apps: a stable chat (layout slot)
-whose **toolset changes as the user navigates**. Two observations recorded
-for that future design: (1) a page's **rpcs are its tools** — `.input`
-Standard Schemas are convertible to LLM tool schemas, authorization is the
-page's existing guard/session, and execution on the co-located page instance
-makes results visible live on the page the user is looking at; (2) tool
-*availability* is a presence problem (which instances does this session have
-mounted), and tool *execution* beyond sync `.on` mutations needs a
-server-side cross-instance dispatch seam (`ctx.invoke` routed through the
-same `handleBatch` pipeline as a client call). Broadcast-based availability
-is expressible in userland today; the dispatch seam is deliberately out of
-scope here.
+The dashboard shape points at agent-first apps: a stable chat whose
+**toolset changes as the user navigates**. The settled sketch (superseding an
+earlier broadcast-based one):
+
+1. **Tools are props.** The same chat slot is rendered by multiple pages
+   with constant identity; each page passes *its* toolset in props
+   (`<LiveSlot of={Chat} params={{channel}} props={{ tools }} />`).
+   Navigation = warm reuse (state intact) + props patch (`guard`+`load`
+   rerun with the new tools). Revocation is structural (the next page's
+   props replace the last); cold wake is solved (props arrive with the
+   mount, not via unreplayable events). No broadcast, no presence events,
+   no new machinery — availability rides items 7/8/12 as shipped.
+2. **A page's rpcs are its tools.** `.input` Standard Schemas convert to
+   LLM tool schemas; authorization is the page's existing guard/session;
+   execution on the co-located page instance renders live on the page the
+   user is looking at.
+3. **Execution is grants, not ambient invoke.** An unscoped
+   `ctx.invoke(anyInstance, anyRpc)` is ambient authority — rejected. The
+   capability model: a page **grants** specific rpcs
+   (`ctx.grant("create")` in `load` mints a serializable, typed capability
+   ref) and passes them in the slot's props; a holder can dispatch only
+   what it holds. Scope = the contents of props; revocation = props
+   replacement / instance release (validated server-side at call time);
+   dispatch underneath rides the same `handleBatch` funnel (validation,
+   rate limits, queue, acks). This is ADR 0003 material, prototyped first
+   in the kitchen-sink.
+4. **`<LiveSlot persist>` (client-only follow-up).** For a slot living in
+   page trees (pages decide whether/where it renders) whose React instance
+   should survive navigation when consecutive pages share its identity:
+   render the real subtree once into a stable host in the item-13 layout
+   region and portal it into the in-page anchor; re-home the portal
+   container on navigation (DOM moves, React never remounts). Server side
+   needs nothing (items 8/12 already keep the instance quiet). Sharp edges
+   for that design: one anchor per identity at a time (concurrent anchors
+   error), focus loss on DOM re-homing, and a grace period before teardown
+   when no page renders the anchor.
