@@ -407,41 +407,14 @@ SSR-attach/reconnect/optimistic specs green. **Docs (rides this item):**
 "Aggregates, not rows" concepts page (docs style guide), with the dashboard
 as its worked example; both diagnostics link to it by name.
 
-## Future direction (recorded, not planned): agent tools follow navigation
+## Open question (discussion only — nothing decided): agent tools follow navigation
 
-The dashboard shape points at agent-first apps: a stable chat whose
-**toolset changes as the user navigates**. The settled sketch (superseding an
-earlier broadcast-based one):
-
-1. **Tools are props.** The same chat slot is rendered by multiple pages
-   with constant identity; each page passes *its* toolset in props
-   (`<LiveSlot of={Chat} params={{channel}} props={{ tools }} />`).
-   Navigation = warm reuse (state intact) + props patch (`guard`+`load`
-   rerun with the new tools). Revocation is structural (the next page's
-   props replace the last); cold wake is solved (props arrive with the
-   mount, not via unreplayable events). No broadcast, no presence events,
-   no new machinery — availability rides items 7/8/12 as shipped.
-2. **A page's rpcs are its tools.** `.input` Standard Schemas convert to
-   LLM tool schemas; authorization is the page's existing guard/session;
-   execution on the co-located page instance renders live on the page the
-   user is looking at.
-3. **Execution is grants, not ambient invoke.** An unscoped
-   `ctx.invoke(anyInstance, anyRpc)` is ambient authority — rejected. The
-   capability model: a page **grants** specific rpcs
-   (`ctx.grant("create")` in `load` mints a serializable, typed capability
-   ref) and passes them in the slot's props; a holder can dispatch only
-   what it holds. Scope = the contents of props; revocation = props
-   replacement / instance release (validated server-side at call time);
-   dispatch underneath rides the same `handleBatch` funnel (validation,
-   rate limits, queue, acks). This is ADR 0003 material, prototyped first
-   in the kitchen-sink.
-4. **`<LiveSlot persist>` (client-only follow-up).** For a slot living in
-   page trees (pages decide whether/where it renders) whose React instance
-   should survive navigation when consecutive pages share its identity:
-   render the real subtree once into a stable host in the item-13 layout
-   region and portal it into the in-page anchor; re-home the portal
-   container on navigation (DOM moves, React never remounts). Server side
-   needs nothing (items 8/12 already keep the instance quiet). Sharp edges
-   for that design: one anchor per identity at a time (concurrent anchors
-   error), focus loss on DOM re-homing, and a grace period before teardown
-   when no page renders the anchor.
+The dashboard shape points at agent-first apps: a stable chat slot shared
+across pages, whose available tools change as the user navigates. Tool
+*availability* appears expressible with this ADR's machinery as-is (tools
+flow as slot props; navigation is a props patch — the discussion that
+surfaced item 12's changed-props amendment). How an agent *executes* page
+functionality server-side is an open design question with several candidate
+shapes and is **deliberately undecided** — it gets its own ADR when a
+concrete prototype makes the trade-offs real. Nothing in this ADR's plan
+forecloses it.
