@@ -79,16 +79,20 @@ export interface RenderContext {
  * The `security`-category diagnostic `type`s the runtime emits (#8, now part of
  * the unified diagnostic sink #73) — a rejected cross-origin request, a throttle
  * rejection, a capacity-driven instance eviction, a mount rejected at the
- * per-session cap, and a connection killed for exceeding the egress byte budget.
- * They reach the app as {@link RpxdDiagnostic}s with `category: "security"`
- * through {@link RpxdHandlerOptions.onDiagnostic}.
+ * per-session cap, a connection killed for exceeding the egress byte budget, a
+ * mount refused over the per-session state byte budget, and a mount refused by
+ * the per-session mount throttle (the last two are ADR 0002 item 14). They reach
+ * the app as {@link RpxdDiagnostic}s with `category: "security"` through
+ * {@link RpxdHandlerOptions.onDiagnostic}.
  */
 type SecurityDiagnosticType =
   | "origin-rejected"
   | "rate-limited"
   | "cap-evicted"
   | "cap-rejected"
-  | "stream-overflow";
+  | "stream-overflow"
+  | "session-budget-exceeded"
+  | "mount-throttled";
 
 /** Options for {@link createRpxdHandler}. */
 export interface RpxdHandlerOptions {
@@ -212,6 +216,57 @@ export interface RpxdHandlerOptions {
    */
   maxInstancesPerSession?: number | null;
   /**
+   * Soft per-session **state byte budget** (ADR 0002 item 14, Decision 6): the
+   * running sum of each held instance's serialized state size
+   * ({@link LiveInstance.stateBytes}). Where {@link maxInstancesPerSession} caps
+   * *structure* (a thousand tiny instances is an attack bytes can't see), this
+   * caps *substance* (one ballooning instance is an attack counts can't see).
+   *
+   * Enforcement is **soft and at the mount gate only**: a NEW mount for a session
+   * already over budget first tries to shed the session's idle (unsubscribed)
+   * instances — reclaiming their bytes without dropping anyone's live
+   * connection — and, if that can't get under budget, refuses the new mount
+   * (`429` on HTTP control / SSR GET, an error envelope on WS, with a
+   * `security`/`session-budget-exceeded` diagnostic). It **never** rejects a
+   * flush or rpc on an existing instance and **never** evicts a subscribed one —
+   * over-budget just means "no more mounts until space frees", degrading a slot
+   * to its `fallback` rather than corrupting a live object.
+   *
+   * **`null` (the default) disables it.** No number is baked in: a surprise
+   * budget shipped in a patch release would break apps whose legitimate state
+   * happens to exceed it. Opt in with a value comfortably above your largest
+   * expected per-session working set — a few MiB is a reasonable starting point
+   * for a slot-heavy app, sized from the sum of a page's slots' snapshots.
+   *
+   * @example
+   * ```ts
+   * createRpxdHandler({ routes, maxSessionStateBytes: 4 * 1024 * 1024 });
+   * ```
+   */
+  maxSessionStateBytes?: number | null;
+  /**
+   * Per-session **mount throttle** (ADR 0002 item 14, Decision 6): a token bucket
+   * over the control-plane `mount` / `mount-batch` messages (both HTTP and WS),
+   * so a client stuck in a remount loop degrades to `429` → `fallback` instead of
+   * pinning the server in mount work. Costed **per entry** — a `mount-batch` of N
+   * spends N tokens (refused wholesale if fewer than N remain), so a batch can't
+   * bypass the limit. Exceeded → `429` (HTTP) / an error envelope (WS) with a
+   * `security`/`mount-throttled` diagnostic; existing instances' rpcs and flushes
+   * are untouched (only *new* mounts are gated). SSR page `GET`s go through the
+   * separate {@link throttle} instead — this guards the slot control plane.
+   *
+   * **Default ON**, sized generously ({@link DEFAULT_MOUNT_RATE_LIMIT}) so a
+   * realistic navigation pattern (~1 mount per interaction) never trips it; only
+   * a pathological loop does. `null` disables. Buckets are in-process
+   * (single-node); for multi-node, throttle at the proxy/edge.
+   *
+   * @example
+   * ```ts
+   * createRpxdHandler({ routes, mountRateLimit: { capacity: 96, refillPerSec: 32 } });
+   * ```
+   */
+  mountRateLimit?: RateLimit | null;
+  /**
    * Opt-in request throttle (#6) — a token bucket per key, keyed by a function
    * you provide so the framework never guesses client identity. `key(req)`
    * returns the throttle key or `null` to skip this request. Over-limit HTTP
@@ -322,6 +377,15 @@ export interface RpxdHandlerOptions {
 
 /** Default rpc/control body + WS frame cap (§11 ingress DoS guard): 1 MiB. */
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+
+/**
+ * Default per-session mount throttle (ADR 0002 item 14): capacity 96, refill
+ * 32/s. Sized so realistic navigation (~1 mount per interaction) never trips it
+ * and even a full {@link MAX_MOUNT_BATCH} (64) batch fits inside one burst, while
+ * a remount loop still degrades to `429` → `fallback`. See
+ * {@link RpxdHandlerOptions.mountRateLimit}.
+ */
+export const DEFAULT_MOUNT_RATE_LIMIT: RateLimit = { capacity: 96, refillPerSec: 32 };
 
 /**
  * Batch size at which a `mount-batch` earns the dev **fan-out doctrine**
@@ -559,6 +623,16 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     opts.maxUnattachedInstances === undefined ? 1024 : opts.maxUnattachedInstances;
   const maxInstancesPerSession =
     opts.maxInstancesPerSession === undefined ? 32 : opts.maxInstancesPerSession;
+  // Soft per-session state byte budget (ADR 0002 item 14): `null` (default)
+  // disables — no number is baked in, so a patch release can't surprise-break an
+  // app whose legitimate state exceeds an invented default. Read only at the
+  // mount gate, so a disabled budget costs nothing on the hot path.
+  const maxSessionStateBytes = opts.maxSessionStateBytes ?? null;
+  // Per-session mount throttle (ADR 0002 item 14): default ON, `null` disables.
+  const mountRateLimit =
+    opts.mountRateLimit === undefined ? DEFAULT_MOUNT_RATE_LIMIT : opts.mountRateLimit;
+  /** Mount-throttle buckets, keyed by session id (in-process, single-node). */
+  const mountThrottleBuckets = new Map<string, TokenBucket>();
   // Ingress body/frame cap (§11 DoS guard): rpc/control 413s, WS frame drops.
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   // Egress budget (§11 slow-consumer guard): `null` disables, undefined → default.
@@ -999,8 +1073,44 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       if (m && m.size >= maxInstancesPerSession) {
         shedIdleInstances(m, maxInstancesPerSession);
         if (m.size >= maxInstancesPerSession) {
-          emitSecurity("cap-rejected", { sid, path: pathname });
+          // Doctrine-worded (ADR 0002 Decision 6, "Aggregates, not rows"): the
+          // cap isn't a memory limit to be raised, it's structure enforcement.
+          // A session at 32 live instances is almost always a page mapping rows
+          // to slots — the diagnostic names the doctrine so the fix is legible.
+          emitSecurity("cap-rejected", {
+            sid,
+            path: pathname,
+            cap: maxInstancesPerSession,
+            hint:
+              "a page mapping a list into slots should own the collection as one " +
+              "live object — see 'Aggregates, not rows'",
+          });
           throw new SessionCapError();
+        }
+      }
+    }
+
+    // Soft per-session state byte budget (ADR 0002 item 14, Decision 6): where
+    // the cap bounds instance *count*, this bounds their total *bytes*. Measured
+    // on the ALREADY-HELD instances (the new one isn't built yet), so it refuses
+    // once a session is over budget rather than pre-sizing an unbuilt mount —
+    // soft by design. Shed idle instances first (their bytes are reclaimable
+    // without dropping a live connection); if that can't get under budget, refuse
+    // the NEW mount — never a flush/rpc on an existing instance, never a
+    // subscribed one's eviction. Enforced at the mount gate only.
+    if (maxSessionStateBytes != null) {
+      const m = sessions.get(sid);
+      if (m && sessionStateBytes(m) >= maxSessionStateBytes) {
+        shedIdleForBudget(m, maxSessionStateBytes);
+        const bytes = sessionStateBytes(m);
+        if (bytes >= maxSessionStateBytes) {
+          emitSecurity("session-budget-exceeded", {
+            sid,
+            path: pathname,
+            bytes,
+            budget: maxSessionStateBytes,
+          });
+          throw new SessionBudgetError();
         }
       }
     }
@@ -1114,6 +1224,59 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       emitSecurity("cap-evicted", { reason: "per-session", sid: entry.sid, path: entry.key });
       evictEntry(entry);
     }
+  }
+
+  /**
+   * Sum a session's held state bytes ({@link LiveInstance.stateBytes}, ADR 0002
+   * item 14). Computed on demand over the session's ≤ `maxInstancesPerSession`
+   * (32) entries — trivially cheap and drift-free (no per-flush bookkeeping to
+   * fall out of sync across eviction/re-mount churn) — and only ever called
+   * behind the `maxSessionStateBytes != null` guard, so a disabled budget never
+   * serializes any state.
+   */
+  function sessionStateBytes(m: Map<string, InstanceEntry>): number {
+    let total = 0;
+    for (const entry of m.values()) total += entry.instance.stateBytes;
+    return total;
+  }
+
+  /**
+   * Reclaim a session's byte budget by shedding its idle (unsubscribed)
+   * instances, oldest first, until the running sum drops under `budget` or no
+   * idle instance remains (ADR 0002 item 14). Mirrors {@link shedIdleInstances}'
+   * cap-side shedding: a subscribed instance is **never** dropped for budget —
+   * an idle instance's bytes are reclaimable without severing a live connection.
+   */
+  function shedIdleForBudget(m: Map<string, InstanceEntry>, budget: number): void {
+    for (const entry of [...m.values()]) {
+      if (sessionStateBytes(m) < budget) break;
+      if (entry.instance.subscriberCount > 0) continue; // never evict a subscribed instance
+      emitSecurity("cap-evicted", { reason: "budget", sid: entry.sid, path: entry.key });
+      evictEntry(entry);
+    }
+  }
+
+  /**
+   * Charge the per-session mount throttle `cost` tokens (ADR 0002 item 14): a
+   * single `mount` costs 1, a `mount-batch` costs one per entry so a batch can't
+   * bypass the limit. Returns `true` (proceed) when the throttle is disabled or a
+   * token was available, `false` (refuse) when the bucket is drained — consuming
+   * nothing on refusal, so an over-budget batch is rejected wholesale. The bucket
+   * map is bounded like {@link throttleBuckets} so a sid-rotating flood can't leak
+   * memory (a reset bucket starts full — lenient, never a bypass of an active limit).
+   */
+  function takeMountTokens(sid: string, cost: number): boolean {
+    if (mountRateLimit == null) return true;
+    let bucket = mountThrottleBuckets.get(sid);
+    if (!bucket) {
+      if (mountThrottleBuckets.size >= MAX_THROTTLE_KEYS) {
+        const oldest = mountThrottleBuckets.keys().next().value;
+        if (oldest !== undefined) mountThrottleBuckets.delete(oldest);
+      }
+      bucket = new TokenBucket(mountRateLimit);
+      mountThrottleBuckets.set(sid, bucket);
+    }
+    return bucket.takeN(cost);
   }
 
   /**
@@ -1313,7 +1476,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   type MountOutcome =
     | { kind: "ok"; entry: InstanceEntry }
     | { kind: "redirect"; location: string }
-    | { kind: "error"; error: ValidationError | NotFoundError | SessionCapError };
+    | {
+        kind: "error";
+        error: ValidationError | NotFoundError | SessionCapError | SessionBudgetError;
+      };
 
   /**
    * Mount one control-plane entry through the EXACT single-mount path (ADR 0002
@@ -1343,7 +1509,8 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       if (
         e instanceof ValidationError ||
         e instanceof NotFoundError ||
-        e instanceof SessionCapError
+        e instanceof SessionCapError ||
+        e instanceof SessionBudgetError
       ) {
         return { kind: "error", error: e };
       }
@@ -1372,6 +1539,13 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       | { type: "url"; instance: string; props: Record<string, unknown> };
 
     if (msg.type === "mount") {
+      // Per-session mount throttle (ADR 0002 item 14): a single mount costs one
+      // token. Drained → 429 → the client's slot falls back; existing instances
+      // are untouched (only new mounts are gated).
+      if (!takeMountTokens(sid, 1)) {
+        emitSecurity("mount-throttled", { sid, path: msg.path });
+        return new Response("mount rate limited", { status: 429 });
+      }
       // The control plane mounts over the union (routes ∪ slots, ADR 0002 item 6).
       const outcome = await mountOne(
         msg.path,
@@ -1384,8 +1558,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       // `setup`/`guard` denied (§10): tell the client to navigate rather than
       // instantiate. A GET load handles this as a 302 (see fetch catch).
       if (outcome.kind === "redirect") return Response.json({ redirect: outcome.location });
-      // ValidationError / NotFoundError / SessionCapError → `mapRequestError`
-      // (422 / 404 / 429) — nothing was built. Re-throw to preserve the status.
+      // ValidationError / NotFoundError / SessionCapError / SessionBudgetError →
+      // `mapRequestError` (422 / 404 / 429 / 429) — nothing was built. Re-throw
+      // to preserve the status.
       if (outcome.kind === "error") throw outcome.error;
       const entry = outcome.entry;
       return Response.json({
@@ -1412,6 +1587,15 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         return new Response(`mount-batch exceeds MAX_MOUNT_BATCH (${MAX_MOUNT_BATCH})`, {
           status: 413,
         });
+      }
+      // Per-session mount throttle (ADR 0002 item 14): a batch costs one token
+      // PER ENTRY, so it can't bypass the limit a single mount pays. Charged
+      // atomically — an over-budget batch is refused wholesale (429, nothing
+      // mounted), consuming no tokens (like the MAX_MOUNT_BATCH 413 above).
+      // Checked after the length cap so an over-cap batch still 413s.
+      if (!takeMountTokens(sid, mounts.length)) {
+        emitSecurity("mount-throttled", { sid, count: mounts.length });
+        return new Response("mount rate limited", { status: 429 });
       }
       // Fan-out doctrine diagnostic (Decision 6): a dev-only nudge toward
       // "Aggregates, not rows" when a page mounts too many sibling slots at once
@@ -1755,6 +1939,12 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     if (err instanceof SessionCapError) {
       return withSession(new Response(err.message, { status: 429 }), sid, isNew);
     }
+    // The session is over its soft state byte budget and shedding idle instances
+    // couldn't free enough (ADR 0002 item 14) — refuse the new mount with 429,
+    // matching the cap surface. Existing instances were never touched.
+    if (err instanceof SessionBudgetError) {
+      return withSession(new Response(err.message, { status: 429 }), sid, isNew);
+    }
     if (err instanceof NotFoundError) {
       if (opts.renderNotFound) {
         return withSession(await opts.renderNotFound({ path: url.pathname }), sid, isNew);
@@ -1797,6 +1987,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       byInstanceId.clear();
       streamRegistry.clear();
       unattached.clear();
+      mountThrottleBuckets.clear();
       for (const entry of all) {
         if (entry.evictTimer) clearTimeout(entry.evictTimer);
       }
@@ -1857,6 +2048,21 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
             return;
           }
           if (msg.type === "mount" && msg.path) {
+            // Per-session mount throttle (ADR 0002 item 14): parity with HTTP
+            // control. Over WS there's no response slot, so answer a drained
+            // bucket with an unbound (`instance: ""`) error envelope the client
+            // correlates by `mountId` (#65) — mirroring the cap/not-found surface
+            // below. Existing instances are untouched.
+            if (!takeMountTokens(sid, 1)) {
+              emitSecurity("mount-throttled", { sid, path: msg.path });
+              send({
+                seq: 0,
+                instance: "",
+                error: { name: "MountThrottleError", message: "mount rate limited" },
+                ...(msg.mountId !== undefined && { mountId: msg.mountId }),
+              });
+              return;
+            }
             // The socket *is* the stream (§11): join the mount to it directly.
             // `subscribeInstance` is idempotent, so a warm re-mount is a no-op.
             // Mounts over WS match the same union as HTTP control (ADR 0002 item 6).
@@ -1886,11 +2092,12 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                 });
               } else if (
                 e instanceof SessionCapError ||
+                e instanceof SessionBudgetError ||
                 e instanceof NotFoundError ||
                 e instanceof ValidationError
               ) {
                 // WS mount parity for the mount-time rejections that HTTP control
-                // answers as a status (429 / 404 / 422). Over WS there is no
+                // answers as a status (429 / 429 / 404 / 422). Over WS there is no
                 // response slot, so answer the socket with an unbound
                 // (`instance: ""`) error envelope the client correlates by
                 // `mountId` (#65) — invalid props included (ADR 0002 item 6).
@@ -2032,6 +2239,19 @@ class SessionCapError extends Error {
   constructor() {
     super("session instance cap exceeded");
     this.name = "SessionCapError";
+  }
+}
+
+/**
+ * A fresh mount would leave the session over its soft `maxSessionStateBytes`
+ * budget and no idle instance could be shed to make room (ADR 0002 item 14) —
+ * mapped to `429` on HTTP, an error envelope on WS. Existing instances' flushes
+ * and rpcs are never rejected; only the new mount is refused.
+ */
+class SessionBudgetError extends Error {
+  constructor() {
+    super("session state byte budget exceeded");
+    this.name = "SessionBudgetError";
   }
 }
 

@@ -49,11 +49,30 @@ export class TokenBucket {
 
   /** Take one token; returns false when the bucket is empty. */
   take(now = Date.now()): boolean {
+    return this.takeN(1, now);
+  }
+
+  /**
+   * Take `n` tokens at once — an operation costed per unit (e.g. a `mount-batch`
+   * charged one token per entry, ADR 0002 item 14). Refills for elapsed time
+   * first, then consumes `n` only if at least `n` remain; otherwise it consumes
+   * **nothing** and returns `false`, so an over-budget batch is refused
+   * wholesale rather than partially drained. `take()` is the `n = 1` case. `n`
+   * above `capacity` can never succeed (the bucket never holds that many).
+   *
+   * @example
+   * ```ts
+   * const bucket = new TokenBucket({ capacity: 96, refillPerSec: 32 });
+   * bucket.takeN(64); // true — a 64-entry batch fits the burst
+   * bucket.takeN(64); // false — only 32 left, nothing consumed
+   * ```
+   */
+  takeN(n: number, now = Date.now()): boolean {
     const elapsed = Math.max(0, now - this.#last) / 1000;
     this.#tokens = Math.min(this.limit.capacity, this.#tokens + elapsed * this.limit.refillPerSec);
     this.#last = now;
-    if (this.#tokens < 1) return false;
-    this.#tokens -= 1;
+    if (this.#tokens < n) return false;
+    this.#tokens -= n;
     return true;
   }
 }

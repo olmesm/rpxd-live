@@ -43,6 +43,10 @@ setAutoFreeze(false);
 /** Path prefix that routes a patch to the session slice instead of page state (§2). */
 export const SESSION_PREFIX = "$session";
 
+/** Shared encoder for {@link LiveInstance.stateBytes} — module-level so the
+ * mount-gate byte measurement doesn't allocate one per read. */
+const STATE_BYTE_ENCODER = new TextEncoder();
+
 /** Reserved abort-group name for the URL loader (§7) — drives latest-wins. */
 const LOAD_KEY = "$load";
 
@@ -276,6 +280,29 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   /** Number of attached envelope listeners — drives warm-TTL eviction (§11). */
   get subscriberCount(): number {
     return this.#listeners.size;
+  }
+
+  /**
+   * Serialized byte size of this instance's current page state — the measurement
+   * the server's per-session byte budget sums (ADR 0002 item 14, Decision 6;
+   * `maxSessionStateBytes` in server-bun). Computed on read as the UTF-8 byte
+   * length of `JSON.stringify(state)`, the same serialized form the write-through
+   * snapshot persists. Deriving it here — not caching a per-flush field — keeps
+   * the hot path free: the write-through hands storage a live object (only
+   * serializing adapters stringify, and the default `memory()` never does), so a
+   * cached size would demand a per-flush `JSON.stringify` even for the common
+   * budget-disabled case. Instead the handler reads this only at the mount gate,
+   * and only when a budget is set, so an app that doesn't opt in pays nothing.
+   * Returns `0` if the state isn't JSON-serializable — a soft budget must never
+   * make a mount throw. Session bytes are excluded: they ride the snapshot for
+   * continuity, but the budget caps page state, the part slots multiply.
+   */
+  get stateBytes(): number {
+    try {
+      return STATE_BYTE_ENCODER.encode(JSON.stringify(this.#state) ?? "").byteLength;
+    } catch {
+      return 0;
+    }
   }
 
   /**
