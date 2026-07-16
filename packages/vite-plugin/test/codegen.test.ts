@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ensurePathLiteral,
   generateHandlersModule,
+  generateLiveModule,
   generateRoutesModule,
   scanRoutes,
 } from "../src/codegen.ts";
@@ -76,17 +77,27 @@ describe("ensurePathLiteral (§7: filename is truth)", () => {
     expect(ensurePathLiteral("live('/old')({})", "/new")).toBe("live('/new')({})");
   });
 
-  it("refuses paths that cannot be spliced into a quoted literal", () => {
-    // A file named `it's.tsx` derives "/it's" — splicing that between single
-    // quotes would write `live('/it's')` (invalid TS) into the user's file.
-    expect(ensurePathLiteral("live('/old')({})", "/it's")).toBeNull();
-    // An injection-shaped filename must not splice executable code.
-    expect(
-      ensurePathLiteral('export default route("/old").all(h);', '/x") || evil() || ("y'),
-    ).toBeNull();
-    expect(ensurePathLiteral('live("/old")({})', "/back\\slash")).toBeNull();
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal `${` is the attack under test
-    expect(ensurePathLiteral('live("/old")({})', "/tick`${evil}")).toBeNull();
+  it("safely escapes paths with quotes/backslashes when splicing (span-based)", () => {
+    // AST spans retire the old UNSPLICEABLE bail-out: the literal is re-encoded
+    // for its quote kind, so a crafted path becomes a *safe* string literal
+    // (never executable code), preserving the original quote style.
+    // A file named `it's.tsx` derives "/it's" — the apostrophe is escaped for
+    // the single-quote literal, not left to break the file.
+    expect(ensurePathLiteral("live('/old')({})", "/it's")).toBe("live('/it\\'s')({})");
+    // An injection-shaped filename splices as an escaped, inert string literal.
+    expect(ensurePathLiteral('export default route("/old").all(h);', '/x") || evil() || ("y')).toBe(
+      'export default route("/x\\") || evil() || (\\"y").all(h);',
+    );
+    // A backslash doubles rather than escaping the closing quote.
+    expect(ensurePathLiteral('live("/old")({})', "/back\\slash")).toBe(
+      'live("/back\\\\slash")({})',
+    );
+    // A `${` inside a *double*-quoted literal is inert — spliced verbatim.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal `${` is the input under test
+    expect(ensurePathLiteral('live("/old")({})', "/tick`${evil}")).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: verbatim expected output
+      'live("/tick`${evil}")({})',
+    );
   });
 
   it("maintains route() literals too", () => {
@@ -172,6 +183,48 @@ describe("codegen end-to-end", () => {
     expect(handlers).toContain("export const routeHandlers = {} as const;");
   });
 
+  it("generateLiveModule emits lazy importers keyed by pattern (escaped via lit)", () => {
+    const live = generateLiveModule([
+      { file: "src/slots/chat.tsx", path: "/chat" },
+      { file: 'ev"il.tsx', path: '/ev"il' },
+    ]);
+    expect(live).toContain("export const liveModules = {");
+    expect(live).toContain('"/chat": () => import("../src/slots/chat.tsx"),');
+    // crafted pattern/file are JSON-escaped, never spliced raw
+    expect(live).not.toContain('"/ev"il"');
+    expect(live).toContain(JSON.stringify('/ev"il'));
+    expect(live).toContain(JSON.stringify('../ev"il.tsx'));
+    expect(live).toContain("do not edit");
+  });
+
+  it("generateLiveModule renders {} when there are no scanned live modules", () => {
+    expect(generateLiveModule([])).toContain("export const liveModules = {} as const;");
+  });
+
+  it("keeps routes.gen.ts byte-identical for a slot-free project + emits empty live.gen.ts", () => {
+    const root = makeProject();
+    const routes = join(root, "routes");
+    writeFileSync(join(root, "package.json"), "{}");
+    mkdirSync(routes);
+    writeFileSync(join(routes, "index.tsx"), 'export default live("/")({})(App);');
+    writeFileSync(
+      join(routes, "org.$orgId.board.tsx"),
+      'export default live("/org/$orgId/board")({})(App);',
+    );
+    // a non-live source file outside routes must not perturb output
+    mkdirSync(join(root, "domain"));
+    writeFileSync(join(root, "domain/todos.ts"), "export const listTodos = () => [];");
+
+    const generated = runCodegen(root);
+    // routes.gen.ts is exactly generateRoutesModule's output (unchanged codegen)
+    expect(readFileSync(join(root, ".rpxd/routes.gen.ts"), "utf-8")).toBe(
+      generateRoutesModule(scanRoutes(routes)),
+    );
+    expect(generated).toBe(generateRoutesModule(scanRoutes(routes)));
+    // live.gen.ts exists and is empty (no out-of-routes live modules)
+    expect(readFileSync(join(root, ".rpxd/live.gen.ts"), "utf-8")).toBe(generateLiveModule([]));
+  });
+
   it("escapes route paths/files so a crafted filename can't inject code", () => {
     // A filename containing a double-quote would otherwise close the string
     // literal and splice arbitrary text into the generated module.
@@ -189,9 +242,10 @@ describe("codegen end-to-end", () => {
     expect(handlers).toContain(JSON.stringify('/ev"il'));
   });
 
-  it("leaves route files with unspliceable filenames un-rewritten", () => {
+  it("escapes crafted filenames when rewriting literals (span-based)", () => {
     const root = makeProject();
     const routes = join(root, "routes");
+    writeFileSync(join(root, "package.json"), "{}");
     mkdirSync(routes);
     const src = 'export default live("/old")({})(App);';
     writeFileSync(join(routes, "it's.tsx"), src);
@@ -199,9 +253,58 @@ describe("codegen end-to-end", () => {
 
     runCodegen(root);
 
-    // literal maintenance must skip these, not corrupt the user's source
-    expect(readFileSync(join(routes, "it's.tsx"), "utf-8")).toBe(src);
-    expect(readFileSync(join(routes, 'x") || evil() || ("y.tsx'), "utf-8")).toBe(src);
+    // Filename is truth: the literal is rewritten to match, with any quote /
+    // backslash escaped for the literal — a safe string, never injected code.
+    expect(readFileSync(join(routes, "it's.tsx"), "utf-8")).toBe(
+      'export default live("/it\'s")({})(App);',
+    );
+    expect(readFileSync(join(routes, 'x") || evil() || ("y.tsx'), "utf-8")).toBe(
+      'export default live("/x\\") || evil() || (\\"y")({})(App);',
+    );
+  });
+
+  it("registers out-of-routes live modules into live.gen.ts", () => {
+    const root = makeProject();
+    const routes = join(root, "routes");
+    writeFileSync(join(root, "package.json"), "{}");
+    mkdirSync(routes);
+    writeFileSync(join(routes, "index.tsx"), 'export default live("/")({})(App);');
+    mkdirSync(join(root, "src"));
+    writeFileSync(
+      join(root, "src/chat.tsx"),
+      'import { live } from "@rpxd/core";\nexport default live("/chat").render(() => null);',
+    );
+
+    runCodegen(root);
+    const live = readFileSync(join(root, ".rpxd/live.gen.ts"), "utf-8");
+    expect(live).toContain('"/chat": () => import("../src/chat.tsx"),');
+    // routes.gen.ts stays the navigable-page map only
+    const routesGen = readFileSync(join(root, ".rpxd/routes.gen.ts"), "utf-8");
+    expect(routesGen).not.toContain("/chat");
+  });
+
+  it("errors when a slot pattern collides with a routes-dir page, naming both files", () => {
+    const root = makeProject();
+    const routes = join(root, "routes");
+    writeFileSync(join(root, "package.json"), "{}");
+    mkdirSync(routes);
+    writeFileSync(join(routes, "chat.tsx"), 'export default live("/chat")({})(App);');
+    mkdirSync(join(root, "src"));
+    writeFileSync(
+      join(root, "src/chat.tsx"),
+      'import { live } from "@rpxd/core";\nexport default live("/chat").render(() => null);',
+    );
+
+    let caught: unknown;
+    try {
+      runCodegen(root);
+    } catch (e) {
+      caught = e;
+    }
+    const msg = (caught as Error | undefined)?.message ?? "";
+    expect(msg).toContain("routes/chat.tsx");
+    expect(msg).toContain("src/chat.tsx");
+    expect(msg).toContain("/chat");
   });
 
   it("scanRoutes ignores directories that look like route files", () => {

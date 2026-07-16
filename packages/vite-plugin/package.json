@@ -18,11 +18,13 @@
       ".": "./src/index.ts"
     }
   },
+  "dependencies": {
+    "typescript": "^5.9.0"
+  },
   "peerDependencies": {
     "vite": ">=6"
   },
   "devDependencies": {
-    "typescript": "^5.9.0",
     "vite": "^7.0.0"
   }
 }

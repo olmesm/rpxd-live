@@ -10,18 +10,31 @@ import type { Plugin } from "vite";
 import {
   ensurePathLiteral,
   generateHandlersModule,
+  generateLiveModule,
   generateRoutesModule,
   scanRoutes,
 } from "./codegen.ts";
-import { fileToRoute } from "./routes.ts";
+import { fileToRoute, type RouteEntry } from "./routes.ts";
+import { isLiveScanCandidate, type LiveModuleEntry, scanLiveModules } from "./scan.ts";
 
 export {
   ensurePathLiteral,
   generateHandlersModule,
+  generateLiveModule,
   generateRoutesModule,
   scanRoutes,
 } from "./codegen.ts";
 export { fileToRoute, pathToPattern, type RouteEntry, sortRoutes } from "./routes.ts";
+export {
+  DEFAULT_LIVE_EXCLUDES,
+  findPatternLiteral,
+  isLiveScanCandidate,
+  type LiveModuleEntry,
+  LiveScanError,
+  type PatternLiteral,
+  type ScanLiveOptions,
+  scanLiveModules,
+} from "./scan.ts";
 
 /**
  * Whether a watcher file event refers to a route file inside `routesDir`. The
@@ -46,6 +59,73 @@ export interface RpxdPluginOptions {
   routesDir?: string;
   /** Output directory for generated files, relative to the Vite root. Default `.rpxd`. */
   outDir?: string;
+  /**
+   * Extra glob patterns excluded from the `live()` scan (ADR 0002 item 4),
+   * concatenated with {@link DEFAULT_LIVE_EXCLUDES}. The routes and output dirs
+   * are always excluded structurally.
+   */
+  exclude?: string[];
+  /**
+   * Glob patterns that re-include a file an `exclude` glob would drop from the
+   * `live()` scan. Structural prunes (node_modules, hidden dirs, the routes/out
+   * dirs) are not reachable.
+   */
+  include?: string[];
+}
+
+/**
+ * Assert a module loaded from `live.gen.ts` default-exports a `live()` object
+ * (`$live: true`) — the boot-time backstop for the syntactic scan (ADR 0002
+ * item 4). A scan false-positive fails here at startup, not at first mount.
+ * Returns the live object for registration.
+ *
+ * @example
+ * ```ts
+ * const route = assertLiveModule(await liveModules["/chat"](), "/chat");
+ * routes.push({ path: "/chat", def: route.def, props: route.props });
+ * ```
+ */
+export function assertLiveModule(
+  mod: unknown,
+  pattern: string,
+): { $live: true; path: string; def: unknown; props?: unknown } {
+  const def = (mod as { default?: { $live?: unknown } }).default;
+  if (def?.$live !== true) {
+    throw new Error(
+      `live.gen: module registered for pattern ${JSON.stringify(pattern)} does not default-export a live() object ($live !== true)`,
+    );
+  }
+  return def as { $live: true; path: string; def: unknown; props?: unknown };
+}
+
+/**
+ * Compose the routes-dir registrations with the scanned `live()` modules and
+ * reject a pattern claimed by both (ADR 0002 Decision 2 — pattern uniqueness
+ * across the union is the load-bearing invariant). Throws naming both files.
+ */
+function assertNoUnionConflicts(
+  root: string,
+  routeEntries: RouteEntry[],
+  liveEntries: LiveModuleEntry[],
+): void {
+  const pageByPath = new Map<string, string>();
+  for (const e of routeEntries) {
+    if (e.kind === "page" && e.path !== null) pageByPath.set(e.path, e.file);
+  }
+  const conflicts: string[] = [];
+  for (const le of liveEntries) {
+    const routeFile = pageByPath.get(le.path);
+    if (routeFile) {
+      conflicts.push(
+        `  - pattern ${JSON.stringify(le.path)} declared in both routes/${routeFile} and ${le.file}`,
+      );
+    }
+  }
+  if (conflicts.length > 0) {
+    throw new Error(
+      `rpxd: duplicate live() pattern across routes and scanned modules (${root}):\n${conflicts.join("\n")}`,
+    );
+  }
 }
 
 /**
@@ -75,6 +155,17 @@ export function runCodegen(root: string, options: RpxdPluginOptions = {}): strin
     if (fixed !== null) writeFileSync(file, fixed);
   }
 
+  // Discover exported live() objects outside the routes dir (ADR 0002 item 4)
+  // and reject any pattern claimed by both tables — union uniqueness is the
+  // load-bearing invariant (Decision 2).
+  const liveEntries = scanLiveModules(root, {
+    routesDir,
+    outDir,
+    exclude: options.exclude,
+    include: options.include,
+  });
+  assertNoUnionConflicts(root, entries, liveEntries);
+
   mkdirSync(outDir, { recursive: true });
   const write = (name: string, content: string) => {
     const file = join(outDir, name);
@@ -87,6 +178,8 @@ export function runCodegen(root: string, options: RpxdPluginOptions = {}): strin
   // Server-only HTTP route map — separate file so the client entry never
   // imports it (see the routes & auth guide).
   write("handlers.gen.ts", generateHandlersModule(entries));
+  // Server-only live()-mount map (ADR 0002 item 4) — the control-plane union.
+  write("live.gen.ts", generateLiveModule(liveEntries));
   return generated;
 }
 
@@ -116,11 +209,25 @@ export function rpxd(options: RpxdPluginOptions = {}): Plugin {
     },
     configureServer(server) {
       const routesDir = resolve(root, routesDirName);
+      const outDir = resolve(root, options.outDir ?? ".rpxd");
       runCodegen(root, options);
+      // Watch the routes dir and the wider project tree: an exported live()
+      // object can live anywhere outside routes (ADR 0002 item 4).
       server.watcher.add(routesDir);
+      server.watcher.add(root);
 
+      const scanOpts = { routesDir, outDir, exclude: options.exclude, include: options.include };
       const onFileEvent = (file: string) => {
-        if (isRouteFilePath(file, routesDir)) runCodegen(root, options);
+        // Re-run codegen only for route files or live-scan candidates —
+        // .rpxd writes, assets, and node_modules never trigger a re-scan.
+        if (!isRouteFilePath(file, routesDir) && !isLiveScanCandidate(file, root, scanOpts)) return;
+        try {
+          runCodegen(root, options);
+        } catch (err) {
+          // A mid-edit scan violation (unexported/duplicate live()) must not
+          // crash the dev watcher — surface it and wait for the next save.
+          console.error(`[rpxd] codegen failed:\n${(err as Error).message}`);
+        }
       };
       server.watcher.on("add", onFileEvent);
       server.watcher.on("unlink", onFileEvent);
