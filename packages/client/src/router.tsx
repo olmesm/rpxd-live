@@ -3,7 +3,13 @@
  * unexported. Path params are identity (navigate = soft reload via `setup`);
  * search params are view state (`nav.patch` reruns `guard`+`load`, no `setup`).
  */
-import type { NavProp, PathParams, RegisteredPath } from "@rpxd/core";
+import {
+  decodeProps,
+  encodeProps,
+  type NavProp,
+  type PathParams,
+  type RegisteredPath,
+} from "@rpxd/core";
 import { createContext, type MouseEvent, type ReactNode, useContext } from "react";
 import { navigate } from "wouter/use-browser-location";
 import type { LiveConnection } from "./connection.ts";
@@ -72,22 +78,25 @@ export const ConnectionContext = createContext<LiveConnection<
  * Detect a search-only navigation (§7). Wouter's location is pathname-only,
  * so a navigation that changes just the query string moves the URL bar but
  * never reruns the app shell's effect — `guard`/`load` would silently not
- * rerun. Returns the target's full search record (to reconcile via
- * `patchProps`, tier 1) when `href` points at `currentPathname` with a
- * different query; `null` when the pathname changes (the app shell owns
- * those) or nothing changed at all.
+ * rerun. Returns the target's full props record — **decoded** into the
+ * JSON-value model (ADR 0002 §3, finding 3) — to reconcile via `patchProps`
+ * (tier 1) when `href` points at `currentPathname` with a different query;
+ * `null` when the pathname changes (the app shell owns those) or nothing
+ * changed at all. The decode matters because the `url` message body is
+ * validated by the server WITHOUT decoding (item 7): `?limit=20` must arrive
+ * as the number `20` to pass a `z.number()` props schema, not the string `"20"`.
  *
  * @example
  * ```ts
- * const patch = searchOnlyChange("/board?filter=done", "/board", "?filter=all");
- * if (patch) connection.patchProps(patch); // { filter: "done" }
+ * const patch = searchOnlyChange("/board?limit=20", "/board", "?limit=10");
+ * if (patch) connection.patchProps(patch); // { limit: 20 }  (a number)
  * ```
  */
 export function searchOnlyChange(
   href: string,
   currentPathname: string,
   currentSearch: string,
-): Record<string, string> | null {
+): Record<string, unknown> | null {
   const [pathname = href, query = ""] = href.split("?");
   if (pathname !== currentPathname) return null;
   const target = new URLSearchParams(query);
@@ -95,7 +104,9 @@ export function searchOnlyChange(
   target.sort();
   current.sort();
   if (target.toString() === current.toString()) return null;
-  return Object.fromEntries(target) as Record<string, string>;
+  // Decode the URL query into props' JSON-value model — the wire encoding the
+  // server validates without decoding (finding 3).
+  return decodeProps(target);
 }
 
 /**
@@ -181,9 +192,14 @@ export function useNav(): Nav {
       if (patch) connection?.patchProps(patch);
     },
     patch: (props) => {
+      // `props` is the JSON-value record (finding 3). Write it into the URL with
+      // the codec's URL encoding (`encodeProps` — a number stays bare, an
+      // ambiguous string is quoted) and send the SAME JSON-value record on the
+      // wire, so the two encodings agree: a later full GET / popstate decodes
+      // the query back to this exact record.
       if (typeof window !== "undefined") {
         const url = new URL(window.location.href);
-        for (const [k, v] of Object.entries(props)) url.searchParams.set(k, v);
+        for (const [k, v] of encodeProps(props)) url.searchParams.set(k, v);
         window.history.replaceState(null, "", url);
       }
       connection?.patchProps(props);

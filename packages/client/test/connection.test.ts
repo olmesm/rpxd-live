@@ -1,7 +1,7 @@
 import { type Envelope, isRedirect, type MountBatchResult, type RpcBatch } from "@rpxd/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type EventSourceLike, LiveConnection } from "../src/connection.ts";
-import { buildHref } from "../src/router.tsx";
+import { buildHref, searchOnlyChange } from "../src/router.tsx";
 import type { RpcMeta } from "../src/store.ts";
 
 class FakeEventSource implements EventSourceLike {
@@ -138,6 +138,20 @@ describe("LiveConnection (§11, §12)", () => {
     expect(control?.body).toEqual({ type: "url", instance: "i1", props: { filter: "done" } });
   });
 
+  it("a URL-derived tier-1 nav carries the DECODED (typed) props on the url message (finding 3)", () => {
+    // The Link / useNav.navigate flow: derive the patch from the target's query
+    // string (`searchOnlyChange`) then `patchProps`. `?limit=20` must reach the
+    // `url` body as the number 20 — the server validates the wire body without
+    // decoding (item 7), so a raw "20" would fail a `z.number()` props schema and
+    // the soft-nav would silently no-op (finding 3).
+    const { conn, requests } = makeConnection(bootstrap);
+    const patch = searchOnlyChange("/board?limit=20", "/board", "");
+    expect(patch).not.toBeNull();
+    conn.patchProps(patch as Record<string, unknown>);
+    const control = requests.find((r) => r.url.endsWith("/__rpxd/control"));
+    expect(control?.body).toEqual({ type: "url", instance: "i1", props: { limit: 20 } });
+  });
+
   it("a guard deny during patchProps routes { redirect } to onRedirect (§10)", async () => {
     const redirects: string[] = [];
     const fetchImpl = (async () =>
@@ -170,6 +184,25 @@ describe("LiveConnection (§11, §12)", () => {
     // A server-supplied redirect that isn't a same-origin path must be dropped,
     // not handed to the router / window.location.
     expect(redirects).toEqual([]);
+  });
+
+  it("surfaces a rejected (422) props patch over SSE with a console.warn (finding 3b)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // The server rejects an invalid props record with 422; without surfacing it
+    // the url bar would change while state silently didn't — the finding's bug.
+    const fetchImpl = (async () =>
+      new Response("invalid props", { status: 422 })) as unknown as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      bootstrap,
+      fetchImpl,
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.patchProps({ limit: "abc" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain("i1");
+    warn.mockRestore();
   });
 
   it("tier-2 remount swaps the store, resyncs the new instance, releases the old (§7)", async () => {
@@ -396,6 +429,18 @@ describe("store multiplexing (ADR 0002 item 9)", () => {
     expect(controls()).toContainEqual({ type: "url", instance: "slot-i", props: { topic: "y" } });
   });
 
+  it("handle.patchProps forwards a RICH-JSON record verbatim (not URL-decoded — finding 3)", async () => {
+    // SlotHandle.patchProps / LiveSlot prop-diff sends are ALREADY the JSON-value
+    // model — they are not URL-derived, so they must not be run through
+    // `decodeProps`. A nested/number record rides the wire byte-for-byte.
+    const { conn, controls } = makeMux();
+    const slot = await conn.mountSlot("/chat/main", {});
+    const rich = { tools: [{ name: "search" }], limit: 5, label: "20" };
+    slot.patchProps(rich);
+    await tick();
+    expect(controls()).toContainEqual({ type: "url", instance: "slot-i", props: rich });
+  });
+
   it("handle.release releases the instance and deregisters its store", async () => {
     const { conn, source, controls } = makeMux();
     const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", {});
@@ -426,6 +471,91 @@ describe("store multiplexing (ADR 0002 item 9)", () => {
       }),
     );
     expect(slot.store.snapshot().state.items).toEqual(["s"]); // unchanged
+  });
+
+  describe("two slots with the SAME identity (finding 4)", () => {
+    // Mount two slots of the same identity path (both resolve to `slot-i`) in
+    // separate ticks so each stays an unbatched `mount`. They share one server
+    // instance id but keep DISTINCT client stores (isolated optimistic queues).
+    async function twoSameIdentity(mux: ReturnType<typeof makeMux>) {
+      const a = await mux.conn.mountSlot<{ items: string[] }>("/chat/main", {});
+      const b = await mux.conn.mountSlot<{ items: string[] }>("/chat/main", {});
+      expect(a.instance).toBe("slot-i");
+      expect(b.instance).toBe("slot-i");
+      expect(a.store).not.toBe(b.store);
+      return { a, b };
+    }
+
+    it("both stores receive the shared instance's snapshot envelope", async () => {
+      const mux = makeMux();
+      const { a, b } = await twoSameIdentity(mux);
+      mux.source().emit(
+        "env",
+        JSON.stringify({
+          seq: 1,
+          instance: "slot-i",
+          full: { state: { items: ["z"] }, session: {} },
+        }),
+      );
+      // Envelopes dispatch to ALL stores for the instance — the pre-fix map kept
+      // only the second store, so the first rendered `fallback` forever.
+      expect(a.store.snapshot().state).toEqual({ items: ["z"] });
+      expect(b.store.snapshot().state).toEqual({ items: ["z"] });
+    });
+
+    it("releasing one keeps the other live and sends NO wire release", async () => {
+      const mux = makeMux();
+      const { a, b } = await twoSameIdentity(mux);
+      const releasesBefore = mux
+        .controls()
+        .filter((c) => (c as { type?: string })?.type === "release").length;
+
+      a.release();
+      await tick();
+      const releasesAfter = mux
+        .controls()
+        .filter((c) => (c as { type?: string })?.type === "release").length;
+      // The instance still has a live client ref (b) — no wire release yet.
+      expect(releasesAfter).toBe(releasesBefore);
+
+      // b still receives envelopes for the shared instance.
+      mux.source().emit(
+        "env",
+        JSON.stringify({
+          seq: 2,
+          instance: "slot-i",
+          full: { state: { items: ["still"] }, session: {} },
+        }),
+      );
+      expect(b.store.snapshot().state).toEqual({ items: ["still"] });
+    });
+
+    it("releasing BOTH sends exactly one wire release", async () => {
+      const mux = makeMux();
+      const { a, b } = await twoSameIdentity(mux);
+      a.release();
+      b.release();
+      await tick();
+      const releases = mux
+        .controls()
+        .filter(
+          (c) =>
+            (c as { type?: string })?.type === "release" &&
+            (c as { instance?: string }).instance === "slot-i",
+        );
+      expect(releases).toHaveLength(1);
+    });
+
+    it("a deny envelope fires BOTH stores' onDeny sinks", async () => {
+      const mux = makeMux();
+      const { a, b } = await twoSameIdentity(mux);
+      const denies: string[] = [];
+      a.onDeny((loc) => denies.push(`a:${loc}`));
+      b.onDeny((loc) => denies.push(`b:${loc}`));
+      mux.source().emit("env", JSON.stringify({ seq: 0, instance: "slot-i", redirect: "/denied" }));
+      expect(denies.sort()).toEqual(["a:/denied", "b:/denied"]);
+      expect(mux.redirects).toEqual([]); // never the app-level redirect
+    });
   });
 
   it("a slot runtime deny (url redirect) fires its onDeny sink, not the app redirect (§10)", async () => {
@@ -899,6 +1029,28 @@ describe("ws transport (§11 opt-in)", () => {
     // A WS runtime deny arrives as a redirect envelope → onRedirect (§10).
     ws.emit("message", JSON.stringify({ seq: 6, instance: "i1", redirect: "/403" }));
     expect(redirects).toEqual(["/403"]);
+  });
+
+  it("surfaces a rejected props patch over WS (instance-scoped error envelope) with a console.warn (finding 3b)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { conn, socket } = makeWsConnection();
+    const ws = socket();
+    ws.emit("open");
+    conn.patchProps({ limit: "abc" });
+    // The server answers an invalid `url` patch with an instance-scoped error
+    // envelope (no rpcId, no mountId) — it settles no pending rpc, so it would
+    // otherwise vanish. Consistent with the SSE 422 warn.
+    ws.emit(
+      "message",
+      JSON.stringify({
+        seq: 4,
+        instance: "i1",
+        error: { name: "ValidationError", message: "props limit: expected number" },
+      }),
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain("i1");
+    warn.mockRestore();
   });
 
   it("correlates an unbound mount-deny redirect by mountId (#65)", async () => {

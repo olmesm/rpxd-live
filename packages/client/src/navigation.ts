@@ -4,7 +4,7 @@
  * state machine are unit-testable without a DOM. {@link LiveApp} wires the
  * browser io: wouter for soft navigation, `window.location` for hard loads.
  */
-import { isRedirect, type LiveRoute, matchRoute } from "@rpxd/core";
+import { decodeProps, isRedirect, type LiveRoute, matchRoute } from "@rpxd/core";
 import type { FunctionComponent } from "react";
 import type { LiveConnection } from "./connection.ts";
 import { rpcMetaFromDef } from "./store.ts";
@@ -51,23 +51,26 @@ export function claimNavigationTicket(
  * Decide what a popstate event means for search reconciliation (§7). Wouter's
  * location is pathname-only, so popstate between two search-variants of one
  * path never reruns the app shell's effect — `guard`/`load` would not see the
- * restored query. Returns the full search record to reconcile via
- * `patchProps` (tier 1) when the pathname is unchanged; `null` on a pathname
- * change, which the location effect owns.
+ * restored query. Returns the full props record — **decoded** into the
+ * JSON-value model (ADR 0002 §3, finding 3) — to reconcile via `patchProps`
+ * (tier 1) when the pathname is unchanged; `null` on a pathname change, which
+ * the location effect owns. Like the `Link`/`nav` tier-1 path, the decode is
+ * what lets `?limit=20` reach a `z.number()` props schema as the number `20`;
+ * the server validates the wire body without decoding (item 7).
  *
  * @example
  * ```ts
  * const patch = popstateSearchPatch(location.pathname, location.search, current.pathname);
- * if (patch) conn.patchProps(patch);
+ * if (patch) conn.patchProps(patch); // { limit: 20 } for ?limit=20
  * ```
  */
 export function popstateSearchPatch(
   pathname: string,
   search: string,
   currentPathname: string,
-): Record<string, string> | null {
+): Record<string, unknown> | null {
   if (pathname !== currentPathname) return null;
-  return Object.fromEntries(new URLSearchParams(search)) as Record<string, string>;
+  return decodeProps(new URLSearchParams(search));
 }
 
 /**

@@ -173,6 +173,12 @@ interface PendingSlotMount {
 interface PendingRelease {
   path: string;
   instance: string;
+  /**
+   * The specific store this release abandons (review R1 finding 4). An instance
+   * can back multiple stores (same-identity slots), so the release must drop
+   * exactly THIS caller's store — and the pair-cancellation rebind reuses it.
+   */
+  store: LiveStore;
 }
 
 /**
@@ -191,17 +197,26 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   /** The PRIMARY (page) instance — swapped by a tier-2/3 remount (§7, ADR item 9). */
   #instance: string;
   /**
-   * instance id → store (ADR item 9). One app-lifetime connection multiplexes
-   * every instance of the session — the page plus any mounted slots — over the
-   * same stream; each keeps its own store (isolated optimistic queue/keyOf).
-   * The primary is always registered under {@link store}.
+   * instance id → the SET of stores bound to it (ADR item 9, review R1 finding
+   * 4). One app-lifetime connection multiplexes every instance of the session —
+   * the page plus any mounted slots — over the same stream; each keeps its own
+   * store (isolated optimistic queue/keyOf). A single instance id can back
+   * MULTIPLE client stores: two `<LiveSlot>`s with the same identity on one page
+   * share the server instance but each renders its own store, so envelopes fan
+   * to every store in the set and a wire `release` fires only when the LAST store
+   * for an instance drops. The primary (page) store is also tracked as
+   * {@link #primaryStore} and is a member of its instance's set.
    */
-  readonly #stores = new Map<string, LiveStore>();
+  readonly #stores = new Map<string, Set<LiveStore>>();
+  /** The PRIMARY (page) store — swapped by a tier-2/3 remount; also in {@link #stores}. */
+  #primaryStore: LiveStore;
   /**
-   * instance id → runtime-deny sink (§10, ADR item 9). Consulted before the
-   * primary redirect check so a slot's deny fires its `onDeny`, never the app.
+   * store → runtime-deny sink (§10, ADR item 9). Keyed by STORE, not instance id
+   * (review R1 finding 4): same-identity slots share an instance but each handle
+   * installs its own sink, and a deny for that instance fires ALL of them. The
+   * primary store never registers one (it uses the app-level redirect).
    */
-  readonly #denySinks = new Map<string, (location: string) => void>();
+  readonly #denySinks = new Map<LiveStore, (location: string) => void>();
   /** Client-owned stream id: names this connection's stream for late-mount/release (§7). */
   readonly #streamId = randomId();
   /** Monotonic remount tag — a superseded tier-2 remount must not rebind the store (§7). */
@@ -250,7 +265,8 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     this.#instance = opts.instance;
     this.#onRedirect = opts.onRedirect;
     const primary = this.#makeStore(opts.instance);
-    this.#stores.set(opts.instance, primary as LiveStore);
+    this.#primaryStore = primary as LiveStore;
+    this.#registerStore(opts.instance, primary as LiveStore);
     if (opts.bootstrap) {
       // Seed confirmed state from the SSR snapshot — no connect spinner (§12).
       primary.applyEnvelope({
@@ -263,7 +279,33 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
 
   /** The store for the PRIMARY (page) instance. A tier-2/3 remount swaps it (§7). */
   get store(): LiveStore<S, Session> {
-    return this.#stores.get(this.#instance) as unknown as LiveStore<S, Session>;
+    return this.#primaryStore as unknown as LiveStore<S, Session>;
+  }
+
+  /** Register `store` under `instance`, creating the set on first use (finding 4). */
+  #registerStore(instance: string, store: LiveStore): void {
+    let set = this.#stores.get(instance);
+    if (!set) {
+      set = new Set();
+      this.#stores.set(instance, set);
+    }
+    set.add(store);
+  }
+
+  /**
+   * Deregister one `store` from `instance` (finding 4). Returns `true` when that
+   * was the LAST store for the instance (the set is now empty and removed) — the
+   * caller uses this to fire the single wire `release` only at zero client refs.
+   */
+  #deregisterStore(instance: string, store: LiveStore): boolean {
+    const set = this.#stores.get(instance);
+    if (!set) return true;
+    set.delete(store);
+    if (set.size === 0) {
+      this.#stores.delete(instance);
+      return true;
+    }
+    return false;
   }
 
   /** Install/replace the runtime-redirect sink (§10) — the app shell wires it to soft-nav. */
@@ -288,23 +330,43 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     });
   }
 
-  /** Dispatch a downstream envelope to its instance's store, if one is registered. */
+  /** Dispatch a downstream envelope to EVERY store bound to its instance (finding 4). */
   #dispatchEnvelope(env: Envelope): void {
     if (this.#handleRedirectEnvelope(env)) return;
-    const store = this.#stores.get(env.instance);
-    if (!store) return; // an instance we don't (or no longer) hold — ignore
-    store.applyEnvelope(env);
-    if (store.status !== "live") store.setStatus("live");
+    if (this.#handleControlError(env)) return;
+    const set = this.#stores.get(env.instance);
+    if (!set) return; // an instance we don't (or no longer) hold — ignore
+    // Same-identity slots share this instance id but keep distinct stores; the
+    // envelope applies to all of them (the pre-fix single-store map served only
+    // the last-registered store — the collision this fixes).
+    for (const store of set) {
+      store.applyEnvelope(env);
+      if (store.status !== "live") store.setStatus("live");
+    }
+  }
+
+  /**
+   * Surface an instance-scoped `error` envelope with no rpcId (finding 3b): the
+   * server's WS answer to an invalid tier-1 `url` props patch (item 7). It settles
+   * no pending rpc — the store would drop it — so warn (consistent with the SSE
+   * 422 path) and consume it. Mount-error envelopes are unbound (`instance: ""`)
+   * or correlate by `mountId`, so this only catches bound-instance url failures.
+   */
+  #handleControlError(env: Envelope): boolean {
+    if (!env.error || env.rpcId || env.mountId !== undefined) return false;
+    if (!this.#stores.has(env.instance)) return false;
+    this.#warnPropsRejected(env.instance, `${env.error.name}: ${env.error.message}`);
+    return true;
   }
 
   /** Fan a transport status change to every registered store (shared transport). */
   #setStatusAll(status: ConnectionStatus): void {
-    for (const store of this.#stores.values()) store.setStatus(status);
+    for (const set of this.#stores.values()) for (const store of set) store.setStatus(status);
   }
 
   /** Resend every store's unacked batches after reconnect — the server dedupes (§11). */
   #resendAllUnacked(): void {
-    for (const store of this.#stores.values()) store.resendUnacked();
+    for (const set of this.#stores.values()) for (const store of set) store.resendUnacked();
   }
 
   /** Open the transport. SSE reconnects via EventSource; WS retries with backoff. */
@@ -432,7 +494,7 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    * comes back as `{ redirect }` (SSE control response) or a `redirect` envelope
    * (WS) and is routed to `onRedirect` for a soft-nav (§10).
    */
-  patchProps(props: Record<string, string>): void {
+  patchProps(props: Record<string, unknown>): void {
     this.#sendUrl(this.#instance, props);
   }
 
@@ -445,13 +507,37 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    */
   #sendUrl(instance: string, props: Record<string, unknown>): void {
     if (this.#opts.transport === "ws" && this.#socketOpen && this.#socket) {
-      // A WS deny arrives as a `redirect` envelope on the socket (see message).
+      // A WS deny arrives as a `redirect` envelope on the socket, and an invalid
+      // props patch as an instance-scoped `error` envelope ({@link #handleControlError}).
       this.#socket.send(JSON.stringify({ type: "url", instance, props }));
       return;
     }
     void this.#control({ type: "url", instance, props }).then((res) => {
-      if (res instanceof Response && res.ok) void this.#consumeRedirect(res, instance);
+      if (!(res instanceof Response)) return; // network failure — status already reflected
+      if (res.ok) {
+        void this.#consumeRedirect(res, instance);
+        return;
+      }
+      // A non-ok control response (typically a 422 from an invalid props patch,
+      // ADR 0002 item 7) would otherwise vanish — the URL bar moved but state
+      // never reconciled. Surface it (finding 3b); the WS path warns via an
+      // instance-scoped error envelope ({@link #handleControlError}).
+      this.#warnPropsRejected(instance, `HTTP ${res.status}`, props);
     });
+  }
+
+  /**
+   * Surface a rejected tier-1 props patch (finding 3b). A `url` reconcile that
+   * fails validation (422 over HTTP / an instance-scoped error envelope over WS)
+   * settles no pending rpc, so without this it would silently no-op — the URL
+   * bar changes while state stays put. Browser-side console is allowed (§17: the
+   * client has no server diagnostic hook).
+   */
+  #warnPropsRejected(instance: string, reason: string, props?: Record<string, unknown>): void {
+    const tail = props ? ` props=${JSON.stringify(props)}` : "";
+    console.warn(
+      `[rpxd] props patch rejected for instance ${instance} (${reason}) — state unchanged.${tail}`,
+    );
   }
 
   /**
@@ -507,8 +593,8 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    * swap enqueues a release (unmount cleanup) and a mount (the next page's effect)
    * in the same tick, and {@link #flushSlotMounts} cancels the pair.
    */
-  #enqueueRelease(path: string, instance: string): void {
-    this.#pendingReleases.push({ path, instance });
+  #enqueueRelease(path: string, instance: string, store: LiveStore): void {
+    this.#pendingReleases.push({ path, instance, store });
     this.#scheduleSlotFlush();
   }
 
@@ -544,14 +630,16 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     const survivingMounts: PendingSlotMount[] = [];
     for (const m of mounts) {
       const rel = releasesByPath.get(m.path)?.[0];
-      // The store must still be registered to rebind onto — deferring the release
-      // deregistration to flush time guarantees it is (a cancelled release never
-      // deregisters). If it somehow isn't, don't cancel: let both sides flow.
-      const store = rel ? this.#stores.get(rel.instance) : undefined;
-      if (rel && store) {
+      // Greedy 1:1 pairing by path (finding 4): each pending mount claims the
+      // oldest same-path pending release. The releasing store is still registered
+      // (a deferred release hasn't deregistered), so the rebind reuses `rel.store`
+      // directly — no `#stores` lookup, which would be ambiguous under duplicate
+      // identities. Verify it's still registered; if not, let both sides flow.
+      const registered = rel ? this.#stores.get(rel.instance)?.has(rel.store) : false;
+      if (rel && registered) {
         releasesByPath.get(m.path)?.shift();
         cancelled.add(rel);
-        this.#rebindCancelledPair(rel, m, store);
+        this.#rebindCancelledPair(rel, m, rel.store);
       } else {
         survivingMounts.push(m);
       }
@@ -608,16 +696,21 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   }
 
   /**
-   * Flush a real `release` for a slot with no cancelling mount (ADR 0002 item 12):
-   * drop the instance from the stream and deregister its store/deny sink/props —
-   * the deregistration the immediate `release()` used to do inline, now deferred
-   * to flush time so a same-tick mount could have rebound onto it instead.
+   * Flush a real `release` for a slot with no cancelling mount (ADR 0002 item 12,
+   * review R1 finding 4): deregister THIS caller's store and its deny sink, then
+   * — only when it was the LAST store for the instance — send the wire `release`
+   * and drop the props baseline. The server's stream-join is idempotent
+   * (`subscribeInstance`), so N same-identity mounts joined the instance ONCE;
+   * one wire release at zero client refs is exactly right (a release per store
+   * would drop the shared listener while other stores are still live).
    */
   #flushRelease(r: PendingRelease): void {
-    void this.#control({ type: "release", instance: r.instance, stream: this.#streamId });
-    this.#stores.delete(r.instance);
-    this.#denySinks.delete(r.instance);
-    this.#slotProps.delete(r.instance);
+    this.#denySinks.delete(r.store);
+    const wasLast = this.#deregisterStore(r.instance, r.store);
+    if (wasLast) {
+      void this.#control({ type: "release", instance: r.instance, stream: this.#streamId });
+      this.#slotProps.delete(r.instance);
+    }
   }
 
   /**
@@ -634,7 +727,7 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    * props send nothing — a pure React remount is fully a no-op on the wire.
    */
   #rebindCancelledPair(rel: PendingRelease, mount: PendingSlotMount, store: LiveStore): void {
-    this.#denySinks.delete(rel.instance);
+    this.#denySinks.delete(store);
     const nextCanon = canonicalProps(mount.props);
     if (nextCanon !== this.#slotProps.get(rel.instance)) {
       this.#slotProps.set(rel.instance, nextCanon);
@@ -677,7 +770,7 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     meta?: Record<string, RpcMeta>,
   ): SlotHandle {
     const store = this.#makeStore<unknown, Record<string, unknown>>(instance, meta);
-    this.#stores.set(instance, store as LiveStore);
+    this.#registerStore(instance, store as LiveStore);
     // Seed the pair-cancellation dedup baseline (ADR 0002 item 12): the props the
     // server now knows for this instance, so a later cancelled-pair rebind can
     // tell whether the remounting caller needs a `url` patch forwarded.
@@ -712,9 +805,11 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
         this.#slotProps.set(instance, canonicalProps(next));
         this.#sendUrl(instance, next);
       },
-      release: () => this.#enqueueRelease(path, instance),
+      release: () => this.#enqueueRelease(path, instance, store),
       onDeny: (fn) => {
-        this.#denySinks.set(instance, fn);
+        // Keyed by STORE (finding 4): same-identity slots share `instance` but
+        // each installs its own sink; a deny for the instance fires them all.
+        this.#denySinks.set(store, fn);
       },
     };
   }
@@ -782,8 +877,11 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       return;
     }
     const previous = this.#instance;
+    const previousStore = this.#primaryStore;
     this.#instance = parsed.instance;
-    this.#stores.set(parsed.instance, this.#makeStore(parsed.instance, meta) as LiveStore);
+    const nextPrimary = this.#makeStore(parsed.instance, meta) as LiveStore;
+    this.#primaryStore = nextPrimary;
+    this.#registerStore(parsed.instance, nextPrimary);
     if (this.#opts.transport === "ws" && this.#socketOpen && this.#socket) {
       // The socket *is* the stream: join the new instance to it (warm-reuse of
       // the just-mounted instance) so its snapshot arrives on this socket. The
@@ -800,8 +898,10 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     }
     void this.#control({ type: "release", instance: previous, stream: this.#streamId });
     // Deregister the outgoing page store so its late envelopes stop dispatching.
-    // Guard against the shared-instance case (a re-mount of the same id).
-    if (previous !== parsed.instance) this.#stores.delete(previous);
+    // Only THIS store (finding 4): a slot sharing the previous instance id keeps
+    // its own store in the set. Guard against the shared-instance case (a re-mount
+    // of the same id — the new primary must not be dropped).
+    if (previous !== parsed.instance) this.#deregisterStore(previous, previousStore);
   }
 
   /** POST a `mount` naming this stream; returns the new instance id or a redirect. */
@@ -846,7 +946,7 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       this.#navigateSafely(env.redirect);
       return true;
     }
-    if (this.#denySinks.has(env.instance)) {
+    if (this.#hasDenySink(env.instance)) {
       this.#routeRedirect(env.instance, env.redirect);
       return true;
     }
@@ -855,19 +955,37 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     return true;
   }
 
+  /** Whether ANY store bound to `instance` has a runtime-deny sink (finding 4). */
+  #hasDenySink(instance: string): boolean {
+    const set = this.#stores.get(instance);
+    if (!set) return false;
+    for (const store of set) if (this.#denySinks.has(store)) return true;
+    return false;
+  }
+
   /**
-   * Send a sanitized redirect to a slot's deny sink when one is registered for
-   * `instance`, else soft-nav the app. Unsafe targets are dropped (with a warn).
+   * Send a sanitized redirect to EVERY deny sink registered for `instance`
+   * (finding 4: same-identity slots each get their own), else soft-nav the app.
+   * Unsafe targets are dropped (with a warn).
    */
   #routeRedirect(instance: string, target: string): void {
-    const sink = this.#denySinks.get(instance);
-    if (!sink) {
+    const set = this.#stores.get(instance);
+    const sinks: ((location: string) => void)[] = [];
+    if (set)
+      for (const store of set) {
+        const sink = this.#denySinks.get(store);
+        if (sink) sinks.push(sink);
+      }
+    if (sinks.length === 0) {
       this.#navigateSafely(target);
       return;
     }
     const safe = safeRedirectTarget(target);
-    if (safe) sink(safe);
-    else console.warn(`[rpxd] ignoring unsafe redirect target: ${target}`);
+    if (!safe) {
+      console.warn(`[rpxd] ignoring unsafe redirect target: ${target}`);
+      return;
+    }
+    for (const sink of sinks) sink(safe);
   }
 
   /**

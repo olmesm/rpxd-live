@@ -191,6 +191,36 @@ describe("<LiveSlot> render lifecycle", () => {
     expect(container.querySelector('[data-testid="chat"]')?.textContent).toBe("hi-/chat/a");
   });
 
+  it("two same-identity <LiveSlot>s both render live state (finding 4)", async () => {
+    // Two slots with the SAME identity on one page share the server instance but
+    // each keeps its own store — the pre-fix single-store map overwrote the first
+    // with the second, leaving the first stuck on `fallback` forever.
+    const conn = new FakeConnection();
+    const Chat = chatLive();
+    await render(
+      <RpxdProvider connection={conn as never}>
+        <div data-testid="one">
+          <LiveSlot of={Chat} params={{ room: "main" }} fallback={<span>loading</span>} />
+        </div>
+        <div data-testid="two">
+          <LiveSlot of={Chat} params={{ room: "main" }} fallback={<span>loading</span>} />
+        </div>
+      </RpxdProvider>,
+    );
+    // Both slots mounted the same identity path, each with its own store/handle.
+    expect(conn.mounts).toHaveLength(2);
+    expect(conn.mounts.every((m) => m.id === "/chat/main")).toBe(true);
+
+    await act(async () => {
+      for (const m of conn.mounts) m.confirm();
+    });
+    // Neither is stuck on fallback — both render the confirmed live state.
+    const one = container.querySelector('[data-testid="one"]');
+    const two = container.querySelector('[data-testid="two"]');
+    expect(one?.querySelector('[data-testid="chat"]')?.textContent).toBe("hi-/chat/main");
+    expect(two?.querySelector('[data-testid="chat"]')?.textContent).toBe("hi-/chat/main");
+  });
+
   it("releases on unmount", async () => {
     const conn = new FakeConnection();
     await render(slot(conn, { room: "a" }));

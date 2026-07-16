@@ -14,6 +14,8 @@ describe("nav.navigate route typing (§7)", () => {
     nav.navigate("/import", { search: { filter: "all" } });
     // @ts-expect-error — not a registered route
     nav.navigate("/bogus");
-    expectTypeOf(nav.patch).parameter(0).toEqualTypeOf<Record<string, string>>();
+    // `patch` takes the JSON-value props record (ADR 0002 §3 / finding 3), not
+    // the URL string encoding — `{ limit: 20 }` reaches a `z.number()` schema.
+    expectTypeOf(nav.patch).parameter(0).toEqualTypeOf<Record<string, unknown>>();
   });
 });

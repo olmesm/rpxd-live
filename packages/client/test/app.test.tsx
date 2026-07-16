@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { navigate } from "wouter/use-browser-location";
 import { LiveApp } from "../src/app.tsx";
 import type { AnyConnection, AnyRoute } from "../src/navigation.ts";
+import { RpxdProvider, useNav } from "../src/router.tsx";
 import { LiveStore } from "../src/store.ts";
 
 // React's `act` requires this flag; jsdom provides `document`/`window`.
@@ -142,5 +143,62 @@ describe("LiveApp persistent region (ADR 0002 item 13)", () => {
     });
     await flush();
     expect(container.querySelector('[data-testid="page"]')?.textContent).toBe("PAGE-B");
+  });
+});
+
+describe("useNav().patch URL/wire coherence (finding 3)", () => {
+  /** A connection that only records the props handed to `patchProps`. */
+  function recordingConn(): { conn: AnyConnection; patched: Record<string, unknown>[] } {
+    const patched: Record<string, unknown>[] = [];
+    const conn = {
+      store: undefined,
+      setRedirectSink: () => {},
+      patchProps: (p: Record<string, unknown>) => patched.push(p),
+    } as unknown as AnyConnection;
+    return { conn, patched };
+  }
+
+  function Patcher({ props }: { props: Record<string, unknown> }) {
+    const nav = useNav();
+    return (
+      <button type="button" data-testid="go" onClick={() => nav.patch(props)}>
+        go
+      </button>
+    );
+  }
+
+  it("sends the JSON-value record on the wire and encodes it into the URL (round-trip)", async () => {
+    window.history.replaceState(null, "", "/board");
+    const { conn, patched } = recordingConn();
+    await render(
+      <RpxdProvider connection={conn}>
+        <Patcher props={{ limit: 20, flag: true }} />
+      </RpxdProvider>,
+    );
+    await act(async () => {
+      (container.querySelector('[data-testid="go"]') as HTMLButtonElement).click();
+    });
+    // Wire: the DECODED (typed) record the server validates without decoding.
+    expect(patched).toEqual([{ limit: 20, flag: true }]);
+    // URL: encoded so a later full GET / popstate decodes back to the SAME values.
+    const qs = new URLSearchParams(window.location.search);
+    expect(qs.get("limit")).toBe("20");
+    expect(qs.get("flag")).toBe("true");
+  });
+
+  it("quotes an ambiguous string in the URL so it round-trips as a string, not a number", async () => {
+    window.history.replaceState(null, "", "/board");
+    const { conn, patched } = recordingConn();
+    await render(
+      <RpxdProvider connection={conn}>
+        <Patcher props={{ v: "20" }} />
+      </RpxdProvider>,
+    );
+    await act(async () => {
+      (container.querySelector('[data-testid="go"]') as HTMLButtonElement).click();
+    });
+    // Wire keeps the string; the URL quotes it so `decodeProps` recovers "20", not 20.
+    expect(patched).toEqual([{ v: "20" }]);
+    expect(window.location.search).toContain(`v=${encodeURIComponent('"20"')}`);
   });
 });

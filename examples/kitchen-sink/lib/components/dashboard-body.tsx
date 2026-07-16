@@ -16,10 +16,13 @@ import FeaturedItem from "../../slots/featured-item.tsx";
 export function DashboardBody({
   state,
   rpc,
+  nav,
 }: {
   state: { limit: number; limitType: string; notices: string[] };
   // biome-ignore lint/suspicious/noExplicitAny: the page rpc facade is exact but erased here
   rpc: any;
+  // biome-ignore lint/suspicious/noExplicitAny: the nav render prop is typed by Register, erased here
+  nav: any;
 }): ReactElement {
   const [itemId, setItemId] = useState("1");
   const [view, setView] = useState<"summary" | "detail">("summary");
@@ -33,6 +36,17 @@ export function DashboardBody({
       <p data-testid="limit">
         limit: {state.limit} ({state.limitType})
       </p>
+      {/* Tier-1 nav on a schema'd page via the URL-derived path (a same-path
+          search change → `searchOnlyChange` → `patchProps`). The query string
+          must be DECODED to the number 20 before the wire, or the server's
+          z.number() props schema 422-rejects the raw "20" silently (finding 3). */}
+      <button
+        type="button"
+        data-testid="set-limit-20"
+        onClick={() => nav.navigate("/dashboard", { search: { limit: "20" } })}
+      >
+        set limit 20
+      </button>
 
       {/* Cross-object bus: broadcast a notice onto the chat channel. */}
       <button type="button" data-testid="notify" onClick={() => void rpc.notify({ text: "ping" })}>

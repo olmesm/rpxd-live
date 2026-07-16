@@ -204,6 +204,18 @@ describe("search-only navigation (§7 tier 1)", () => {
     expect(searchOnlyChange("/b?filter=done", "/b", "")).toEqual({ filter: "done" });
   });
 
+  it("decodes URL-derived props into the JSON-value model (ADR 0002 §3 / finding 3)", () => {
+    // `?limit=20` must reach the `url` message as the number 20 — the server
+    // validates the wire body WITHOUT decoding (item 7), so a raw "20" would be
+    // rejected by a `z.number()` props schema and the soft-nav would silently fail.
+    expect(searchOnlyChange("/b?limit=20", "/b", "")).toEqual({ limit: 20 });
+    expect(searchOnlyChange("/b?limit=20&flag=true&name=ann", "/b", "")).toEqual({
+      limit: 20,
+      flag: true,
+      name: "ann",
+    });
+  });
+
   it("returns {} when the href clears the search", () => {
     expect(searchOnlyChange("/b", "/b", "?filter=all")).toEqual({});
   });
@@ -222,9 +234,11 @@ describe("search-only navigation (§7 tier 1)", () => {
 
 describe("popstate search reconciliation (§7)", () => {
   it("yields the full search record when the pathname is unchanged", () => {
+    // URL-derived, so decoded into props' JSON-value model (finding 3): the
+    // string stays a string, the numeric query becomes a number.
     expect(popstateSearchPatch("/b", "?filter=done&x=1", "/b")).toEqual({
       filter: "done",
-      x: "1",
+      x: 1,
     });
     expect(popstateSearchPatch("/b", "", "/b")).toEqual({});
   });

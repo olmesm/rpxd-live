@@ -51,3 +51,20 @@ test("typed URL props: ?limit=20 reads as the number 20 (not a string)", async (
   // route would render `(string)`.
   await expect(page.getByTestId("limit")).toHaveText("limit: 20 (number)");
 });
+
+test("tier-1 nav on a schema'd page applies the typed value (review R1 finding 3)", async ({
+  page,
+}) => {
+  await gotoHydrated(page, "/dashboard");
+  // Default from the schema (no query): 10, still a number.
+  await expect(page.getByTestId("limit")).toHaveText("limit: 10 (number)");
+
+  // A tier-1 `nav.patch({ limit: 20 })` — no full page load. Before the fix the
+  // URL-derived/wire props were raw strings, so the server's `z.number()` props
+  // schema rejected `"20"` with a 422 that vanished silently (URL moved, state
+  // didn't). Now the DECODED number rides the wire and `load` reruns with 20.
+  await page.getByTestId("set-limit-20").click();
+  await expect(page.getByTestId("limit")).toHaveText("limit: 20 (number)");
+  // The soft-nav wrote the URL bar too (round-trip coherence).
+  await expect(page).toHaveURL(/[?&]limit=20\b/);
+});

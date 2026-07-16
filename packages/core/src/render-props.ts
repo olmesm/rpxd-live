@@ -66,8 +66,17 @@ export interface NavProp {
     to: P,
     opts?: { params?: PathParams<P>; search?: Record<string, string> },
   ): void;
-  /** Change props only (§7): reruns `guard`+`load`, no `setup`, state preserved. */
-  patch(props: Record<string, string>): void;
+  /**
+   * Change props only (§7): reruns `guard`+`load`, no `setup`, state preserved.
+   *
+   * `props` is the JSON-value record (ADR 0002 §3) — `{ limit: 20 }` the number,
+   * not `{ limit: "20" }` — because the control-plane `url` body is validated
+   * against the props schema WITHOUT decoding (item 7). `patch` writes the values
+   * into the URL with the props codec's URL encoding (`encodeProps`) and sends
+   * the same JSON-value record on the wire, so the URL and the wire agree: a later
+   * full GET or `popstate` decodes the query back to the identical record.
+   */
+  patch(props: Record<string, unknown>): void;
 }
 
 /**
