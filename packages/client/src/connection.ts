@@ -226,6 +226,20 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    * primary store never registers one (it uses the app-level redirect).
    */
   readonly #denySinks = new Map<LiveStore, (location: string) => void>();
+  /**
+   * Aggregate settle-marker listeners (the `data-rpxd-synced` marker, deflake
+   * FIX 1). {@link LiveApp} subscribes one callback that stamps/removes the
+   * `<html>` attribute; the connection recomputes {@link synced} lazily on each
+   * fire. Empty until the first {@link subscribeSync}.
+   */
+  readonly #syncListeners = new Set<() => void>();
+  /**
+   * Per-store unsubscribe fns for the aggregate signal — one per registered
+   * store while at least one {@link subscribeSync} listener is installed. The
+   * multiplexed registry churns (mounts/releases/remounts), so the aggregate
+   * (re)wires each store's snapshot subscription as membership changes.
+   */
+  readonly #syncStoreUnsubs = new Map<LiveStore, () => void>();
   /** Client-owned stream id: names this connection's stream for late-mount/release (§7). */
   readonly #streamId = randomId();
   /** Monotonic remount tag — a superseded tier-2 remount must not rebind the store (§7). */
@@ -318,6 +332,10 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       this.#stores.set(instance, set);
     }
     set.add(store);
+    // Membership changed: wire the new store into the aggregate signal (if
+    // anyone is listening) and fire so {@link synced} is re-read.
+    this.#trackStoreSync(store);
+    this.#notifySync();
   }
 
   /**
@@ -329,11 +347,92 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     const set = this.#stores.get(instance);
     if (!set) return true;
     set.delete(store);
+    // Membership changed: drop this store's aggregate subscription and fire.
+    this.#untrackStoreSync(store);
+    this.#notifySync();
     if (set.size === 0) {
       this.#stores.delete(instance);
       return true;
     }
     return false;
+  }
+
+  /**
+   * Whether EVERY store multiplexed on this connection is settled — each is
+   * `status === "live"` with an empty optimistic queue (`sync.pending` false).
+   * The connection is multiplexed (ADR 0002 item 9): the primary page store plus
+   * N slot stores, membership churning as slots mount/release. Computed lazily on
+   * read. Drives the `data-rpxd-synced` settle marker (deflake FIX 1): an e2e can
+   * wait for it AFTER an action as a deterministic "the write landed" signal in
+   * place of a fixed timeout — it flickers OFF during an in-flight rpc and back
+   * ON at ack.
+   *
+   * @example
+   * ```ts
+   * conn.store.rpc.add({ text: "x" });
+   * conn.subscribeSync(() => { if (conn.synced) markReady(); });
+   * ```
+   */
+  get synced(): boolean {
+    for (const set of this.#stores.values()) {
+      for (const store of set) {
+        if (store.status !== "live") return false;
+        if (store.snapshot().sync.pending) return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Subscribe to the aggregate settle signal (deflake FIX 1). The callback fires
+   * whenever ANY multiplexed store's snapshot changes (an rpc queued or acked, a
+   * patch applied, a status change) OR the store registry changes (a slot mounts
+   * or releases, a tier-2/3 remount swaps the primary) — the two ways {@link
+   * synced} can change. Re-read {@link synced} in the callback. Returns an
+   * unsubscribe; the last unsubscribe tears down the per-store wiring.
+   *
+   * @example
+   * ```ts
+   * const stop = conn.subscribeSync(() => {
+   *   document.documentElement.toggleAttribute("data-rpxd-synced", conn.synced);
+   * });
+   * ```
+   */
+  subscribeSync(cb: () => void): () => void {
+    this.#syncListeners.add(cb);
+    // Wire every currently-registered store on the first listener.
+    for (const set of this.#stores.values()) for (const store of set) this.#trackStoreSync(store);
+    return () => {
+      this.#syncListeners.delete(cb);
+      if (this.#syncListeners.size === 0) {
+        for (const unsub of this.#syncStoreUnsubs.values()) unsub();
+        this.#syncStoreUnsubs.clear();
+      }
+    };
+  }
+
+  /** Fire every aggregate settle-marker listener (a store snapshot or membership change). */
+  #notifySync(): void {
+    for (const cb of this.#syncListeners) cb();
+  }
+
+  /** Wire a store's snapshot changes into the aggregate signal, if anyone is listening. */
+  #trackStoreSync(store: LiveStore): void {
+    if (this.#syncListeners.size === 0) return;
+    if (this.#syncStoreUnsubs.has(store)) return;
+    this.#syncStoreUnsubs.set(
+      store,
+      store.subscribe(() => this.#notifySync()),
+    );
+  }
+
+  /** Drop a store's aggregate-signal subscription (on deregister). */
+  #untrackStoreSync(store: LiveStore): void {
+    const unsub = this.#syncStoreUnsubs.get(store);
+    if (unsub) {
+      unsub();
+      this.#syncStoreUnsubs.delete(store);
+    }
   }
 
   /** Install/replace the runtime-redirect sink (§10) — the app shell wires it to soft-nav. */

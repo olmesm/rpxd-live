@@ -1312,3 +1312,124 @@ describe("ws transport (§11 opt-in)", () => {
     });
   });
 });
+
+describe("LiveConnection aggregate sync signal (data-rpxd-synced settle marker, deflake FIX 1)", () => {
+  /**
+   * Like {@link makeConnection}, but its control POSTs answer a `mount` with a
+   * fixed instance id so `mountSlot` resolves and registers a SECOND store —
+   * exercising the aggregate across membership changes. Everything else 202s.
+   */
+  function makeSyncConnection() {
+    const requests: { url: string; body: RpcBatch | { type?: string } | null }[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      requests.push({ url: String(url), body });
+      if (body?.type === "mount") {
+        return new Response(JSON.stringify({ instance: "slot-1" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      bootstrap,
+      fetchImpl,
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    return { conn, requests, source: () => FakeEventSource.instances.at(-1) as FakeEventSource };
+  }
+
+  it("is settled only once the primary store is live with nothing pending", () => {
+    const { conn, source } = makeSyncConnection();
+    // Before connect the store is `connecting`, so the aggregate is unsettled.
+    expect(conn.synced).toBe(false);
+    conn.connect();
+    source().emit("open"); // → status live
+    expect(conn.synced).toBe(true);
+  });
+
+  it("is false while any store's status !== live", () => {
+    const { conn, source } = makeSyncConnection();
+    conn.connect();
+    const es = source();
+    es.emit("open");
+    expect(conn.synced).toBe(true);
+    es.readyState = 0; // auto-reconnecting (CONNECTING)
+    es.emit("error"); // transient drop → reconnecting
+    expect(conn.synced).toBe(false);
+  });
+
+  it("flips OFF during an in-flight rpc and back ON at ack", async () => {
+    const { conn, requests, source } = makeSyncConnection();
+    conn.connect();
+    source().emit("open");
+    expect(conn.synced).toBe(true);
+
+    void conn.store.call("noop");
+    await Promise.resolve(); // drain the store's microtask flush
+    expect(conn.synced).toBe(false); // a pending optimistic op
+
+    const batch = requests.at(-1)?.body as RpcBatch;
+    // Ack: an in-order envelope carrying the batch's rpcId settles the op.
+    source().emit(
+      "env",
+      JSON.stringify({ seq: bootstrap.seq + 1, instance: "i1", rpcId: batch.rpcId }),
+    );
+    expect(conn.synced).toBe(true);
+  });
+
+  it("recomputes on membership change: a mounted slot gates synced until live, and dropping it re-settles", async () => {
+    const { conn, source } = makeSyncConnection();
+    conn.connect();
+    source().emit("open");
+    expect(conn.synced).toBe(true);
+
+    const handle = await conn.mountSlot("/slot/1", {});
+    // The slot's fresh store starts `connecting` → the aggregate is unsettled.
+    expect(conn.synced).toBe(false);
+
+    // Its first snapshot arrives → dispatchEnvelope marks it live.
+    source().emit(
+      "env",
+      JSON.stringify({ seq: 0, instance: "slot-1", full: { state: {}, session: {} } }),
+    );
+    expect(conn.synced).toBe(true);
+
+    // A pending rpc on the SLOT store unsettles the aggregate...
+    void handle.store.call("noop");
+    await Promise.resolve();
+    expect(conn.synced).toBe(false);
+
+    // ...and dropping the slot (membership change) re-settles even though that
+    // rpc never acked — the pending store left the tracked set.
+    handle.release();
+    await Promise.resolve();
+    expect(conn.synced).toBe(true);
+  });
+
+  it("subscribeSync fires on snapshot AND membership changes; the unsubscribe stops it", async () => {
+    const { conn, source } = makeSyncConnection();
+    conn.connect();
+    source().emit("open");
+    let calls = 0;
+    const unsub = conn.subscribeSync(() => {
+      calls += 1;
+    });
+
+    void conn.store.call("noop");
+    await Promise.resolve();
+    expect(calls).toBeGreaterThan(0); // snapshot change (pending set) notified
+
+    const beforeMount = calls;
+    await conn.mountSlot("/slot/1", {}); // membership change notifies
+    expect(calls).toBeGreaterThan(beforeMount);
+
+    const afterMount = calls;
+    unsub();
+    void conn.store.call("noop2");
+    await Promise.resolve();
+    expect(calls).toBe(afterMount); // torn down — no longer listening
+  });
+});

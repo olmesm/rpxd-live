@@ -36,6 +36,10 @@ function confirmedConn(): AnyConnection & { remount: ReturnType<typeof vi.fn> } 
     patchProps: () => {},
     // Collapsed tiers (ADR item 9): every nav remounts over the same connection.
     remount: vi.fn(async () => {}),
+    // The settle-marker aggregate (deflake FIX 1): a confirmed connection is
+    // settled and never changes here, so LiveApp's marker effect stamps once.
+    synced: true,
+    subscribeSync: () => () => {},
   } as unknown as AnyConnection & { remount: ReturnType<typeof vi.fn> };
 }
 
@@ -73,6 +77,7 @@ const flush = () => act(async () => {});
 beforeEach(() => {
   layoutMounts = 0;
   window.history.replaceState(null, "", "/");
+  document.documentElement.removeAttribute("data-rpxd-synced");
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -232,5 +237,72 @@ describe("useNav().patch URL/wire coherence (finding 3)", () => {
     const qs = new URLSearchParams(window.location.search);
     expect(qs.get("page")).toBe("2");
     expect(qs.get("filter")).toBe("done");
+  });
+});
+
+describe("LiveApp settle marker (data-rpxd-synced, deflake FIX 1)", () => {
+  /**
+   * A confirmed connection whose aggregate `synced` value is externally
+   * controllable: `setSynced(v)` flips it and fires every `subscribeSync`
+   * listener, exactly as a real store snapshot/membership change would.
+   */
+  function syncableConn(): AnyConnection & { setSynced(v: boolean): void } {
+    const store = new LiveStore<{ n: number }, Record<string, never>>({
+      instance: "page",
+      meta: {},
+      send: () => {},
+      requestResync: () => {},
+    });
+    store.applyEnvelope({ seq: 1, instance: "page", full: { state: { n: 0 }, session: {} } });
+    let synced = true;
+    const listeners = new Set<() => void>();
+    return {
+      store,
+      setRedirectSink: () => {},
+      patchProps: () => {},
+      remount: vi.fn(async () => {}),
+      get synced() {
+        return synced;
+      },
+      subscribeSync(cb: () => void) {
+        listeners.add(cb);
+        return () => {
+          listeners.delete(cb);
+        };
+      },
+      setSynced(v: boolean) {
+        synced = v;
+        for (const l of listeners) l();
+      },
+    } as unknown as AnyConnection & { setSynced(v: boolean): void };
+  }
+
+  const hasMarker = () => document.documentElement.hasAttribute("data-rpxd-synced");
+
+  it("stamps <html> when synced, removes it while unsettled, restamps at settle", async () => {
+    const conn = syncableConn();
+    await render(
+      <LiveApp route={pageRoute("HOME", "/")} connection={conn} routeModules={routeModules} />,
+    );
+    // Settled at mount → marker present.
+    expect(hasMarker()).toBe(true);
+
+    // An in-flight rpc unsettles the aggregate → marker removed.
+    await act(async () => conn.setSynced(false));
+    expect(hasMarker()).toBe(false);
+
+    // Ack re-settles → marker restamped (the AFTER-action settle-wait).
+    await act(async () => conn.setSynced(true));
+    expect(hasMarker()).toBe(true);
+  });
+
+  it("removes the marker when the app unmounts", async () => {
+    const conn = syncableConn();
+    await render(
+      <LiveApp route={pageRoute("HOME", "/")} connection={conn} routeModules={routeModules} />,
+    );
+    expect(hasMarker()).toBe(true);
+    await act(async () => root.unmount());
+    expect(hasMarker()).toBe(false);
   });
 });

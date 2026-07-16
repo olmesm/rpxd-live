@@ -91,6 +91,27 @@ export function LiveApp(props: LiveAppProps): ReactElement {
     current.conn.setRedirectSink((loc) => navigate(loc));
   }, [current.conn]);
 
+  // The settle marker (`data-rpxd-synced`, deflake FIX 1). Stamped on <html> iff
+  // every store multiplexed on the connection is settled (live, no pending rpc),
+  // removed while any is in flight — so it flickers OFF during an rpc and back ON
+  // at ack. It lives here, not beside the one-shot `data-rpxd-hydrated` stamp in
+  // the client entry, because it must track CONTINUOUSLY over the app-lifetime
+  // connection's changing store set (slots mount/release, the primary swaps on
+  // tier-2/3 nav) — and only LiveApp holds that connection with a React-managed
+  // lifecycle to subscribe/unsubscribe. SSR-safe: effects never run on the
+  // server, so `document` is only touched in the browser.
+  useEffect(() => {
+    const conn = current.conn;
+    const el = document.documentElement;
+    const sync = () => el.toggleAttribute("data-rpxd-synced", conn.synced);
+    sync();
+    const unsub = conn.subscribeSync(sync);
+    return () => {
+      unsub();
+      el.removeAttribute("data-rpxd-synced");
+    };
+  }, [current.conn]);
+
   // Popstate between two search-variants of one path is invisible to wouter
   // (its location is pathname-only), so the navigation effect below never
   // runs: reconcile guard/load over the live connection (tier 1, §7) here.
