@@ -1,8 +1,12 @@
 /** Streaming (§3): a handler grows state token-by-token via `append` patches. */
 import { expect, test } from "@playwright/test";
+import { gotoHydrated } from "./helpers";
 
 test("a streamed answer updates incrementally, token by token", async ({ page }) => {
-  await page.goto("/stream");
+  // Gate on hydration: a pre-hydration `generate` click is lost (no onClick
+  // attached yet), the rpc never fires, and `streaming` never appears — the
+  // shared slow-boot flake class (see helpers.ts), sharper on the ws combo.
+  await gotoHydrated(page, "/stream");
   const answer = page.getByTestId("answer");
   await expect(answer).toBeEmpty();
 
@@ -26,7 +30,8 @@ test("a streamed answer updates incrementally, token by token", async ({ page })
 });
 
 test("stop aborts the stream mid-flight (ctx.abort + ctx.signal)", async ({ page }) => {
-  await page.goto("/stream");
+  // Same hydration gate — the generate/stop clicks must land on wired handlers.
+  await gotoHydrated(page, "/stream");
   await page.getByTestId("generate").click();
   await expect(page.getByTestId("answer")).toContainText("the");
 
