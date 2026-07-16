@@ -17,10 +17,14 @@ import {
   isSuperseded,
   type LiveDefinition,
   LiveInstance,
+  type MountBatchControl,
   type MountBatchResult,
+  type MountControl,
   makeDiagnosticEmit,
   memory,
   type RateLimit,
+  type ReleaseControl,
+  type ResyncControl,
   type RouteDefinition,
   type RouteMethod,
   type RpcBatch,
@@ -30,6 +34,7 @@ import {
   type StandardSchemaV1,
   type StorageAdapter,
   TokenBucket,
+  type UrlControl,
   ValidationError,
   validateInput,
 } from "@rpxd/core";
@@ -529,6 +534,39 @@ export function encodeSse(env: Envelope): string {
 }
 
 /**
+ * A control message as it arrives off the wire — the shared {@link Control}
+ * union (the single source of truth, pinned by the protocol-conformance test),
+ * but with the fields validation fills in still optional so the runtime decodes
+ * them explicitly at ingress rather than trusting the wire (#8 / review R1
+ * finding 7). Only the pre-validation relaxations live here; every field name and
+ * shape is inherited from `@rpxd/core`, so the two can't drift:
+ * - `mount`.props may be absent (defaulted to `{}` before {@link resolveMountProps}).
+ * - `mount-batch`.mounts may be absent / its entries partial (shape-checked per entry).
+ * {@link ResyncControl}/{@link UrlControl}/{@link ReleaseControl} arrive complete.
+ */
+type ControlIngress =
+  | ResyncControl
+  | (Omit<MountControl, "props"> & { props?: MountControl["props"] })
+  | (Omit<MountBatchControl, "mounts"> & {
+      mounts?: Partial<MountBatchControl["mounts"][number]>[];
+    })
+  | UrlControl
+  | ReleaseControl;
+
+/**
+ * A WS control frame as it arrives off the wire (review R1 finding 7): the same
+ * shared control types as {@link ControlIngress} minus `mount-batch` (the socket
+ * takes single mounts only), plus the WS-only `mountId` correlation field on
+ * `mount` ({@link MountControl.mountId}). Derived from `@rpxd/core` so the WS and
+ * HTTP control surfaces can't drift from the protocol definition.
+ */
+type WsControlIngress =
+  | ResyncControl
+  | (Omit<MountControl, "props"> & { props?: MountControl["props"] })
+  | UrlControl
+  | ReleaseControl;
+
+/**
  * Create the rpxd request handler.
  *
  * Endpoints:
@@ -812,6 +850,29 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     return mountable().find((r) => r.path === path);
   }
 
+  /**
+   * The session-map + storage key for an instance (review R1 finding 1). ADR 0002
+   * makes the pattern-filled string the instance identity, but two DIFFERENT
+   * patterns can fill to the same concrete pathname — a page `/$slug` navigated to
+   * `/chat` and a mount-only slot `/chat` are distinct live objects that both
+   * concretely live at `/chat`. Keying by pathname alone would let one be served
+   * as the other via warm reuse (skipping the real guard/load), and would collide
+   * their `${sid}:${key}` snapshot rows. So the key incorporates the matched
+   * PATTERN.
+   *
+   * A literal pattern equals its own pathname (`/chat` → `/chat`, every slot, and
+   * every static route), so those keep the bare-pathname key byte-for-byte — only
+   * a PARAMETRIC page (`/$slug` filled to `/chat`) gains the pattern qualifier.
+   * Two tabs on the same parametric page compute the SAME (pattern, pathname) pair
+   * → same key → shared instance (Decision 4 two-tabs semantics preserved); a
+   * control-plane mount that resolves to the same pattern as a GET page shares it
+   * too (Decision 2). The ` ` separator can't appear in a URL path, so a
+   * qualified key can never alias a bare one.
+   */
+  function keyFor(pattern: string, pathname: string): string {
+    return pattern === pathname ? pathname : `${pattern}\n${pathname}`;
+  }
+
   // Reconcile an instance to a URL (§7) — `guard` then `load`. Runs on every
   // page load, fresh or warm: the URL is the query key, so a full-page load (or
   // Link mount) must reconcile to its props, not just the first `setup`.
@@ -896,15 +957,23 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
    * request allocates nothing; a throw from `load` after `setup` disposes the
    * half-built instance (without a snapshot) so it can't orphan the pubsub
    * subscriptions `setup` wired. Redirects and errors propagate to the caller.
+   *
+   * `storageKey` is the pattern-qualified session key ({@link keyFor}), so the
+   * snapshot row can't collide with a different-pattern instance sharing the same
+   * concrete pathname (review R1 finding 1). Returns `loadedClean`: whether the
+   * initial `load` reconciled **cleanly** (no data-throw) — a data-throw is
+   * swallowed into userland state but must NOT seed the warm-mount dedup key, or a
+   * failed initial load would stick its empty state across tabs (review R1 finding
+   * 2). `true` when there is no loader (nothing to reconcile).
    */
   async function buildInstance(
     sid: string,
-    pathname: string,
+    storageKey: string,
     sessionData: unknown,
     route: RouteRegistration,
     match: { path: string; params: Record<string, string> },
     search: Record<string, unknown>,
-  ): Promise<InstanceEntry["instance"]> {
+  ): Promise<{ instance: InstanceEntry["instance"]; loadedClean: boolean }> {
     if (route.def.guard) {
       await runGuard(route.def, match.params, sessionData, search); // deny → throw, nothing built
     }
@@ -914,15 +983,19 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       params: match.params,
       session: (sessionData as Record<string, unknown>) ?? {},
       storage,
-      storageKey: `${sid}:${pathname}`,
+      storageKey: `${sid}:${storageKey}`,
       defaultRateLimit: opts.defaultRateLimit,
       maxBatchCalls: opts.maxBatchCalls,
       warnQueueDepth: opts.warnQueueDepth,
       maxBroadcastBacklog: opts.maxBroadcastBacklog,
       emit,
     });
+    let loadedClean = true;
     try {
-      if (route.def.load) await instance.loadForRender(search);
+      // `loadForRender` returns false on a won-but-threw (data-throw) run — the
+      // throw is swallowed as state, not propagated — so capture it rather than
+      // trusting a non-throw to mean a clean load (review R1 finding 2).
+      if (route.def.load) loadedClean = await instance.loadForRender(search);
     } catch (e) {
       // Load bailed out (e.g. a loader redirect) → tear down so we don't orphan
       // the subscriptions `setup` wired. `dispose(false)` skips the final
@@ -931,7 +1004,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       await instance.dispose(false);
       throw e;
     }
-    return instance;
+    return { instance, loadedClean };
   }
 
   /**
@@ -1032,8 +1105,24 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     // the two address spaces share one lifecycle (Decision 2, stop-signal #1).
     registrations: RouteRegistration[] = opts.routes,
   ): Promise<InstanceEntry> {
+    // Resolve the caller's matched pattern up front: the session key incorporates
+    // it ({@link keyFor}, review R1 finding 1) so a page `/$slug` at the concrete
+    // `/chat` and a slot `/chat` — distinct live objects that fill to the same
+    // pathname — get DISTINCT keys and never share/clobber one another. GET passes
+    // routes-only, the control plane the union, so `match.path` is always THIS
+    // caller's correct pattern. A hit under the qualified key is therefore
+    // guaranteed to be the SAME live object (never a foreign pattern), so warm
+    // reuse can reconcile it directly without re-checking the pattern.
+    const match = matchRoute(
+      registrations.map((r) => r.path),
+      pathname,
+    );
+    if (!match) throw new NotFoundError(pathname);
+    const route = registrations.find((r) => r.path === match.path) as RouteRegistration;
+    const key = keyFor(match.path, pathname);
+
     const entries = entriesFor(sid);
-    const existing = entries.get(pathname);
+    const existing = entries.get(key);
     if (existing) {
       const sameSession =
         JSON.stringify(existing.instance.session ?? {}) === JSON.stringify(sessionData ?? {});
@@ -1046,10 +1135,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         // (#61) so a live-but-un-adopted instance isn't shed before a colder one.
         if (unattached.delete(existing)) unattached.add(existing);
         // Reconcile the warm instance to this load's URL (§7), with the item-8
-        // dedup: re-guard always, re-load only on a props change. Look across
-        // the caller's registration set so a slot instance finds its own def.
-        const route = registrations.find((r) => r.path === existing.path);
-        if (route) await reconcileEntry(existing, route.def, search);
+        // dedup: re-guard always, re-load only on a props change. The key pins the
+        // pattern, so `route` (the caller's match) is exactly this instance's def.
+        await reconcileEntry(existing, route.def, search);
         return existing;
       }
       // The authenticated session changed (login/logout, §10): the principal —
@@ -1057,11 +1145,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       // the snapshot, and re-create fresh below rather than adopt the warm
       // instance (§12), which would render the old principal.
       if (existing.evictTimer) clearTimeout(existing.evictTimer);
-      entries.delete(pathname);
+      entries.delete(key);
       byInstanceId.delete(existing.instance.id);
       unattached.delete(existing);
       await existing.instance.dispose();
-      await storage.delete(`${sid}:${pathname}`);
+      await storage.delete(`${sid}:${key}`);
     }
 
     // Hard per-session ceiling (C): reserve a slot *before* building. Idle
@@ -1115,37 +1203,42 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       }
     }
 
-    const match = matchRoute(
-      registrations.map((r) => r.path),
-      pathname,
-    );
-    if (!match) throw new NotFoundError(pathname);
-    const route = registrations.find((r) => r.path === match.path) as RouteRegistration;
-
     // Guard → setup → load, with cleanup on throw (#8). A deny or loader redirect
-    // throws out before the instance is registered below.
-    const instance = await buildInstance(sid, pathname, sessionData, route, match, search);
+    // throws out before the instance is registered below. `loadedClean` is false
+    // when the initial load threw a data error (swallowed into state) — it must
+    // not seed the dedup key (review R1 finding 2). The pattern-qualified `key` is
+    // the storage/session key so a different-pattern twin can't collide (finding 1).
+    const { instance, loadedClean } = await buildInstance(
+      sid,
+      key,
+      sessionData,
+      route,
+      match,
+      search,
+    );
 
     // A concurrent mount for the same key can register while we awaited
     // `buildInstance` (both passed the warm-reuse check above). Two entries
     // under one key would let the loser's eviction delete the winner's slot
     // and snapshot row — dispose the just-built loser and adopt the winner.
-    const winner = entriesFor(sid).get(pathname);
+    const winner = entriesFor(sid).get(key);
     if (winner) {
-      await instance.dispose(false); // no snapshot — the winner owns `${sid}:${pathname}`
+      await instance.dispose(false); // no snapshot — the winner owns `${sid}:${key}`
       return winner;
     }
 
     const entry: InstanceEntry = {
       instance,
       sid,
-      key: pathname,
+      key,
       path: match.path,
       params: match.params,
-      // The initial `buildInstance` load reconciled these props (ADR 0002 item
-      // 8): seed the dedup key so an immediate warm re-mount with identical
-      // props re-guards without re-loading (the multi-tab storm).
-      lastProps: canonicalProps(search),
+      // Seed the dedup key ONLY when the initial `buildInstance` load reconciled
+      // cleanly (ADR 0002 item 8): an immediate warm re-mount with identical props
+      // then re-guards without re-loading (the multi-tab storm). A data-throwing
+      // initial load leaves this UNSET, so the next warm re-mount re-runs `load`
+      // rather than sticking the failed/empty state (review R1 finding 2).
+      lastProps: loadedClean ? canonicalProps(search) : undefined,
       attach: { token: crypto.randomUUID(), expires: Date.now() + attachTtlMs },
       everAttached: false,
     };
@@ -1153,7 +1246,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     // top: an eviction timer that fired during the awaits above may have pruned
     // an empty slice out of `sessions` (#61), orphaning the captured reference.
     // `entriesFor` re-attaches (or recreates) the canonical slice.
-    entriesFor(sid).set(pathname, entry);
+    entriesFor(sid).set(key, entry);
     byInstanceId.set(instance.id, entry);
     unattached.add(entry);
     enforceUnattachedCap(entry);
@@ -1527,16 +1620,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   // docs-site/src/content/docs/concepts/wire-protocol.md and pinned by
   // packages/core/test/protocol-conformance.test.ts. Change all three together.
   async function handleControl(req: Request, sid: string, sessionData: unknown) {
-    const msg = (await readJsonCapped(req, maxBodyBytes)) as
-      | { type: "mount"; path: string; props?: Record<string, unknown>; stream?: string }
-      | {
-          type: "mount-batch";
-          mounts?: { path?: string; props?: Record<string, unknown> }[];
-          stream?: string;
-        }
-      | { type: "resync"; instance: string }
-      | { type: "release"; instance: string; stream: string }
-      | { type: "url"; instance: string; props: Record<string, unknown> };
+    const msg = (await readJsonCapped(req, maxBodyBytes)) as ControlIngress;
 
     if (msg.type === "mount") {
       // Per-session mount throttle (ADR 0002 item 14): a single mount costs one
@@ -2013,17 +2097,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           // there's no rpcId to ack until it parses, and no legit client sends
           // an over-cap frame.
           if (raw.length > maxBodyBytes) return;
-          let msg:
-            | RpcBatch
-            | {
-                type: "resync" | "url" | "mount" | "release";
-                instance?: string;
-                path?: string;
-                /** `mount` props (ADR 0002 item 6) — a JSON value model; `url` props are raw strings. */
-                props?: Record<string, unknown>;
-                /** Client correlation id for `mount` (#65) — echoed on the outcome envelope. */
-                mountId?: string;
-              };
+          let msg: RpcBatch | WsControlIngress;
           try {
             msg = JSON.parse(raw);
           } catch {
@@ -2047,7 +2121,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
             acceptBatch(msg, sid, send);
             return;
           }
-          if (msg.type === "mount" && msg.path) {
+          if (msg.type === "mount") {
+            // A mount frame with no `path` is a no-op (a malformed client) — drop
+            // it here so the mount member is fully consumed and the fall-through
+            // below narrows to the instance-bearing control messages.
+            if (!msg.path) return;
             // Per-session mount throttle (ADR 0002 item 14): parity with HTTP
             // control. Over WS there's no response slot, so answer a drained
             // bucket with an unbound (`instance: ""`) error envelope the client

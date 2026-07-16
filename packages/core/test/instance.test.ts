@@ -1262,6 +1262,38 @@ describe("diagnostic sink (#73)", () => {
     expect(failed).toMatchObject({ category: "instance", level: "error", error: boom });
   });
 
+  it("a loader DATA-throw settles as won-but-threw → loadForRender resolves false (dedup key must not advance, ADR 0002 item 8 / review R1 finding 2)", async () => {
+    // A data throw (non-redirect, non-supersede) is still swallowed into userland
+    // state by `#runLoad` — the error semantics (`.onError`/diagnostic) are
+    // unchanged. But for the warm-mount DEDUP the run did NOT reconcile cleanly:
+    // it must report `false` so `reconcileEntry` never advances `lastProps` onto a
+    // failed load (which would make an empty/failed state sticky across tabs).
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async () => {
+        throw new Error("boom");
+      },
+    };
+    const { inst } = await make(def, { emit: () => {} });
+    await expect(inst.loadForRender({})).resolves.toBe(false);
+  });
+
+  it("a CLEAN load (patch, no throw) still settles as won → loadForRender resolves true", async () => {
+    // The positive control for the contract above: a load that writes a patch and
+    // does not throw is won-and-clean, so it reports `true` and the dedup key
+    // advances (a warm re-mount with identical props then skips the reload).
+    const def: LiveDefinition<TodoState, "/t/$id", Session> = {
+      setup: () => initial(),
+      load: async (_url, ctx) => {
+        ctx.patchState(((s) => {
+          s.log.push("data");
+        }) as Mut);
+      },
+    };
+    const { inst } = await make(def);
+    await expect(inst.loadForRender({})).resolves.toBe(true);
+  });
+
   it("emits a storage/subscriber-threw diagnostic when a broadcast subscriber throws", async () => {
     const events: RpxdDiagnostic[] = [];
     const storage = memory();
@@ -1291,9 +1323,11 @@ describe("diagnostic sink (#73)", () => {
         },
       };
       const { inst } = await make(def); // no emit injected
-      // A loader data-throw is userland state, not a superseded run, so the run
-      // still settles as the current one and reports `true` (ADR 0002 item 8).
-      await expect(inst.loadForRender({})).resolves.toBe(true);
+      // A loader data-throw is userland state (still reported through the sink),
+      // but it is won-but-threw — NOT clean — so the run reports `false` so the
+      // warm-mount dedup never advances its props key onto a failed load (ADR
+      // 0002 item 8 / review R1 finding 2). The error semantics are unchanged.
+      await expect(inst.loadForRender({})).resolves.toBe(false);
       expect(spy).toHaveBeenCalledWith(
         expect.stringContaining("instance/load-failed"),
         expect.anything(),
@@ -1317,9 +1351,10 @@ describe("diagnostic sink (#73)", () => {
           throw new Error("sink blew up");
         },
       });
-      // The throwing sink must not propagate out of the load path; the run
-      // still settles as current and reports `true` (ADR 0002 item 8).
-      await expect(inst.loadForRender({})).resolves.toBe(true);
+      // The throwing sink must not propagate out of the load path; the run still
+      // settles as current, but a data-throw is won-but-threw (not clean) so it
+      // reports `false` (ADR 0002 item 8 / review R1 finding 2).
+      await expect(inst.loadForRender({})).resolves.toBe(false);
       expect(spy).toHaveBeenCalled(); // the sink throw was caught + reported
     } finally {
       spy.mockRestore();

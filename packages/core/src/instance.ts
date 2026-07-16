@@ -201,6 +201,14 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   #renderGate: { gate: Deferred<void>; runId: number } | undefined;
   /** Whether the current load run's loader has produced a patch — gates the render open (§12). */
   #loadWrote = false;
+  /**
+   * Whether the current load run's loader threw a DATA error (non-redirect,
+   * non-supersede) — swallowed into userland state by {@link #runLoad}, but a
+   * won-but-threw run for {@link loadForRender}'s dedup contract (ADR 0002 item 8
+   * / review R1 finding 2): a data-throw did NOT reconcile cleanly, so the caller
+   * must not advance its props dedup key onto a failed load. Reset per run.
+   */
+  #loadThrew = false;
   /** Abort controller for the in-flight `authorize` guard — newer call cancels it (§10). */
   #authController: AbortController | undefined;
   /** rpcId → ack envelope, for at-least-once dedupe (§11). */
@@ -509,12 +517,23 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * soft-nav); one thrown after is mid-stream — ignored, with a server-side log
    * (redirect before the first patch to navigate; per-URL denies belong in `guard`).
    *
-   * Resolves `true` when this run is still the current load run at settle time —
-   * i.e. it reconciled and was **not** superseded by a newer URL (ADR 0002 item
-   * 8, so the warm-mount dedup only advances its props key on a winning run) —
-   * and `false` when a newer run claimed the tag mid-flight. `true` too when the
-   * def has no `load` (nothing to reconcile). A redirect still propagates as a
-   * throw before either value is returned.
+   * Resolves `true` only on a **won-and-clean** run — one still current at settle
+   * time (not superseded by a newer URL) AND whose loader did not throw a data
+   * error. It resolves `false` on the two runs that must NOT become the warm-mount
+   * dedup baseline (ADR 0002 item 8, so the dedup only advances its props key on a
+   * clean reconcile): **superseded** (a newer run claimed the tag mid-flight, its
+   * flushes dropped) and **won-but-threw** (the loader threw a data error, which
+   * `#runLoad` swallows into userland state — the error semantics are unchanged,
+   * but a failed load left no complete state, so re-loading it later is correct
+   * rather than sticking an empty/failed state across tabs — review R1 finding 2).
+   * `true` too when the def has no `load` (nothing to reconcile). A redirect still
+   * propagates as a throw before either value is returned.
+   *
+   * The data-throw is observed deterministically for the finding's case (a loader
+   * that throws before its first patch): `#runLoad`'s catch sets the flag before
+   * the finally opens the gate this awaits. A throw *after* the first patch is
+   * inherently past the return point (the gate already opened on that patch) and
+   * counts as clean — that run produced state, so it isn't the empty-state bug.
    */
   async loadForRender(props: Record<string, unknown>): Promise<boolean> {
     if (!this.#def.load || this.#disposed) return true;
@@ -541,10 +560,11 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       }
     });
     await gate.promise;
-    // Won iff no newer run bumped the tag while this one was in flight (§7
-    // latest-wins). A superseded run's flushes were dropped, so its props never
-    // reconciled — the caller must not treat them as the new dedup baseline.
-    return this.#loadRunId === runId;
+    // Won-and-clean iff no newer run bumped the tag while this one was in flight
+    // (§7 latest-wins) AND this run's loader didn't throw a data error. A
+    // superseded run's flushes were dropped; a thrown run left no complete state —
+    // neither may become the new dedup baseline (ADR 0002 item 8 / R1 finding 2).
+    return this.#loadRunId === runId && !this.#loadThrew;
   }
 
   async #runLoad(props: Record<string, unknown>): Promise<void> {
@@ -558,6 +578,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     // (e.g. a plain load() over an in-flight loadForRender): settle the orphan.
     this.#supersedeRenderGate(runId);
     this.#loadWrote = false;
+    this.#loadThrew = false;
     const controller = this.#trackAbort(LOAD_KEY);
 
     const idMap: Record<string, string> = {};
@@ -584,6 +605,12 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
         this.#settleRenderGate(runId, e);
         throw e;
       }
+      // A data throw (swallowed into userland state): mark this run won-but-threw
+      // so `loadForRender` reports it as NOT clean and the warm-mount dedup never
+      // advances onto a failed load (ADR 0002 item 8 / review R1 finding 2). Set
+      // before the `finally` opens the render gate, so the pre-first-patch case is
+      // observed deterministically by the awaiter.
+      this.#loadThrew = true;
       if (!controller.signal.aborted)
         this.#emitDiagnostic({
           category: "instance",

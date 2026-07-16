@@ -62,6 +62,33 @@ const chatDef: LiveDefinition<ChatState, "/chat", Record<string, unknown>, { too
   },
 };
 
+// A PARAM page route (`/$slug`) that concretely matches `/chat` — the collision
+// the warm-reuse pattern guard (review R1 finding 1) must resolve: a page at
+// `/chat` (via `/$slug`) and the `/chat` slot are DIFFERENT live objects that
+// fill to the same concrete pathname, so they must never share one session key.
+let pageSetup = 0;
+let pageGuard = 0;
+let pageLoad = 0;
+interface PageState {
+  slug: string;
+  loaded: boolean;
+}
+const pageDef: LiveDefinition<PageState, "/$slug", Record<string, unknown>> = {
+  setup: (ctx) => {
+    pageSetup++;
+    return { slug: ctx.params.slug, loaded: false };
+  },
+  guard: () => {
+    pageGuard++;
+  },
+  load: async (_url, ctx) => {
+    pageLoad++;
+    ctx.patchState((s) => {
+      s.loaded = true;
+    });
+  },
+};
+
 // A mount-only slot whose guard denies — nothing must be allocated.
 const deniedSlotDef: LiveDefinition<{ ok: boolean }, "/secret", Record<string, unknown>> = {
   setup: () => ({ ok: true }),
@@ -123,6 +150,30 @@ function makeHandler(overrides: Partial<Parameters<typeof createRpxdHandler>[0]>
     cookie: { sign: false },
     ...overrides,
   });
+}
+
+// A handler whose PAGE route is `/$slug` (matches the concrete `/chat`) plus the
+// `/chat` slot — the finding-1 collision fixture.
+function makeSlugHandler(overrides: Partial<Parameters<typeof createRpxdHandler>[0]> = {}) {
+  chatSetup = 0;
+  chatGuard = 0;
+  pageSetup = 0;
+  pageGuard = 0;
+  pageLoad = 0;
+  return createRpxdHandler({
+    routes: [{ path: "/$slug", def: pageDef }],
+    slots: [{ path: "/chat", def: chatDef, props: chatSchema }],
+    warmTtlMs: 1000,
+    attachTtlMs: 1000,
+    cookie: { sign: false },
+    ...overrides,
+  });
+}
+
+/** Pull the SSR bootstrap `{ instance, snapshot }` out of a rendered document. */
+function bootOf(html: string): { instance: string; snapshot: { state: PageState } } {
+  const json = /<script id="__rpxd" type="application\/json">(.*?)<\/script>/s.exec(html)?.[1];
+  return JSON.parse(json as string) as { instance: string; snapshot: { state: PageState } };
 }
 
 const control = (handler: ReturnType<typeof makeHandler>, body: unknown, headers = COOKIE) =>
@@ -276,6 +327,73 @@ describe("union-table control-plane mounts (ADR 0002 item 6)", () => {
     const res = await handler.fetch(new Request(`${base}/chat`, { headers: COOKIE }));
     expect(res.status).toBe(404);
     // …and the warm slot instance is left untouched (not evicted, not served).
+    expect(handler.instanceCount).toBe(1);
+    await handler.dispose();
+  });
+
+  it("finding 1: a GET matching a param route is served as the PAGE, not a warm slot at the same pathname", async () => {
+    const handler = makeSlugHandler();
+    // Mount the `/chat` SLOT via the control plane (keyed at pathname `/chat`).
+    const slotRes = await control(handler, { type: "mount", path: "/chat", props: { tools: [] } });
+    const { instance: slotId } = (await slotRes.json()) as { instance: string };
+    expect(handler.instanceCount).toBe(1);
+    expect(chatSetup).toBe(1);
+
+    // A browser GET `/chat` matches the `/$slug` PAGE route (not the slot). It
+    // must build + serve the page (its own guard+load run), NOT adopt the warm
+    // slot at the colliding pathname and skip the page's lifecycle entirely.
+    const res = await handler.fetch(new Request(`${base}/chat`, { headers: COOKIE }));
+    expect(res.status).toBe(200);
+    const boot = bootOf(await res.text());
+    expect(boot.instance).not.toBe(slotId); // NOT the slot instance
+    expect(boot.snapshot.state.slug).toBe("chat"); // the page's own `/$slug` state
+    expect(boot.snapshot.state.loaded).toBe(true); // the page's load RAN
+    expect(pageGuard).toBe(1);
+    expect(pageLoad).toBe(1);
+    // Both coexist under distinct (pattern-qualified) keys; the slot is untouched.
+    expect(handler.instanceCount).toBe(2);
+    await handler.dispose();
+  });
+
+  it("finding 1: a slot mount builds its OWN instance even when a param-route page is warm at the same pathname", async () => {
+    const handler = makeSlugHandler();
+    // A browser GET `/chat` mounts the `/$slug` PAGE (keyed at pathname `/chat`).
+    const boot = bootOf(
+      await (await handler.fetch(new Request(`${base}/chat`, { headers: COOKIE }))).text(),
+    );
+    const pageId = boot.instance;
+    expect(handler.instanceCount).toBe(1);
+    expect(pageSetup).toBe(1);
+
+    // A control-plane mount of the `/chat` SLOT must build its OWN instance
+    // (running chat's setup/load), not warm-reuse the page instance and reconcile
+    // the page def with slot props.
+    const slotRes = await control(handler, {
+      type: "mount",
+      path: "/chat",
+      props: { tools: ["search"] },
+    });
+    expect(slotRes.status).toBe(200);
+    const { instance: slotId, path } = (await slotRes.json()) as { instance: string; path: string };
+    expect(slotId).not.toBe(pageId);
+    expect(path).toBe("/chat"); // matched the literal slot pattern, not `/$slug`
+    expect(chatSetup).toBe(1); // the slot's own setup ran
+    expect(pageSetup).toBe(1); // the page was NOT rebuilt
+    expect(handler.instanceCount).toBe(2);
+    await handler.dispose();
+  });
+
+  it("finding 1: a warm param-route page still shares its instance with a control-plane mount of the SAME pattern", async () => {
+    // The coexistence fix must NOT break Decision-2 instance sharing: when the
+    // control-plane mount resolves to the SAME pattern as the GET page (no literal
+    // slot shadows it), the key is identical and the instance is shared.
+    const handler = makeSlugHandler({ slots: [] });
+    const boot = bootOf(
+      await (await handler.fetch(new Request(`${base}/about`, { headers: COOKIE }))).text(),
+    );
+    const res = await control(handler, { type: "mount", path: "/about", props: {} });
+    const { instance } = (await res.json()) as { instance: string };
+    expect(instance).toBe(boot.instance); // shared — same pattern, same concrete path
     expect(handler.instanceCount).toBe(1);
     await handler.dispose();
   });

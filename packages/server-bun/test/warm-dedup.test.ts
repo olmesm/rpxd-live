@@ -35,6 +35,7 @@ let guardSpy: unknown[];
 let loadSpy: unknown[];
 let denyTo: string | null;
 let loadRedirect: string | null;
+let loadThrow: string | null;
 let releaseSlowLoad: (() => void) | null;
 
 const dashDef: LiveDefinition<DashState, "/dash", Record<string, unknown>, { limit: number }> = {
@@ -46,6 +47,7 @@ const dashDef: LiveDefinition<DashState, "/dash", Record<string, unknown>, { lim
   load: async ({ props }, ctx) => {
     loadSpy.push(props);
     if (loadRedirect) throw redirect(loadRedirect); // before any patch → propagates
+    if (loadThrow) throw new Error(loadThrow); // data throw → swallowed as userland state
     if (props.limit === 1) {
       await new Promise<void>((r) => {
         releaseSlowLoad = r;
@@ -65,6 +67,7 @@ function reset(): void {
   loadSpy = [];
   denyTo = null;
   loadRedirect = null;
+  loadThrow = null;
   releaseSlowLoad = null;
 }
 
@@ -216,6 +219,52 @@ describe("warm-mount dedup: re-guard always, re-load on change (ADR 0002 item 8)
     await tick(10);
     expect(loadSpy).toHaveLength(3); // reloaded — a thrown load left no baseline
     expect(loadSpy[2]).toEqual({ limit: 20 });
+    await handler.dispose();
+  });
+
+  it("a load DATA-throw (swallowed, not a redirect) does NOT advance lastProps → next identical reconcile reloads (review R1 finding 2)", async () => {
+    const handler = makeHandler();
+    const instance = await mount(handler, { limit: 10 }); // lastProps ← {limit:10}
+    expect(loadSpy).toHaveLength(1);
+
+    // Changed props, but the load throws a DATA error — `#runLoad` swallows it as
+    // userland state (a diagnostic, no redirect), so the reconcile "wins"
+    // latest-wins yet did NOT complete cleanly. It must not become the new dedup
+    // baseline, or a warm re-mount with these props would skip the reload forever
+    // (sticky failed state across tabs).
+    loadThrow = "kaboom";
+    const res = await control(handler, { type: "url", instance, props: { limit: 20 } });
+    expect(res.status).toBe(204); // a data throw is not a redirect — 204, swallowed
+    await tick(10);
+    expect(loadSpy).toHaveLength(2); // load ran (and threw)
+
+    // Same {limit:20} again, now succeeding: because the data-throw never advanced
+    // lastProps (still {limit:10}), this must RUN load — not skip it.
+    loadThrow = null;
+    await control(handler, { type: "url", instance, props: { limit: 20 } });
+    await tick(10);
+    expect(loadSpy).toHaveLength(3); // reloaded — a thrown load left no baseline
+    expect(loadSpy[2]).toEqual({ limit: 20 });
+    await handler.dispose();
+  });
+
+  it("a data-throw on the INITIAL build does not seed lastProps → a warm remount reloads (review R1 finding 2)", async () => {
+    const handler = makeHandler();
+    // The very first mount's load throws a data error (swallowed into state). The
+    // fresh entry must NOT seed its dedup key to these props, or the next tab's
+    // warm remount with identical props would skip re-loading the failed load.
+    loadThrow = "kaboom";
+    await mount(handler, { limit: 10 });
+    await tick(10);
+    expect(loadSpy).toHaveLength(1); // initial load ran (and threw)
+
+    // A second tab warm-remounts the same key + identical props. Because the
+    // failed initial load left no baseline, load must RUN again (not skip).
+    loadThrow = null;
+    await mount(handler, { limit: 10 });
+    await tick(10);
+    expect(loadSpy).toHaveLength(2); // reloaded — no sticky failed state
+    expect(loadSpy[1]).toEqual({ limit: 10 });
     await handler.dispose();
   });
 
