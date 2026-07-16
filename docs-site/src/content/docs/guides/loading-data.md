@@ -17,8 +17,8 @@ export default live("/issues")
   // once per page load: URL-invariant skeleton only, and SYNC — no IO here
   .setup(() => ({ items: [] as Issue[], filter: "open", loading: true }))
   // THE loader: after setup + on every nav.patch, keyed to the URL
-  .load(async ({ search }, ctx) => {
-    const filter = search.filter ?? "open";
+  .load(async ({ props }, ctx) => {
+    const filter = props.filter ?? "open";
     ctx.patchState((s) => { s.filter = filter; s.loading = true; });          // projection
     const items = await listIssues(scopeFrom(ctx.session), {
       filter, signal: ctx.signal,
@@ -70,7 +70,7 @@ until the new one lands. It falls out of `patchState`, not a cache.
 message. Set `s.loading` / `s.error` yourself and render off them:
 
 ```tsx
-.load(async ({ search }, ctx) => {
+.load(async ({ props }, ctx) => {
   ctx.patchState((s) => { s.loading = true; s.error = null; });
   try {
     const items = await list(search, { signal: ctx.signal });
@@ -95,14 +95,14 @@ to the first `await` — no flag:
 
 ```tsx
 // Patch before the await → the projection renders now, data streams in.
-.load(async ({ search }, ctx) => {
+.load(async ({ props }, ctx) => {
   ctx.patchState((s) => { s.filter = f; s.loading = true; }); // ← first paint (fast TTFB)
   const items = await listItems(f);
   ctx.patchState((s) => { s.items = items; s.loading = false; }); // ← streams after hydration
 })
 
 // Await the data before the first patch → the renderer waits for it.
-.load(async ({ search }, ctx) => {
+.load(async ({ props }, ctx) => {
   const items = await listItems(searchToFilter(search)); // no patch yet
   ctx.patchState((s) => { s.items = items; }); // ← first paint (crawlable, data-complete)
 })
@@ -116,10 +116,10 @@ is deterministic — keyed to the first patch, never a timer.
 
 `load` writes **page state** through `ctx.patchState`, typed from `setup` the
 same as an rpc handler. `ctx.state` is a read-only view. The **first argument
-is the whole URL**: `{ params, search }`. `params` (from `/org/$orgId`) are
-typed, like everywhere else. `search` is untyped view state
-(`Record<string, string | undefined>`) — narrow and default it yourself
-(`search.filter ?? "open"`). And there's no built-in `paginated()` helper: the
+is the whole URL**: `{ params, props }`. `params` (from `/org/$orgId`) are
+typed, like everywhere else. `props` is an untyped view-state record — a page's
+URL query (`Record<string, string | undefined>`) — narrow and default it
+yourself (`props.filter ?? "open"`). And there's no built-in `paginated()` helper: the
 patterns that follow are ~15-line loaders, because the loader already is the
 abstraction.
 

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { RpxdDiagnostic, RpxdDiagnosticSink } from "../src/diagnostics.ts";
 import { LiveInstance } from "../src/instance.ts";
-import type { LiveDefinition, Mutator, SearchParams } from "../src/live.ts";
+import type { LiveDefinition, Mutator, PropsRecord } from "../src/live.ts";
 import { type Envelope, PROTOCOL_VERSION, type RpcBatch } from "../src/protocol.ts";
 import { redirect } from "../src/redirect.ts";
 import { memory, type StorageAdapter } from "../src/storage.ts";
@@ -816,8 +816,8 @@ describe("URL loader (§7)", () => {
 
   const def: LiveDefinition<TodoState, "/t/$id", Session> = {
     setup: () => initial(),
-    load: async ({ search }, ctx) => {
-      const f = search.filter ?? "all";
+    load: async ({ props }, ctx) => {
+      const f = props.filter ?? "all";
       ctx.patchState((s) => {
         s.filter = f;
         s.loading = true;
@@ -870,11 +870,11 @@ describe("URL loader (§7)", () => {
     let aborted = false;
     const spyDef: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
-      load: async ({ search }, ctx) => {
+      load: async ({ props }, ctx) => {
         ctx.signal.addEventListener("abort", () => {
           aborted = true;
         });
-        await fetchItems(search.filter ?? "all", ctx.signal).catch(() => {});
+        await fetchItems(props.filter ?? "all", ctx.signal).catch(() => {});
       },
     };
     const { inst } = await make(spyDef);
@@ -924,8 +924,8 @@ describe("URL loader (§7)", () => {
     let release: () => void = () => {};
     const gated: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
-      load: async ({ search }) => {
-        if (search.filter === "stale") {
+      load: async ({ props }) => {
+        if (props.filter === "stale") {
           await new Promise<void>((r) => {
             release = r;
           });
@@ -941,8 +941,8 @@ describe("URL loader (§7)", () => {
     await expect(stale).resolves.toBeUndefined();
   });
 
-  it("receives typed path params alongside search in the url arg", async () => {
-    let seen: { params: { id: string }; search: Record<string, string | undefined> } | undefined;
+  it("receives typed path params alongside props in the url arg", async () => {
+    let seen: { params: { id: string }; props: Record<string, string | undefined> } | undefined;
     const spy: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
       load: async (url) => {
@@ -952,7 +952,7 @@ describe("URL loader (§7)", () => {
     const { inst } = await make(spy);
     await inst.load({ filter: "x" });
     expect(seen?.params).toEqual({ id: "42" });
-    expect(seen?.search).toEqual({ filter: "x" });
+    expect(seen?.props).toEqual({ filter: "x" });
   });
 
   it("cold wake re-runs setup; the window rebuilds from the URL via load (§9)", async () => {
@@ -984,8 +984,8 @@ describe("guard / authorize (§10)", () => {
   it("authorize runs the guard; a deny throws redirect", async () => {
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
-      guard: async ({ search }) => {
-        if (search.filter === "secret") throw redirect("/403");
+      guard: async ({ props }) => {
+        if (props.filter === "secret") throw redirect("/403");
       },
     };
     const { inst } = await make(def);
@@ -993,11 +993,11 @@ describe("guard / authorize (§10)", () => {
     await expect(inst.authorize({ filter: "secret" })).rejects.toMatchObject({ location: "/403" });
   });
 
-  it("re-checks on every URL change (search too), catching a spoofed param", async () => {
+  it("re-checks on every URL change (props too), catching a spoofed param", async () => {
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
-      guard: async ({ search }) => {
-        if (search.userId && search.userId !== "me") throw redirect("/403");
+      guard: async ({ props }) => {
+        if (props.userId && props.userId !== "me") throw redirect("/403");
       },
     };
     const { inst } = await make(def);
@@ -1011,7 +1011,7 @@ describe("guard / authorize (§10)", () => {
   });
 
   it("gets the typed url + signal; a newer call aborts the prior guard", async () => {
-    let seen: { params: { id: string }; search: SearchParams; signal: boolean } | undefined;
+    let seen: { params: { id: string }; props: PropsRecord; signal: boolean } | undefined;
     let firstAborted = false;
     let release: () => void = () => {};
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
@@ -1019,10 +1019,10 @@ describe("guard / authorize (§10)", () => {
       guard: async (url, ctx) => {
         seen = {
           params: url.params,
-          search: url.search,
+          props: url.props,
           signal: ctx.signal instanceof AbortSignal,
         };
-        if (url.search.slow) {
+        if (url.props.slow) {
           ctx.signal.addEventListener("abort", () => {
             firstAborted = true;
           });
@@ -1039,7 +1039,7 @@ describe("guard / authorize (§10)", () => {
     expect(firstAborted).toBe(true);
     release();
     await slow.catch(() => {});
-    expect(seen).toEqual({ params: { id: "42" }, search: { q: "x" }, signal: true });
+    expect(seen).toEqual({ params: { id: "42" }, props: { q: "x" }, signal: true });
   });
 
   it("surfaces a superseded guard's throw as SupersededError (never the guard's own error)", async () => {
@@ -1047,7 +1047,7 @@ describe("guard / authorize (§10)", () => {
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
       guard: async (url, ctx) => {
-        if (url.search.slow) {
+        if (url.props.slow) {
           await new Promise<void>((r) => {
             release = r;
           });
@@ -1071,18 +1071,18 @@ describe("guard / authorize (§10)", () => {
     const loaded: string[] = [];
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
-      guard: async ({ search }) => {
-        if (search.userId && search.userId !== "me") {
+      guard: async ({ props }) => {
+        if (props.userId && props.userId !== "me") {
           await new Promise<void>((r) => {
             release = r;
           });
           throw redirect("/403"); // slow deny — superseded mid-flight
         }
       },
-      load: async ({ search }, ctx) => {
-        loaded.push(search.userId ?? search.q ?? "?");
+      load: async ({ props }, ctx) => {
+        loaded.push(props.userId ?? props.q ?? "?");
         ctx.patchState(((s) => {
-          s.filter = search.userId ?? search.q;
+          s.filter = props.userId ?? props.q;
         }) as Mut);
       },
     };
@@ -1109,8 +1109,8 @@ describe("guard / authorize (§10)", () => {
     let release: () => void = () => {};
     const def: LiveDefinition<TodoState, "/t/$id", Session> = {
       setup: () => initial(),
-      guard: async ({ search }) => {
-        if (search.slow) {
+      guard: async ({ props }) => {
+        if (props.slow) {
           await new Promise<void>((r) => {
             release = r;
           });

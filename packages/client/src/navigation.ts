@@ -52,13 +52,13 @@ export function claimNavigationTicket(
  * location is pathname-only, so popstate between two search-variants of one
  * path never reruns the app shell's effect — `guard`/`load` would not see the
  * restored query. Returns the full search record to reconcile via
- * `patchSearch` (tier 1) when the pathname is unchanged; `null` on a pathname
+ * `patchProps` (tier 1) when the pathname is unchanged; `null` on a pathname
  * change, which the location effect owns.
  *
  * @example
  * ```ts
  * const patch = popstateSearchPatch(location.pathname, location.search, current.pathname);
- * if (patch) conn.patchSearch(patch);
+ * if (patch) conn.patchProps(patch);
  * ```
  */
 export function popstateSearchPatch(

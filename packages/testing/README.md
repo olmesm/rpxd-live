@@ -22,7 +22,7 @@ The harness has no test-runner dependency; the examples below use Vitest.
 import { testLive } from "@rpxd/testing";
 import route from "../routes/index.tsx";
 
-const t = await testLive(route, { search: { filter: "done" } });
+const t = await testLive(route, { props: { filter: "done" } });
 expect(t.state.filter).toBe("done");      // the loader already ran
 
 await t.rpc.add({ text: "milk" });        // typed payload, resolves on ack
@@ -47,8 +47,8 @@ await expect(testLive(adminRoute)).rejects.toMatchObject({ location: "/login" })
 - **`t.envelopes`** — every wire message emitted since mount, in order, as a
   client connection would see it. Useful for protocol-level assertions
   (streaming chunks, acks, `append` ops).
-- **`t.navigate(search)`** — reconciles the mounted instance to new search
-  params, running `guard` then `load` exactly as a client navigation does.
+- **`t.navigate(props)`** — reconciles the mounted instance to new props
+  (a page's URL query), running `guard` then `load` exactly as a client navigation does.
 - **`t.settled()`** — resolves once in-flight rpcs, scheduled patch
   flushes, and the mutation queue have drained. Await it before asserting
   on streamed or broadcast-driven state.

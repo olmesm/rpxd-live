@@ -14,9 +14,9 @@ back-button-correct.
 ```tsx
 export default live("/issues")
   .setup(() => ({ items: [] as Issue[], filter: "open", sort: "newest", loading: true }))
-  .load(async ({ search }, ctx) => {
-    const f = search.filter ?? "open";
-    const s = search.sort ?? "newest";
+  .load(async ({ props }, ctx) => {
+    const f = props.filter ?? "open";
+    const s = props.sort ?? "newest";
     ctx.patchState((st) => { st.filter = f; st.sort = s; st.loading = true; });
     const items = await listIssues(scopeFrom(ctx.session), { filter: f, sort: s, signal: ctx.signal });
     ctx.patchState((st) => { st.items = items; st.loading = false; });
@@ -68,14 +68,14 @@ useEffect(() => {
 return <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" />;
 ```
 
-On the server the loader just reads `search.q` and passes it — and because it
+On the server the loader just reads `props.q` and passes it — and because it
 threads `ctx.signal` into the query, superseded searches stop early instead of
 racing:
 
 ```tsx
-.load(async ({ search }, ctx) => {
-  ctx.patchState((s) => { s.query = search.q ?? ""; s.loading = true; });
-  const items = await searchIssues(scopeFrom(ctx.session), { q: search.q ?? "", signal: ctx.signal });
+.load(async ({ props }, ctx) => {
+  ctx.patchState((s) => { s.query = props.q ?? ""; s.loading = true; });
+  const items = await searchIssues(scopeFrom(ctx.session), { q: props.q ?? "", signal: ctx.signal });
   ctx.patchState((s) => { s.items = items; s.loading = false; });
 })
 ```

@@ -291,19 +291,19 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   }
 
   /**
-   * Tier-1 search change (§7): rerun `guard`+`load` for a new URL over the same
+   * Tier-1 props change (§7): rerun `guard`+`load` for a new URL over the same
    * instance — no `setup`, state preserved (keepPreviousData). A `guard` deny
    * comes back as `{ redirect }` (SSE control response) or a `redirect` envelope
    * (WS) and is routed to `onRedirect` for a soft-nav (§10).
    */
-  patchSearch(search: Record<string, string>): void {
+  patchProps(props: Record<string, string>): void {
     const instance = this.#instance;
     if (this.#opts.transport === "ws" && this.#socketOpen && this.#socket) {
       // A WS deny arrives as a `redirect` envelope on the socket (see message).
-      this.#socket.send(JSON.stringify({ type: "url", instance, search }));
+      this.#socket.send(JSON.stringify({ type: "url", instance, props }));
       return;
     }
-    void this.#control({ type: "url", instance, search }).then((res) => {
+    void this.#control({ type: "url", instance, props }).then((res) => {
       if (res instanceof Response && res.ok) void this.#consumeRedirect(res);
     });
   }

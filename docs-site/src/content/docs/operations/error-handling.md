@@ -127,7 +127,7 @@ commonly, you catch it yourself and write the failure into state exactly like
 a loading flag:
 
 ```tsx
-.load(async ({ search }, ctx) => {
+.load(async ({ props }, ctx) => {
   ctx.patchState((s) => { s.loading = true; s.error = null; });
   try {
     const items = await list(search, { signal: ctx.signal });

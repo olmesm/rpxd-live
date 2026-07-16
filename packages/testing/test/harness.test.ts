@@ -157,7 +157,7 @@ describe("testLive: streaming + settled", () => {
   });
 });
 
-describe("testLive: broadcast injection + search params", () => {
+describe("testLive: broadcast injection + props", () => {
   const roomRoute = live("/room")
     .setup((ctx) => {
       ctx.subscribe("room:1");
@@ -169,9 +169,9 @@ describe("testLive: broadcast injection + search params", () => {
       const { name } = p as { name: string };
       state.log.push(`joined:${name}`);
     })
-    .load(async ({ search }, ctx) => {
+    .load(async ({ props }, ctx) => {
       ctx.patchState((s) => {
-        s.filter = search.filter ?? "all";
+        s.filter = props.filter ?? "all";
       });
     })
     .render(() => null);
@@ -275,16 +275,16 @@ describe("testLive: mount lifecycle (guard → setup → load)", () => {
     await t.dispose();
   });
 
-  it("mounts with the initial search params", async () => {
+  it("mounts with the initial props", async () => {
     const route = live("/list")
       .setup(() => ({ filter: "" }))
-      .load(({ search }, ctx) => {
+      .load(({ props }, ctx) => {
         ctx.patchState((s) => {
-          s.filter = search.filter ?? "all";
+          s.filter = props.filter ?? "all";
         });
       })
       .render(() => null);
-    const t = await testLive(route, { search: { filter: "done" } });
+    const t = await testLive(route, { props: { filter: "done" } });
     expect(t.state.filter).toBe("done");
     await t.dispose();
   });
@@ -316,14 +316,14 @@ describe("testLive: mount lifecycle (guard → setup → load)", () => {
         order.push("setup");
         return {};
       })
-      .guard(({ search }) => {
-        order.push(`guard:${search.q ?? ""}`);
+      .guard(({ props }) => {
+        order.push(`guard:${props.q ?? ""}`);
       })
       .load(() => {
         order.push("load");
       })
       .render(() => null);
-    const t = await testLive(route, { search: { q: "x" } });
+    const t = await testLive(route, { props: { q: "x" } });
     expect(order).toEqual(["guard:x", "setup", "load"]);
     await t.dispose();
   });

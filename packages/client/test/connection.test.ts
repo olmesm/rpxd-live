@@ -130,14 +130,14 @@ describe("LiveConnection (§11, §12)", () => {
     );
   });
 
-  it("routes patchSearch (tier 1) through the control endpoint as a url change (§7)", () => {
+  it("routes patchProps (tier 1) through the control endpoint as a url change (§7)", () => {
     const { conn, requests } = makeConnection(bootstrap);
-    conn.patchSearch({ filter: "done" });
+    conn.patchProps({ filter: "done" });
     const control = requests.find((r) => r.url.endsWith("/__rpxd/control"));
-    expect(control?.body).toEqual({ type: "url", instance: "i1", search: { filter: "done" } });
+    expect(control?.body).toEqual({ type: "url", instance: "i1", props: { filter: "done" } });
   });
 
-  it("a guard deny during patchSearch routes { redirect } to onRedirect (§10)", async () => {
+  it("a guard deny during patchProps routes { redirect } to onRedirect (§10)", async () => {
     const redirects: string[] = [];
     const fetchImpl = (async () =>
       Response.json({ redirect: "/login" })) as unknown as typeof fetch;
@@ -148,7 +148,7 @@ describe("LiveConnection (§11, §12)", () => {
       onRedirect: (loc) => redirects.push(loc),
       eventSource: (url) => new FakeEventSource(url),
     });
-    conn.patchSearch({ admin: "1" });
+    conn.patchProps({ admin: "1" });
     await new Promise((r) => setTimeout(r, 0));
     expect(redirects).toEqual(["/login"]);
   });
@@ -164,7 +164,7 @@ describe("LiveConnection (§11, §12)", () => {
       onRedirect: (loc) => redirects.push(loc),
       eventSource: (url) => new FakeEventSource(url),
     });
-    conn.patchSearch({ admin: "1" });
+    conn.patchProps({ admin: "1" });
     await new Promise((r) => setTimeout(r, 0));
     // A server-supplied redirect that isn't a same-origin path must be dropped,
     // not handed to the router / window.location.
@@ -354,7 +354,7 @@ describe("ws transport (§11 opt-in)", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(ws.sent.some((m) => JSON.parse(m).rpcId)).toBe(true);
 
-    conn.patchSearch({ filter: "done" });
+    conn.patchProps({ filter: "done" });
     expect(ws.sent.some((m) => JSON.parse(m).type === "url")).toBe(true);
 
     const env: Envelope = {

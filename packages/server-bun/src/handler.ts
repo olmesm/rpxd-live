@@ -624,7 +624,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
 
   // Reconcile an instance to a URL (§7) — `guard` then `load`. Runs on every
   // page load, fresh or warm: the URL is the query key, so a full-page load (or
-  // Link mount) must reconcile to its search, not just the first `setup`.
+  // Link mount) must reconcile to its props, not just the first `setup`.
   // `guard` (§10) is awaited so a deny `throw redirect` 302s *before* we serve —
   // the redirect propagates to the caller. SSR sequencing (§12): the first
   // document carries state through the loader's first patch (`loadForRender`),
@@ -635,10 +635,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   async function reconcileUrl(
     def: RouteRegistration["def"],
     instance: InstanceEntry["instance"],
-    search: Record<string, string | undefined>,
+    props: Record<string, string | undefined>,
   ): Promise<void> {
     try {
-      if (def.guard) await instance.authorize(search); // deny → throw redirect → 302
+      if (def.guard) await instance.authorize(props); // deny → throw redirect → 302
     } catch (e) {
       // A newer URL superseded this guard run mid-flight: the winning run owns
       // the outcome. Bail without loading — falling through would load a URL
@@ -647,7 +647,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       throw e;
     }
     if (!def.load) return;
-    await instance.loadForRender(search);
+    await instance.loadForRender(props);
   }
 
   /**
@@ -662,11 +662,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     def: RouteRegistration["def"],
     params: Record<string, string>,
     session: unknown,
-    search: Record<string, string | undefined>,
+    props: Record<string, string | undefined>,
   ): Promise<void> {
     const guard = def.guard;
     if (!guard) return;
-    await guard({ params, search }, { params, session, signal: new AbortController().signal });
+    await guard({ params, props }, { params, session, signal: new AbortController().signal });
   }
 
   /**
@@ -1067,7 +1067,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       | { type: "mount"; path: string; search?: Record<string, string>; stream?: string }
       | { type: "resync"; instance: string }
       | { type: "release"; instance: string; stream: string }
-      | { type: "url"; instance: string; search: Record<string, string> };
+      | { type: "url"; instance: string; props: Record<string, string> };
 
     if (msg.type === "mount") {
       let entry: InstanceEntry;
@@ -1105,7 +1105,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     // → redirect JSON for the client to soft-nav (§10).
     const route = opts.routes.find((r) => r.path === entry.path);
     try {
-      if (route) await reconcileUrl(route.def, entry.instance, msg.search);
+      if (route) await reconcileUrl(route.def, entry.instance, msg.props);
     } catch (e) {
       if (isRedirect(e)) return Response.json({ redirect: e.location });
       throw e;
@@ -1415,6 +1415,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                 instance?: string;
                 path?: string;
                 search?: Record<string, string>;
+                props?: Record<string, string>;
                 /** Client correlation id for `mount` (#65) — echoed on the outcome envelope. */
                 mountId?: string;
               };
@@ -1497,12 +1498,12 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           const entry = ownedInstance(msg.instance, sid);
           if (!entry) return;
           if (msg.type === "resync") entry.instance.resync();
-          if (msg.type === "url" && msg.search) {
+          if (msg.type === "url" && msg.props) {
             // Runtime URL change over WS (§7): reconcile guard+load; a guard deny
             // → a redirect envelope for the client to soft-nav (§10).
             const route = opts.routes.find((r) => r.path === entry.path);
             try {
-              if (route) await reconcileUrl(route.def, entry.instance, msg.search);
+              if (route) await reconcileUrl(route.def, entry.instance, msg.props);
             } catch (e) {
               if (isRedirect(e)) {
                 send({

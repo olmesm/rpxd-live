@@ -17,8 +17,8 @@ export default live("/org/$orgId/board")
     ctx.subscribe(`org:${ctx.params.orgId}`);
     return { projects: [] as Project[], filter: "all", loading: true };
   })
-  .load(async ({ search }, ctx) => {
-    const filter = search.filter ?? "all";
+  .load(async ({ props }, ctx) => {
+    const filter = props.filter ?? "all";
     ctx.patchState((s) => {
       s.filter = filter;
       s.loading = true;
@@ -60,7 +60,7 @@ same-route path step's skeleton instant — no IO here. `setup` may
 `throw redirect("/login")` as a coarse fail-fast, but auth's home is `guard` (see
 [Routes & auth](/rpxd-live/guides/routes-and-auth/)).
 
-### `.guard(async ({ params, search }, ctx) => void)`
+### `.guard(async ({ params, props }, ctx) => void)`
 
 Optional. **Auth.** Runs before `load` on **every URL change** (path *or*
 search), so a spoofed or hand-edited `?userId=…` is re-checked — not just on the
@@ -68,7 +68,7 @@ first load. `throw redirect(...)` to deny; return to allow. `ctx` is
 `{ params, session, signal }` — no `patchState`, because a guard decides access,
 it doesn't write state.
 
-### `.load(async ({ params, search }, ctx) => void)`
+### `.load(async ({ params, props }, ctx) => void)`
 
 The **URL-keyed loader** — the single place URL-dependent data loads. Runs once
 after `setup` (first paint) and again on every `nav.patch`. A search change
@@ -79,8 +79,8 @@ The loader writes **page state** via `ctx.patchState`; `ctx.session` is
 read-only. Loading and errors are ordinary state the loader writes — there is
 no completion message to wait for.
 
-The **first argument is the whole URL** — `{ params, search }`. `search`
-(`?filter=…`) is untyped view state (`Record<string, string | undefined>`);
+The **first argument is the whole URL** — `{ params, props }`. `props`
+(a page's `?filter=…` query) is untyped view state (`Record<string, string | undefined>`);
 `params` (`/org/$orgId` → `orgId`) are typed from the route literal, the same as
 in `setup` and rpc handlers — see `ctx.params.orgId` in the example above.
 
@@ -140,7 +140,7 @@ Plain React. Props are fully typed:
 | `rpc` | exact-keyed facade — `rpc.create({ name })`; wrong name/payload won't compile |
 | `sync` | `{ pending, inFlight, errors }` — in-flight count + failed rpcs; each error is `{ name, message, rpc? }` |
 | `status` | connection status — `"connecting" \| "live" \| "reconnecting" \| "error"` |
-| `nav` | `navigate(to, { params?, search? })` and `patch(search)` |
+| `nav` | `navigate(to, { params?, search? })` and `patch(props)` |
 | `keyOf` | maps a temp id to a stable React key across optimistic → confirmed |
 
 ## Why zero annotations

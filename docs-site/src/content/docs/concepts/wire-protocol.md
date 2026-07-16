@@ -142,7 +142,7 @@ query params (below).
 type Control =
   | { type: "resync"; instance: string }                                        // gap recovery / late attach
   | { type: "mount"; path: string; search: Record<string, string>; stream?: string; mountId?: string } // cold / same-route mount
-  | { type: "url"; instance: string; search: Record<string, string> }           // nav.patch → guard + load
+  | { type: "url"; instance: string; props: Record<string, string> }            // nav.patch → guard + load
   | { type: "release"; instance: string; stream: string };                      // same-route nav abandons an instance
 ```
 

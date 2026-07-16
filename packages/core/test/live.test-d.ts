@@ -75,22 +75,22 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
         expectTypeOf(state).toEqualTypeOf<Draft<{ projects: Project[]; importing: boolean }>>();
         expectTypeOf(ctx.broadcast).parameter(0).toEqualTypeOf<string>();
       })
-      .guard(async ({ params, search }, ctx) => {
+      .guard(async ({ params, props }, ctx) => {
         // guard (§10): typed url, session, signal — but NO patchState (it's a gate).
         expectTypeOf(params).toEqualTypeOf<{ orgId: string }>();
-        expectTypeOf(search).toEqualTypeOf<Record<string, string | undefined>>();
+        expectTypeOf(props).toEqualTypeOf<Record<string, string | undefined>>();
         expectTypeOf(ctx.signal).toEqualTypeOf<AbortSignal>();
         // @ts-expect-error — guard is a gate, not a loader: no patchState
         void ctx.patchState;
       })
-      .load(async ({ params, search }, ctx) => {
+      .load(async ({ params, props }, ctx) => {
         // URL loader (§7): first arg is the whole url — typed path params +
-        // untyped search; ctx is the handler ctx (page-state writes, signal).
+        // untyped props; ctx is the handler ctx (page-state writes, signal).
         expectTypeOf(params).toEqualTypeOf<{ orgId: string }>();
-        expectTypeOf(search).toEqualTypeOf<Record<string, string | undefined>>();
+        expectTypeOf(props).toEqualTypeOf<Record<string, string | undefined>>();
         expectTypeOf(ctx.signal).toEqualTypeOf<AbortSignal>();
         ctx.patchState((s) => {
-          s.importing = search.filter !== undefined;
+          s.importing = props.filter !== undefined;
         });
       })
       .render((props) => {

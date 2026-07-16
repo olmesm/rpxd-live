@@ -395,7 +395,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
-   * Run the auth guard for a set of search params (§10). **Awaitable** and kept
+   * Run the auth guard for a props record (§10). **Awaitable** and kept
    * separate from `load` so the server can 302 *before* streaming/serving a
    * guarded page. A deny (`throw redirect`) — or any throw — propagates to the
    * caller. No-op when no `guard` is declared. A newer call aborts the prior
@@ -405,7 +405,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * would proceed to load the denied URL), so supersession is explicit: callers
    * catch it and bail quietly — the winning run owns the outcome.
    */
-  async authorize(search: Record<string, string | undefined>): Promise<void> {
+  async authorize(props: Record<string, string | undefined>): Promise<void> {
     const guard = this.#def.guard;
     if (!guard || this.#disposed) return;
     this.#authController?.abort();
@@ -413,7 +413,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     this.#authController = controller;
     try {
       await guard(
-        { params: this.#params, search },
+        { params: this.#params, props },
         { params: this.#params, session: this.#session, signal: controller.signal },
       );
     } catch (e) {
@@ -430,10 +430,10 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
-   * Run the URL loader for a set of search params (§7) — the loader only;
+   * Run the URL loader for a props record (§7) — the loader only;
    * `authorize` runs `guard` separately (the server awaits it first so a deny
    * 302s before streaming). Fires after `setup`+`authorize` and on every URL
-   * change. The loader gets `{ params, search }`, writes page state through
+   * change. The loader gets `{ params, props }`, writes page state through
    * `ctx.patchState`; loading/errors are userland state, no ack. **Latest-wins**:
    * a newer call aborts the prior run's `ctx.signal` and drops its late flushes.
    * A `redirect` thrown by the loader (§10) is re-thrown — only for the current
@@ -443,8 +443,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * determinism). SSR/reconcile uses {@link loadForRender}, which returns at the
    * first patch and streams the rest.
    */
-  async load(search: Record<string, string | undefined>): Promise<void> {
-    await this.#runLoad(search);
+  async load(props: Record<string, string | undefined>): Promise<void> {
+    await this.#runLoad(props);
   }
 
   /**
@@ -458,7 +458,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * soft-nav); one thrown after is mid-stream — ignored, with a server-side log
    * (redirect before the first patch to navigate; per-URL denies belong in `guard`).
    */
-  async loadForRender(search: Record<string, string | undefined>): Promise<void> {
+  async loadForRender(props: Record<string, string | undefined>): Promise<void> {
     if (!this.#def.load || this.#disposed) return;
     const gate = makeDeferred<void>();
     const runId = this.#loadRunId + 1; // #runLoad claims exactly this tag
@@ -471,7 +471,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     // rejects the gate with a pre-first-patch redirect (delivered to the await
     // below); the only rejection left here is a redirect thrown *after* the
     // first patch — no awaiter can map it, so log the drop instead of hiding it.
-    void this.#runLoad(search).catch((e: unknown) => {
+    void this.#runLoad(props).catch((e: unknown) => {
       if (isRedirect(e) && !gate.rejected) {
         this.#emitDiagnostic({
           category: "instance",
@@ -485,7 +485,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     await gate.promise;
   }
 
-  async #runLoad(search: Record<string, string | undefined>): Promise<void> {
+  async #runLoad(props: Record<string, string | undefined>): Promise<void> {
     const loader = this.#def.load;
     if (!loader || this.#disposed) return;
 
@@ -510,7 +510,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     };
 
     try {
-      await loader({ params: this.#params, search }, ctx);
+      await loader({ params: this.#params, props }, ctx);
       if (runId === this.#loadRunId) await this.#flushChunk();
     } catch (e) {
       // Only the current run reacts — a superseded run (newer URL claimed the

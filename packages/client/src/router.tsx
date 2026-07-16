@@ -48,14 +48,14 @@ const ConnectionContext = createContext<LiveConnection<unknown, Record<string, u
  * so a navigation that changes just the query string moves the URL bar but
  * never reruns the app shell's effect — `guard`/`load` would silently not
  * rerun. Returns the target's full search record (to reconcile via
- * `patchSearch`, tier 1) when `href` points at `currentPathname` with a
+ * `patchProps`, tier 1) when `href` points at `currentPathname` with a
  * different query; `null` when the pathname changes (the app shell owns
  * those) or nothing changed at all.
  *
  * @example
  * ```ts
  * const patch = searchOnlyChange("/board?filter=done", "/board", "?filter=all");
- * if (patch) connection.patchSearch(patch); // { filter: "done" }
+ * if (patch) connection.patchProps(patch); // { filter: "done" }
  * ```
  */
 export function searchOnlyChange(
@@ -124,7 +124,7 @@ export function Link<P extends RegisteredPath>(props: {
     // live connection (tier 1, §7) since the app shell's effect won't run.
     const patch = searchOnlyChange(href, window.location.pathname, window.location.search);
     navigate(href);
-    if (patch) connection?.patchSearch(patch);
+    if (patch) connection?.patchProps(patch);
   };
   return <a href={href} onClick={onClick} {...rest} />;
 }
@@ -153,15 +153,15 @@ export function useNav(): Nav {
           ? searchOnlyChange(href, window.location.pathname, window.location.search)
           : null;
       navigate(href);
-      if (patch) connection?.patchSearch(patch);
+      if (patch) connection?.patchProps(patch);
     },
-    patch: (search) => {
+    patch: (props) => {
       if (typeof window !== "undefined") {
         const url = new URL(window.location.href);
-        for (const [k, v] of Object.entries(search)) url.searchParams.set(k, v);
+        for (const [k, v] of Object.entries(props)) url.searchParams.set(k, v);
         window.history.replaceState(null, "", url);
       }
-      connection?.patchSearch(search);
+      connection?.patchProps(props);
     },
   };
 }

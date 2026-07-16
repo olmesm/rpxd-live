@@ -10,7 +10,14 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LiveInstance } from "../src/instance.ts";
 import { live } from "../src/live.ts";
-import { type Envelope, type Patch, PROTOCOL_VERSION, type RpcBatch } from "../src/protocol.ts";
+import {
+  type Control,
+  type Envelope,
+  type Patch,
+  PROTOCOL_VERSION,
+  type RpcBatch,
+  type UrlControl,
+} from "../src/protocol.ts";
 import { memory } from "../src/storage.ts";
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -225,5 +232,38 @@ describe("wire-protocol conformance (the wire protocol guide)", () => {
       ],
     } satisfies RpcBatch;
     void withExcess;
+  });
+
+  it("shape pin: the `url` control message carries `props`, not `search` (ADR 0002 item 1)", () => {
+    // A page's URL query IS its props record — the `url` control message's
+    // payload field renamed search → props. This pins the new name and rejects
+    // the old one, moving in lockstep with wire-protocol.md's Control union.
+    const urlControl = {
+      type: "url",
+      instance: "i",
+      props: { filter: "done" },
+    } satisfies UrlControl;
+    expect(urlControl.props).toEqual({ filter: "done" });
+
+    // Negative: the OLD field name no longer conforms. `props` is present (so
+    // the only defect is the excess property), and `search` is not a field on
+    // the `url` control message.
+    const legacy = {
+      type: "url",
+      instance: "i",
+      props: { filter: "done" },
+      // @ts-expect-error the `url` control carries `props`, not `search` (ADR 0002 item 1)
+      search: { filter: "done" },
+    } satisfies UrlControl;
+    void legacy;
+
+    // The `mount` control still carries `search` (renamed in ADR 0002 item 6,
+    // not item 1) — pinned so the two renames stay independent.
+    const mountControl = {
+      type: "mount",
+      path: "/board",
+      search: { filter: "done" },
+    } satisfies Control;
+    expect(mountControl.type).toBe("mount");
   });
 });

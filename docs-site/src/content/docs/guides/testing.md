@@ -98,7 +98,7 @@ to:
 ```ts
 const t = await testLive(accountRoute, {
   session: { sid: "s1", user },
-  search: { filter: "done" },
+  props: { filter: "done" },
 });
 expect(t.state.filter).toBe("done"); // loader ran at mount
 

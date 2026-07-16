@@ -8,8 +8,8 @@ import type { RateLimit } from "./rate-limit.ts";
 import type { EventName, EventPayload } from "./register.ts";
 import type { StandardSchemaV1 } from "./standard-schema.ts";
 
-/** Search params are untyped view state in v1 (§7). */
-export type SearchParams = Record<string, string | undefined>;
+/** Props are an untyped view-state record in v1 (§7) — a page's URL query is its props. */
+export type PropsRecord = Record<string, string | undefined>;
 
 type Segments<P extends string> = P extends `${infer Head}/${infer Rest}`
   ? Head | Segments<Rest>
@@ -43,14 +43,15 @@ export interface SetupCtx<Params, Session> {
 }
 
 /**
- * The whole URL handed to `load` (§7): typed path params plus untyped search.
- * `params` is the route literal's path params; `search` is the query string.
+ * The whole URL handed to `load` (§7): typed path params plus untyped props.
+ * `params` is the route literal's path params; `props` is the patchable view-state
+ * record (a page's URL query string is its props — one value model, two encodings).
  */
 export interface Url<Params> {
   /** Typed path params from the route literal (`/org/$orgId` → `{ orgId }`). */
   params: Params;
-  /** Untyped search/query params — view state in v1 (`?filter=…`). */
-  search: SearchParams;
+  /** Untyped props record — view state in v1 (a page's `?filter=…` query). */
+  props: PropsRecord;
 }
 
 /** Context available to every rpc handler and `on:` handler. */
@@ -154,9 +155,9 @@ export type Handler<S, Payload, Params, Session> = (
 /**
  * The URL-keyed loader (§7) — the single place URL-dependent data is loaded.
  * A plain async fn keyed to the whole URL: runs once after `setup` and again on
- * every URL change (path or search). The first argument is `{ params, search }`
- * (typed path params + untyped query); writes go through `ctx.patchState` (page
- * state); `ctx.session` is a live read-only view. Loading and errors are
+ * every URL change (path or props). The first argument is `{ params, props }`
+ * (typed path params + untyped props record); writes go through `ctx.patchState`
+ * (page state); `ctx.session` is a live read-only view. Loading and errors are
  * ordinary state the loader writes — there is no ack. `throw redirect(...)` to
  * deny (§10).
  *
@@ -167,13 +168,13 @@ export type Handler<S, Payload, Params, Session> = (
  *
  * @example
  * ```ts
- * .load(async ({ params, search }, ctx) => {
- *   ctx.patchState((s) => { s.filter = search.filter ?? "all"; s.loading = true; });
+ * .load(async ({ params, props }, ctx) => {
+ *   ctx.patchState((s) => { s.filter = props.filter ?? "all"; s.loading = true; });
  *   const page = await listTodos(scopeFrom(ctx.session), {
- *     filter: search.filter, cursor: search.cursor ?? null, limit: 20, signal: ctx.signal,
+ *     filter: props.filter, cursor: props.cursor ?? null, limit: 20, signal: ctx.signal,
  *   });
  *   ctx.patchState((s) => {
- *     s.todos = search.cursor ? [...s.todos, ...page.items] : page.items;
+ *     s.todos = props.cursor ? [...s.todos, ...page.items] : page.items;
  *     s.cursor = page.nextCursor;
  *     s.hasMore = page.nextCursor != null;
  *     s.loading = false;
@@ -198,7 +199,7 @@ export interface GuardCtx<Params, Session> {
 
 /**
  * The auth guard (§7, §10) — runs before `load` on **every** URL change (path
- * or search). `throw redirect(...)` to deny. Because it runs on search changes
+ * or props). `throw redirect(...)` to deny. Because it runs on props changes
  * too, a spoofed/edited `?cursor=…`/`?userId=…` is re-checked. It's a gate, not
  * a loader: no `patchState`. Pass `ctx.signal` to async auth lookups.
  *
@@ -372,13 +373,13 @@ export interface LiveBuilder<S, Path extends string, Session, R> {
   ): LiveBuilder<S, Path, Session, R>;
   /**
    * Auth guard (§10): runs before `load` on every URL change; `throw redirect`
-   * to deny. First arg is `{ params, search }`; no state writes. See {@link Guard}.
+   * to deny. First arg is `{ params, props }`; no state writes. See {@link Guard}.
    */
   guard(guard: Guard<PathParams<Path>, Session>): LiveBuilder<S, Path, Session, R>;
   /**
    * URL-keyed loader (§7): runs after `setup`+`guard` and on every URL change,
    * writes page state via `ctx.patchState`, latest-wins. First arg is
-   * `{ params, search }`. See {@link Loader}. SSR renders state through the
+   * `{ params, props }`. See {@link Loader}. SSR renders state through the
    * loader's first patch, then streams (§12) — `await` the data before the
    * first `patchState` for a crawlable, data-complete first paint.
    */

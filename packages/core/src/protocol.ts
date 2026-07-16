@@ -89,3 +89,52 @@ export interface RpcBatch {
   rpcId: string;
   calls: RpcCall[];
 }
+
+// WIRE CONTRACT — the control messages below reconcile a connection to
+// navigation and gap recovery (docs-site/.../wire-protocol.md "Control
+// messages"). None carry `v`. The `url` message's payload record is `props`
+// (ADR 0002 item 1): a page's URL query IS its props record.
+
+/** Gap recovery / late attach (§2): the server answers with a `full` at the current seq. */
+export interface ResyncControl {
+  type: "resync";
+  instance: string;
+}
+
+/**
+ * Cold / same-route mount (§7): match `path`, run guard→setup→load. An optional
+ * `stream` id joins the fresh instance to an already-open transport (tier-2 soft
+ * reload); `mountId` correlates a WS mount that denies before binding (#65).
+ */
+export interface MountControl {
+  type: "mount";
+  path: string;
+  search: Record<string, string>;
+  stream?: string;
+  mountId?: string;
+}
+
+/**
+ * Props patch (§7): reconcile a live instance to a new URL — `guard` then `load`,
+ * no `setup`, state preserved. A page's URL query is its props record, so the
+ * patched payload is `props` (ADR 0002 item 1); a deny comes back as a
+ * `{ redirect }` control response (SSE) or a `redirect` envelope (WS).
+ */
+export interface UrlControl {
+  type: "url";
+  instance: string;
+  props: Record<string, string>;
+}
+
+/** Same-route forward nav (§7): abandon an instance so it evicts off its stream. */
+export interface ReleaseControl {
+  type: "release";
+  instance: string;
+  stream: string;
+}
+
+/**
+ * The upstream control-message union (the wire protocol guide, "Control
+ * messages"). Reconciles a connection to navigation and gap recovery.
+ */
+export type Control = ResyncControl | MountControl | UrlControl | ReleaseControl;

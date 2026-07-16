@@ -15,8 +15,8 @@ import {
   memory,
   type PathParams,
   PROTOCOL_VERSION,
+  type PropsRecord,
   type RpcBatch,
-  type SearchParams,
   type StorageAdapter,
 } from "@rpxd/core";
 
@@ -38,11 +38,11 @@ export interface TestLiveOptions<Path extends string, Session> {
   /** Session slice the instance mounts with. Defaults to `{}`. */
   session?: Session;
   /**
-   * Search params the mount's `guard` + `load` run with (§7) — the query
-   * string of the initial page load. Defaults to `{}`. Use `t.navigate()`
-   * for subsequent URL changes.
+   * Props the mount's `guard` + `load` run with (§7) — a page's URL query is
+   * its props record, so this is the initial page load's query. Defaults to
+   * `{}`. Use `t.navigate()` for subsequent URL changes.
    */
-  search?: SearchParams;
+  props?: PropsRecord;
   /**
    * Storage adapter — defaults to a fresh `memory()`. Share one adapter
    * between two `testLive` handles to test multiplayer over the pubsub bus.
@@ -89,7 +89,7 @@ export interface TestLive<S, Session, Rpc> {
    * page load does: run `guard` (throws `redirect` on a deny) then `load`,
    * awaiting the stream to settle. Assert on `state`/`envelopes` afterwards.
    */
-  navigate(search: SearchParams): Promise<void>;
+  navigate(props: PropsRecord): Promise<void>;
   /**
    * Resolve once everything in flight has landed: pending rpcs (including
    * their streaming flushes), scheduled patch flushes, the mutation queue,
@@ -118,7 +118,7 @@ interface QueuedCall {
 /**
  * Mount a route for testing (§17): real runtime, typed access. The mount runs
  * the production lifecycle stages in order — `guard` (against `opts.session`
- * and `opts.search`) → `setup` → `load` — and awaits the initial load, so
+ * and `opts.props`) → `setup` → `load` — and awaits the initial load, so
  * state is loader-populated when the promise resolves. A guard deny or loader
  * redirect rejects with the `RedirectError` the server would map to a 302.
  *
@@ -127,7 +127,7 @@ interface QueuedCall {
  * import { testLive } from "@rpxd/testing";
  * import route from "../routes/index.tsx";
  *
- * const t = await testLive(route, { search: { filter: "done" } });
+ * const t = await testLive(route, { props: { filter: "done" } });
  * expect(t.state.filter).toBe("done");        // the loader already ran
  * await t.rpc.add({ text: "milk" });          // typed payload, resolves on ack
  * expect(t.state.todos).toHaveLength(1);
@@ -149,7 +149,7 @@ export async function testLive<S, Path extends string, Session, Component>(
   const storage = opts.storage ?? memory();
   const params = opts.params ?? ({} as PathParams<Path>);
   const session = opts.session ?? ({} as Session);
-  const search = opts.search ?? {};
+  const props = opts.props ?? {};
 
   // Mount runs the same ordered lifecycle stages as the server's fresh mount
   // (`buildInstance`, §12): guard → setup → load. Guard runs first — before
@@ -157,7 +157,7 @@ export async function testLive<S, Path extends string, Session, Component>(
   // (`throw redirect`) rejects this call, as the server maps it to a 302.
   if (route.def.guard) {
     await route.def.guard(
-      { params, search },
+      { params, props },
       { params, session, signal: new AbortController().signal },
     );
   }
@@ -179,7 +179,7 @@ export async function testLive<S, Path extends string, Session, Component>(
       // Await the *whole* initial run (the server awaits only the first
       // patch) so state is loader-populated and `settled()` is deterministic
       // from the moment `testLive` resolves.
-      await instance.load(search);
+      await instance.load(props);
     } catch (e) {
       // Loader bailed out (a redirect, §10): tear down so the subscriptions
       // `setup` wired don't leak — mirrors the server's half-built disposal.
@@ -275,16 +275,16 @@ export async function testLive<S, Path extends string, Session, Component>(
         self: false,
       });
     },
-    async navigate(search) {
+    async navigate(props) {
       try {
-        await instance.authorize(search);
+        await instance.authorize(props);
       } catch (e) {
         // A concurrent navigate superseded this guard run: the winning
         // navigate owns the outcome — skip the stale URL's load quietly.
         if (isSuperseded(e)) return;
         throw e;
       }
-      await instance.load(search);
+      await instance.load(props);
     },
     async settled() {
       while (inflight.size > 0) {

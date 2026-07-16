@@ -76,7 +76,7 @@ export function LiveApp(props: LiveAppProps): ReactElement {
         window.location.search,
         current.pathname,
       );
-      if (patch) current.conn.patchSearch(patch);
+      if (patch) current.conn.patchProps(patch);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);

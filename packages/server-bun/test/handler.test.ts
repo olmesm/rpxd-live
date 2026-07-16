@@ -19,9 +19,9 @@ interface BoardState {
 
 const boardDef: LiveDefinition<BoardState, "/org/$orgId/board", Record<string, unknown>> = {
   setup: (ctx) => ({ items: ["first"], orgId: ctx.params.orgId }),
-  load: async ({ search }, ctx) => {
+  load: async ({ props }, ctx) => {
     ctx.patchState((s) => {
-      s.filter = search.filter ?? "all";
+      s.filter = props.filter ?? "all";
     });
   },
   rpc: {
@@ -409,7 +409,7 @@ describe("stream + rpc + control (§11)", () => {
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
         headers: COOKIE,
-        body: JSON.stringify({ type: "url", instance, search: { filter: "done" } }),
+        body: JSON.stringify({ type: "url", instance, props: { filter: "done" } }),
       }),
     );
     const env = await sse.next();

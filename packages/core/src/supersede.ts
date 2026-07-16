@@ -15,7 +15,7 @@
  * @example
  * ```ts
  * try {
- *   await instance.authorize(search);
+ *   await instance.authorize(props);
  * } catch (e) {
  *   if (isSuperseded(e)) return; // a newer URL owns the outcome
  *   throw e;
@@ -37,7 +37,7 @@ export class SupersededError extends Error {
  *
  * @example
  * ```ts
- * try { await instance.authorize(search); } catch (e) { if (!isSuperseded(e)) throw e; }
+ * try { await instance.authorize(props); } catch (e) { if (!isSuperseded(e)) throw e; }
  * ```
  */
 export function isSuperseded(value: unknown): value is SupersededError {
