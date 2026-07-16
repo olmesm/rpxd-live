@@ -209,10 +209,12 @@ export async function createDevServer(
     config.rsc && vite.environments.rsc
       ? createServerModuleRunner(vite.environments.rsc)
       : undefined;
-  const loadDefModule = (file: string): Promise<{ default: { def: unknown } }> =>
+  const loadDefModule = (file: string): Promise<{ default: { def: unknown; props?: unknown } }> =>
     rscRunner
       ? rscRunner.import(`/routes/${file}`)
-      : (vite.ssrLoadModule(`/routes/${file}`) as Promise<{ default: { def: unknown } }>);
+      : (vite.ssrLoadModule(`/routes/${file}`) as Promise<{
+          default: { def: unknown; props?: unknown };
+        }>);
 
   // Register live routes with the runtime (defs loaded via the server graph
   // so reducer edits flow through Vite's module invalidation).
@@ -225,7 +227,13 @@ export async function createDevServer(
     if (entry.kind === "page" && entry.path !== null) {
       routeFiles.set(entry.path, entry.file);
       const mod = await loadDefModule(entry.file);
-      routes.push({ path: entry.path, def: mod.default.def } as RouteRegistration);
+      // Carry the props schema (ADR 0002) so dev SSR decodes+validates `?query`
+      // props before guard/load, matching production `start.ts`.
+      routes.push({
+        path: entry.path,
+        def: mod.default.def,
+        props: mod.default.props,
+      } as RouteRegistration);
       continue;
     }
     if (entry.kind === "http" && entry.path !== null) {

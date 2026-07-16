@@ -156,7 +156,10 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
   for (const [path, load] of Object.entries(routeModules)) {
     const defLoad = defModules[path] ?? load;
     const route = (await load()).default;
-    routes.push({ path, def: (await defLoad()).default.def });
+    // Carry the props schema (ADR 0002) from the built LiveRoute onto the
+    // registration so the handler can decode+validate `?query` props before
+    // guard/load. `undefined` for schema-less routes (raw-string back-compat).
+    routes.push({ path, def: (await defLoad()).default.def, props: route.props });
     components.set(path, route);
   }
 

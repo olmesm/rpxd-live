@@ -15,6 +15,7 @@ import {
   type LiveDefinition,
   type Mutator,
   type PathParams,
+  type PropsRecord,
   type RpcCtx,
   type RpcDef,
   type RpcLongForm,
@@ -405,7 +406,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * would proceed to load the denied URL), so supersession is explicit: callers
    * catch it and bail quietly — the winning run owns the outcome.
    */
-  async authorize(props: Record<string, string | undefined>): Promise<void> {
+  async authorize(props: Record<string, unknown>): Promise<void> {
     const guard = this.#def.guard;
     if (!guard || this.#disposed) return;
     this.#authController?.abort();
@@ -413,7 +414,11 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     this.#authController = controller;
     try {
       await guard(
-        { params: this.#params, props },
+        // The mounter validates props against the def's schema before handing
+        // them here (ADR 0002 §3), so the runtime is props-type-agnostic — the
+        // record already matches the guard's declared `Props`. `PropsRecord` is
+        // just the generic-erased default the instance carries.
+        { params: this.#params, props: props as PropsRecord },
         { params: this.#params, session: this.#session, signal: controller.signal },
       );
     } catch (e) {
@@ -443,7 +448,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * determinism). SSR/reconcile uses {@link loadForRender}, which returns at the
    * first patch and streams the rest.
    */
-  async load(props: Record<string, string | undefined>): Promise<void> {
+  async load(props: Record<string, unknown>): Promise<void> {
     await this.#runLoad(props);
   }
 
@@ -458,7 +463,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * soft-nav); one thrown after is mid-stream — ignored, with a server-side log
    * (redirect before the first patch to navigate; per-URL denies belong in `guard`).
    */
-  async loadForRender(props: Record<string, string | undefined>): Promise<void> {
+  async loadForRender(props: Record<string, unknown>): Promise<void> {
     if (!this.#def.load || this.#disposed) return;
     const gate = makeDeferred<void>();
     const runId = this.#loadRunId + 1; // #runLoad claims exactly this tag
@@ -485,7 +490,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     await gate.promise;
   }
 
-  async #runLoad(props: Record<string, string | undefined>): Promise<void> {
+  async #runLoad(props: Record<string, unknown>): Promise<void> {
     const loader = this.#def.load;
     if (!loader || this.#disposed) return;
 
@@ -510,7 +515,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     };
 
     try {
-      await loader({ params: this.#params, props }, ctx);
+      await loader({ params: this.#params, props: props as PropsRecord }, ctx);
       if (runId === this.#loadRunId) await this.#flushChunk();
     } catch (e) {
       // Only the current run reacts — a superseded run (newer URL claimed the

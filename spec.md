@@ -137,7 +137,7 @@ File-based with codegen; wouter under the hood; URL is identity.
   - **`load(({ params, props }, ctx) => void)`** — async. The single place URL-dependent data loads. Runs after `setup` and on **every URL change**. First arg is the whole URL (`params` = path, `props` = the URL query record — a page's query string is its props); writes **page state** via `ctx.patchState`; `ctx.session` is read-only. Loading/errors are ordinary state — no ack. **Latest-wins**: a newer invocation aborts the prior's `ctx.signal` and drops its late flushes. Pass `ctx.signal` to `fetch`. `throw redirect` to deny. The URL is the query key → filtering/pagination are shareable, bookmarkable, back-button-correct, reproducible on cold wake.
 - **Navigation — three tiers, two verbs.** `nav.patch(props)` changes props (the URL query) only (tier 1): reruns `guard`+`load`, no `setup`, **state preserved** (keepPreviousData + optimistic survive). `nav.navigate(...)` changes the path: **same route pattern** (tier 2) reruns `setup`+`guard`+`load` over the **reused connection** (soft reload — new instance, fresh state/subscriptions, but the SSE + app shell survive; the page component is keyed by path id so its local state resets); **different route** (tier 3) swaps the component. The framework picks tier 2 vs 3 by matched pattern; userland only calls `patch`/`navigate`.
 - **Path vs search is a continuity knob**: search change (tier 1) preserves state (keepPreviousData); path change (tier 2/3) resets to skeleton and swaps subscriptions. Model a continuity stepper as `?id=`, a clean switch as `/…/$id`.
-- Search params untyped in v1 (`Record<string, string | undefined>`)
+- **Props typing** — untyped by default (`Record<string, string | undefined>`, the raw query record). Declare a schema with `live(pattern, propsSchema?)` (ADR 0002) and `guard`/`load` receive **validated, decoded** props: the URL codec is per-value try-`JSON.parse`, else raw string, so `?limit=20` arrives as the number `20` while `?filter=done` stays `"done"` — the ambiguous cases (`"20"`, `"true"`) round-trip because the writer quotes them. Decode + validate happen on the page GET **before** `guard`, so untrusted input never reaches userland unvalidated (a schema violation → 422); the codec is applied **only** when a schema is declared (schema-less routes keep raw strings)
 - Wouter unexported; public surface = `Link`, `nav`
 
 ## 8. Pubsub (Multiplayer)
@@ -190,7 +190,6 @@ Connections are disposable; state is not. SSE default, WS opt-in.
 Deliberately not covered by this spec; the seams below keep each addable later without a rewrite.
 
 - Nested/sibling live objects + layouts (requires nested live semantics)
-- Typed search params (per-route schema into `Register`, `nav.patch`, `Link`)
 - Transparent id aliasing (wire rewriting) if `keyOf` proves insufficient
 - Devtools time-travel (patch log makes it cheap)
 - Presence recipe (userland, ~20 lines)

@@ -8,6 +8,7 @@
 import { randomBytes } from "node:crypto";
 import {
   decodeBatch,
+  decodeProps,
   defaultDiagnosticSink,
   type Envelope,
   isDev,
@@ -24,8 +25,11 @@ import {
   type RpxdDiagnosticSink,
   runPipeline,
   type Stage,
+  type StandardSchemaV1,
   type StorageAdapter,
   TokenBucket,
+  ValidationError,
+  validateInput,
 } from "@rpxd/core";
 import { readSid, SID_COOKIE, signSessionId, timingSafeEqualStr } from "./cookie.ts";
 import { matchHttpRoute, matchRoute } from "./match.ts";
@@ -34,8 +38,16 @@ import { type AllowedOrigins, originAllowed } from "./origin.ts";
 /** One registered route: URL path literal + live definition. */
 export interface RouteRegistration {
   path: string;
-  // biome-ignore lint/suspicious/noExplicitAny: the handler hosts routes of any state shape
-  def: LiveDefinition<any, any, any>;
+  // biome-ignore lint/suspicious/noExplicitAny: the handler hosts routes of any state/props shape
+  def: LiveDefinition<any, any, any, any>;
+  /**
+   * The props schema declared via `live(pattern, propsSchema?)` (ADR 0002),
+   * carried through from `LiveRoute.props`. When present, the page GET path
+   * decodes the `?query` string ({@link decodeProps}) and validates it against
+   * this schema **before** `guard`+`load` — `?limit=20` reaches the loader as
+   * the number `20`. When absent, props stay the raw string record (back-compat).
+   */
+  props?: StandardSchemaV1<unknown, unknown>;
 }
 
 /** One registered HTTP route (`route()`, the routes & auth guide): path + method handlers. */
@@ -48,7 +60,12 @@ export interface HttpRouteRegistration {
 export interface RenderContext {
   path: string;
   params: Record<string, string>;
-  search: Record<string, string | undefined>;
+  /**
+   * The props record for this load — the raw `?query` string values, or the
+   * decoded+validated props (numbers, booleans, objects) when the route
+   * declares a props schema (ADR 0002 §3). Same record the loader saw.
+   */
+  search: Record<string, unknown>;
   state: unknown;
   session: unknown;
   seq: number;
@@ -635,7 +652,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   async function reconcileUrl(
     def: RouteRegistration["def"],
     instance: InstanceEntry["instance"],
-    props: Record<string, string | undefined>,
+    props: Record<string, unknown>,
   ): Promise<void> {
     try {
       if (def.guard) await instance.authorize(props); // deny → throw redirect → 302
@@ -662,7 +679,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     def: RouteRegistration["def"],
     params: Record<string, string>,
     session: unknown,
-    props: Record<string, string | undefined>,
+    props: Record<string, unknown>,
   ): Promise<void> {
     const guard = def.guard;
     if (!guard) return;
@@ -682,7 +699,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     sessionData: unknown,
     route: RouteRegistration,
     match: { path: string; params: Record<string, string> },
-    search: Record<string, string | undefined>,
+    search: Record<string, unknown>,
   ): Promise<InstanceEntry["instance"]> {
     if (route.def.guard) {
       await runGuard(route.def, match.params, sessionData, search); // deny → throw, nothing built
@@ -713,11 +730,46 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     return instance;
   }
 
+  /**
+   * Resolve a page GET's `?query` string into the props record the loader sees
+   * (ADR 0002 §3). When the matched route declares a props schema, the query is
+   * decoded (per-value try-`JSON.parse`, {@link decodeProps}) and validated
+   * against it — `?limit=20` becomes the number `20` — **before** any mount, so
+   * untrusted input never reaches `guard`/`load` unvalidated and an invalid
+   * value throws {@link ValidationError} (mapped to 422) with nothing built. A
+   * schema-less route keeps the raw string record, byte-identical to pre-ADR
+   * behavior (last value wins on a repeated key, matching `mountInstance`).
+   */
+  async function resolveGetProps(
+    pathname: string,
+    query: URLSearchParams,
+  ): Promise<Record<string, unknown>> {
+    const match = matchRoute(
+      opts.routes.map((r) => r.path),
+      pathname,
+    );
+    const schema = match ? opts.routes.find((r) => r.path === match.path)?.props : undefined;
+    if (!schema) {
+      const raw: Record<string, string> = {};
+      query.forEach((v, k) => {
+        raw[k] = v;
+      });
+      return raw;
+    }
+    // Validated output flows onward as props; a violation throws before mount.
+    // A props schema is a record schema, so its output is a props record.
+    return (await validateInput(
+      schema,
+      decodeProps(query),
+      `props ${match?.path ?? pathname}`,
+    )) as Record<string, unknown>;
+  }
+
   async function mountInstance(
     sid: string,
     sessionData: unknown,
     pathname: string,
-    search: Record<string, string | undefined>,
+    search: Record<string, unknown>,
   ): Promise<InstanceEntry> {
     const entries = entriesFor(sid);
     const existing = entries.get(pathname);
@@ -1293,11 +1345,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     }
     if (req.method === "GET") {
       // SSR (§12): setup+guard+load run during SSR; the connection adopts the warm
-      // instance via the attach token.
-      const search: Record<string, string> = {};
-      url.searchParams.forEach((v, k) => {
-        search[k] = v;
-      });
+      // instance via the attach token. Props codec (ADR 0002 §3): a schema'd
+      // route decodes + validates the query into typed props here, before the
+      // mount, so guard/load never see unvalidated input (a violation → 422).
+      const search = await resolveGetProps(url.pathname, url.searchParams);
       const entry = await mountInstance(sid, sessionData, url.pathname, search);
       const renderCtx: RenderContext = {
         path: entry.path,
@@ -1335,6 +1386,21 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         sid,
         isNew,
       );
+    }
+    // Invalid props on a page GET (ADR 0002 §3): the decoded `?query` failed the
+    // route's props schema. It's a well-formed request carrying unprocessable
+    // input — a 4xx client error, not a crash — so answer 422 (nothing was
+    // built; validation ran before guard/load). A `request`/`props-invalid`
+    // diagnostic records it; the body stays generic so the schema's issue
+    // messages never leak (#9), matching the auth-deny surface.
+    if (err instanceof ValidationError) {
+      emit({
+        category: "request",
+        type: "props-invalid",
+        level: "warn",
+        detail: { path: url.pathname },
+      });
+      return withSession(new Response("invalid props", { status: 422 }), sid, isNew);
     }
     // The session is at its instance cap with every slot subscribed (C) —
     // shed load like the throttle does, on both the control and GET paths.
