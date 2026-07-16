@@ -292,7 +292,7 @@ describe("LiveConnection (§11, §12)", () => {
     expect(requests[0]?.body).toEqual({
       type: "mount",
       path: "/org/1/board",
-      search: { filter: "all" },
+      props: { filter: "all" },
     });
     expect((FakeEventSource.instances.at(-1) as FakeEventSource).url).toMatch(
       /^\/__rpxd\/stream\?stream=.+/,

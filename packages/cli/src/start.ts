@@ -19,10 +19,12 @@ import {
   type ServerAdapter,
   wsTransport,
 } from "@rpxd/server-bun";
+import { assertLiveModule } from "@rpxd/vite-plugin";
 import type { FunctionComponent } from "react";
 import {
   applyConfigOverrides,
   type ConfigOverrides,
+  configSlotRegistrations,
   instanceHandlerOptions,
   propagateSessionSecretEnv,
   type RpxdConfig,
@@ -173,6 +175,27 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     httpRoutes.push({ path, def: (await load()).default.def });
   }
 
+  // Mount-only slots (ADR 0002 item 6): the server bundle re-exports the
+  // scan's `.rpxd/live.gen.ts` importers. `assertLiveModule` fails a scan
+  // false-positive at boot (not first mount); the config `slots` escape hatch
+  // adds library-shipped objects the scan can't see. Both feed the same
+  // control-plane mount union — the handler asserts pattern uniqueness across it.
+  // (Slots aren't SSR-served, so their defs load from the ssr bundle even under
+  // rsc; render-driven SSR discovery for slots is a documented follow-up.)
+  const { liveModules } = serverEntryModule as unknown as {
+    liveModules?: Record<string, () => Promise<unknown>>;
+  };
+  const slots: RouteRegistration[] = [];
+  for (const [pattern, load] of Object.entries(liveModules ?? {})) {
+    const mod = assertLiveModule(await load(), pattern);
+    slots.push({
+      path: mod.path,
+      def: mod.def as RouteRegistration["def"],
+      props: mod.props as RouteRegistration["props"],
+    });
+  }
+  slots.push(...configSlotRegistrations(config));
+
   // Hashed entry + css from the client manifest.
   const manifest = JSON.parse(
     readFileSync(join(clientDir, ".vite/manifest.json"), "utf-8"),
@@ -186,6 +209,7 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
 
   const handler = createRpxdHandler({
     routes,
+    slots,
     httpRoutes,
     storage: config.storage,
     authenticate: config.session?.authenticate,

@@ -21,13 +21,21 @@ import {
   type RouteRegistration,
   wsTransport,
 } from "@rpxd/server-bun";
-import { fileToRoute, rpxd as rpxdVitePlugin, runCodegen, scanRoutes } from "@rpxd/vite-plugin";
+import {
+  assertLiveModule,
+  fileToRoute,
+  rpxd as rpxdVitePlugin,
+  runCodegen,
+  scanLiveModules,
+  scanRoutes,
+} from "@rpxd/vite-plugin";
 import rscFlightPlugin from "@vitejs/plugin-rsc";
 import { createServerModuleRunner, createServer as createViteServer } from "vite";
 import { WebSocketServer } from "ws";
 import {
   applyConfigOverrides,
   type ConfigOverrides,
+  configSlotRegistrations,
   instanceHandlerOptions,
   propagateSessionSecretEnv,
   type RpxdConfig,
@@ -250,10 +258,29 @@ export async function createDevServer(
   }
 
   const routesDir = join(root, "routes");
+
+  // Mount-only slots (ADR 0002 item 6): every exported live() object outside
+  // the routes dir, discovered by the same syntactic scan that writes
+  // `.rpxd/live.gen.ts`, loaded through the SSR graph so their real handlers run
+  // server-side (and reducer edits flow through Vite invalidation). The config
+  // `slots` escape hatch adds library objects the scan can't see. Both feed the
+  // control-plane mount union; the handler asserts pattern uniqueness across it.
+  const slots: RouteRegistration[] = [];
+  for (const entry of scanLiveModules(root, { routesDir, outDir: join(root, ".rpxd") })) {
+    const mod = assertLiveModule(await vite.ssrLoadModule(`/${entry.file}`), entry.path);
+    slots.push({
+      path: mod.path,
+      def: mod.def as RouteRegistration["def"],
+      props: mod.props as RouteRegistration["props"],
+    });
+  }
+  slots.push(...configSlotRegistrations(config));
+
   // The SSR runtime renders in-graph (§12) — same graph the routes load in.
   const ssrRuntime = await loadSsrRuntime(vite);
   const handler = createRpxdHandler({
     routes,
+    slots,
     httpRoutes,
     storage: config.storage,
     authenticate: config.session?.authenticate,

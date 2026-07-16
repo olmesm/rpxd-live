@@ -102,14 +102,21 @@ export interface ResyncControl {
 }
 
 /**
- * Cold / same-route mount (§7): match `path`, run guard→setup→load. An optional
+ * Cold / same-route / slot mount (§7, ADR 0002 item 6): match `path` against the
+ * union of routed pages and mount-only slots, run guard→setup→load. An optional
  * `stream` id joins the fresh instance to an already-open transport (tier-2 soft
  * reload); `mountId` correlates a WS mount that denies before binding (#65).
+ *
+ * A page's URL query IS its props record, so the mounted payload is `props`
+ * (ADR 0002 item 6, unifying the vocabulary with the {@link UrlControl} message).
+ * Unlike the URL query codec, control-plane `props` is already a JSON value model
+ * — the values arrive typed, not as raw strings — and is validated against the
+ * matched registration's props schema (when declared) **before** `guard`.
  */
 export interface MountControl {
   type: "mount";
   path: string;
-  search: Record<string, string>;
+  props: Record<string, unknown>;
   stream?: string;
   mountId?: string;
 }

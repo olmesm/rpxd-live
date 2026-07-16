@@ -3,7 +3,20 @@
  */
 import { randomBytes } from "node:crypto";
 import { isDev, type RateLimit, type StorageAdapter } from "@rpxd/core";
-import type { RpxdDiagnosticSink, RpxdHandlerOptions } from "@rpxd/server-bun";
+import type { RouteRegistration, RpxdDiagnosticSink, RpxdHandlerOptions } from "@rpxd/server-bun";
+
+/**
+ * A `live()` object as the {@link RpxdConfig.slots} escape hatch accepts it — the
+ * structural shape every `live(pattern, propsSchema?).…render()` result carries
+ * (ADR 0002). Kept structural (not the full `LiveRoute` generic) so any concrete
+ * live object is assignable without generic-variance friction.
+ */
+export interface SlotModule {
+  readonly $live: true;
+  readonly path: string;
+  readonly def: RouteRegistration["def"];
+  readonly props?: RouteRegistration["props"];
+}
 
 /** Transport selection (§11): SSE default, WS opt-in. */
 export interface TransportConfig {
@@ -82,6 +95,21 @@ export interface RpxdConfig {
    * ```
    */
   allowedOrigins?: readonly string[] | ((origin: string) => boolean);
+  /**
+   * Mount-only live objects the file scan can't see (ADR 0002 item 6, Decision
+   * 3): library-shipped slots, or any `live()` object you want registered
+   * without a source file in the project tree. **Additive** with the automatic
+   * `.rpxd/live.gen.ts` scan — these registrations join the same control-plane
+   * mount union as scanned slots and routed pages. Each pattern must still be
+   * unique across the whole union (the handler asserts this at boot).
+   *
+   * @example
+   * ```ts
+   * import chatSlot from "@acme/chat-slot"; // a shipped live() object
+   * export default defineConfig({ slots: [chatSlot] });
+   * ```
+   */
+  slots?: readonly SlotModule[];
   /** RSC fields flag (§16). Default false — v1 is complete without it. */
   rsc?: boolean;
   /** Default per-rpc token bucket (§10). */
@@ -253,4 +281,21 @@ export function instanceHandlerOptions(
   | "onDiagnostic"
 > {
   return { ...config.instances, onDiagnostic: config.onDiagnostic };
+}
+
+/**
+ * Map the config's {@link RpxdConfig.slots} escape-hatch live objects onto
+ * {@link RouteRegistration}s for the control-plane mount union (ADR 0002 item
+ * 6). Pure — a thin adapter so `startApp`/`createDevServer` can concatenate
+ * these with the scanned `.rpxd/live.gen.ts` slots before handing everything to
+ * `createRpxdHandler`. Returns `[]` when no config slots are declared.
+ *
+ * @example
+ * ```ts
+ * configSlotRegistrations({ slots: [chatSlot] });
+ * // → [{ path: "/chat", def: chatSlot.def, props: chatSlot.props }]
+ * ```
+ */
+export function configSlotRegistrations(config: Pick<RpxdConfig, "slots">): RouteRegistration[] {
+  return (config.slots ?? []).map((s) => ({ path: s.path, def: s.def, props: s.props }));
 }

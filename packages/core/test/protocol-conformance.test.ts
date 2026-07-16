@@ -257,13 +257,26 @@ describe("wire-protocol conformance (the wire protocol guide)", () => {
     } satisfies UrlControl;
     void legacy;
 
-    // The `mount` control still carries `search` (renamed in ADR 0002 item 6,
-    // not item 1) — pinned so the two renames stay independent.
+    // The `mount` control now carries `props` too (renamed search → props in
+    // ADR 0002 item 6, unifying the vocabulary with the `url` message). Unlike
+    // `url`'s raw-string record, mount `props` is a JSON value model.
     const mountControl = {
       type: "mount",
       path: "/board",
+      props: { filter: "done", limit: 20 },
+    } satisfies Control;
+    expect(mountControl.props).toEqual({ filter: "done", limit: 20 });
+
+    // Negative: the OLD field name no longer conforms on `mount` either.
+    // `props` is present (so the only defect is the excess property), and
+    // `search` is not a field on the `mount` control message.
+    const legacyMount = {
+      type: "mount",
+      path: "/board",
+      props: { filter: "done" },
+      // @ts-expect-error the `mount` control carries `props`, not `search` (ADR 0002 item 6)
       search: { filter: "done" },
     } satisfies Control;
-    expect(mountControl.type).toBe("mount");
+    void legacyMount;
   });
 });

@@ -51,7 +51,7 @@ describe("racing URL reconciles with a slow guard deny (§10)", () => {
     };
     const handler = createRpxdHandler({ routes: [{ path: "/u", def }], cookie: { sign: false } }); // fixed literal cookie above needs a stable, unsigned sid
 
-    const mountRes = await control(handler, { type: "mount", path: "/u", search: {} });
+    const mountRes = await control(handler, { type: "mount", path: "/u", props: {} });
     const { instance } = (await mountRes.json()) as { instance: string };
 
     // Request A: the denied URL — its guard parks mid-deny.

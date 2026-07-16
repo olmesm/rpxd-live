@@ -343,7 +343,9 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       // mountId correlates a deny that has no instance to answer on (#65).
       const mountId = `m${runId}`;
       this.#pendingMountId = mountId;
-      this.#socket.send(JSON.stringify({ type: "mount", path, search, mountId }));
+      // A page's URL query IS its props record — the mount control carries
+      // `props` (ADR 0002 item 6), unified with the `url` message's vocabulary.
+      this.#socket.send(JSON.stringify({ type: "mount", path, props: search, mountId }));
     } else {
       // SSE: the server joined the new instance to this stream by id at mount;
       // resync *after* the swap so the fresh store receives its full snapshot.
@@ -360,7 +362,8 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     const res = await this.#fetch()(`${this.#opts.base ?? ""}/__rpxd/control`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "mount", path, search, stream: this.#streamId }),
+      // The mount control carries `props` (ADR 0002 item 6).
+      body: JSON.stringify({ type: "mount", path, props: search, stream: this.#streamId }),
       credentials: "same-origin",
     });
     if (!res.ok) throw new Error(`remount failed: ${res.status}`);
@@ -462,7 +465,8 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     const res = await fetchImpl(`${opts.base ?? ""}/__rpxd/control`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "mount", path, search }),
+      // The mount control carries `props` (ADR 0002 item 6).
+      body: JSON.stringify({ type: "mount", path, props: search }),
       credentials: "same-origin",
     });
     if (!res.ok) throw new Error(`mount failed: ${res.status}`);

@@ -141,7 +141,7 @@ query params (below).
 ```ts
 type Control =
   | { type: "resync"; instance: string }                                        // gap recovery / late attach
-  | { type: "mount"; path: string; search: Record<string, string>; stream?: string; mountId?: string } // cold / same-route mount
+  | { type: "mount"; path: string; props: Record<string, unknown>; stream?: string; mountId?: string } // cold / same-route / slot mount
   | { type: "url"; instance: string; props: Record<string, string> }            // nav.patch → guard + load
   | { type: "release"; instance: string; stream: string };                      // same-route nav abandons an instance
 ```
@@ -153,10 +153,18 @@ type Control =
   has moved on) falls through to an unconditional `full`.
 - `resync` → the server pushes a `full` at the current `seq`. It carries no seq
   and requests no comparison: the server always answers with a full snapshot.
-- `mount` returns `{ instance, seq, path, params }` (or `{ redirect }` on a
-  `setup`/`guard` deny). Its optional `stream` id and the `release` message drive
-  a **soft reload**: a same-route path change joins a fresh instance to the
-  open stream and releases the old one, so the transport survives.
+- `mount` matches `path` against the **union** of routed pages and mount-only
+  slots (ADR 0002 item 6) and returns `{ instance, seq, path, params }` (or
+  `{ redirect }` on a `setup`/`guard` deny). Its `props` payload is a JSON value
+  model (values arrive already typed, not as raw query strings) validated against
+  the matched registration's props schema **before** `guard` — an invalid record
+  is a `422` (SSE control response) or an `error` envelope (WS) and nothing is
+  built. Its optional `stream` id and the `release` message drive a **soft
+  reload**: a same-route path change joins a fresh instance to the open stream
+  and releases the old one, so the transport survives. Mounting a routed page's
+  own pattern **shares** the session's existing instance for that pattern (the
+  two-tabs semantics) rather than building a second one. A pattern registered as
+  a mount-only slot is **not** served over a browser GET — that is a `404`.
 - Over WS, `mount` has no response slot — the outcome arrives as envelopes on
   the socket. A mount that denies or fails before binding an instance answers
   with `instance: ""`, which the client's bound-instance filter can never

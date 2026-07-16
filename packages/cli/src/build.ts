@@ -39,6 +39,10 @@ function rpxdServerEntryPlugin(): Plugin {
           `export { routeTree, routeModules, rootModule, notFoundModule, errorModule } from "/.rpxd/routes.gen.ts";`,
           // Server-only HTTP routes live in a separate module (never client-imported).
           `export { routeHandlers } from "/.rpxd/handlers.gen.ts";`,
+          // Server-only live()-mount union (ADR 0002 item 6) — the control-plane
+          // slot registry; never client-imported (keeps server-only chain deps off
+          // the client, mirroring handlers.gen.ts).
+          `export { liveModules } from "/.rpxd/live.gen.ts";`,
           `export * from "${SSR_RUNTIME_URL}";`,
         ].join("\n");
       }

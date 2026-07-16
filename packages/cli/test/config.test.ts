@@ -1,5 +1,31 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { applyConfigOverrides, propagateSessionSecretEnv, type RpxdConfig } from "../src/config.ts";
+import {
+  applyConfigOverrides,
+  configSlotRegistrations,
+  propagateSessionSecretEnv,
+  type RpxdConfig,
+  type SlotModule,
+} from "../src/config.ts";
+
+describe("configSlotRegistrations (ADR 0002 item 6 — slots escape hatch)", () => {
+  const slot = (path: string): SlotModule => ({
+    $live: true,
+    path,
+    def: { setup: () => ({}) } as SlotModule["def"],
+    props: undefined,
+  });
+
+  it("maps config slot live objects to mount registrations (path/def/props)", () => {
+    const chat = slot("/chat");
+    const regs = configSlotRegistrations({ slots: [chat] });
+    expect(regs).toEqual([{ path: "/chat", def: chat.def, props: undefined }]);
+  });
+
+  it("returns [] when no slots are configured", () => {
+    expect(configSlotRegistrations({})).toEqual([]);
+    expect(configSlotRegistrations({ slots: [] })).toEqual([]);
+  });
+});
 
 describe("applyConfigOverrides (CLI --transport / --rsc)", () => {
   it("overrides transport and rsc", () => {

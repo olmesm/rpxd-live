@@ -90,7 +90,32 @@ type SecurityDiagnosticType =
 
 /** Options for {@link createRpxdHandler}. */
 export interface RpxdHandlerOptions {
+  /**
+   * Router-served live objects: the pages a browser GET / SSR mounts and the
+   * client router navigates. Only these are served over a top-level `GET` (§12);
+   * the control-plane `mount` message also matches them (a routed page is a
+   * mountable slot by construction — Decision 2).
+   */
   routes: RouteRegistration[];
+  /**
+   * Mount-only live objects (ADR 0002 item 6): exported `live()` objects the
+   * control-plane `mount` message can address but a browser GET / SSR **cannot**
+   * — requesting a slot pattern as a page is a `404`. The control plane matches
+   * `mount` against the **union** of {@link routes} and these, so a slot flows
+   * through the exact same warm-reuse / session-cap / eviction path as a page;
+   * only the address space differs. Every pattern must be unique across the
+   * union (a page and a slot claiming one pattern is a boot-time error) — the
+   * scan/config wiring enforces this, and {@link createRpxdHandler} asserts it.
+   *
+   * @example
+   * ```ts
+   * createRpxdHandler({
+   *   routes: [{ path: "/org/$orgId/board", def: boardDef }],
+   *   slots: [{ path: "/chat", def: chatDef, props: chatPropsSchema }],
+   * });
+   * ```
+   */
+  slots?: RouteRegistration[];
   /** Server-only HTTP routes (`route()`, the routes & auth guide), matched before SSR. */
   httpRoutes?: HttpRouteRegistration[];
   storage?: StorageAdapter;
@@ -422,6 +447,26 @@ export function encodeSse(env: Envelope): string {
  * ```
  */
 export function createRpxdHandler(opts: RpxdHandlerOptions) {
+  // Union uniqueness (ADR 0002 Decision 2): the control plane matches `mount`
+  // against routes ∪ slots by pattern, so a pattern claimed by two *different*
+  // live objects is ambiguous — refuse to start rather than silently pick one.
+  // Same-pattern-same-object (the identical registration in both lists) is
+  // instance sharing, not a conflict, so only distinct objects collide. Fail
+  // closed at construction, style-matched to the session-secret refusal below.
+  {
+    const byPath = new Map<string, RouteRegistration>();
+    for (const reg of opts.slots ? [...opts.routes, ...opts.slots] : opts.routes) {
+      const prior = byPath.get(reg.path);
+      if (prior && prior !== reg) {
+        throw new Error(
+          `rpxd: refusing to start — duplicate live() pattern ${JSON.stringify(reg.path)} ` +
+            "registered by two different live objects across routes ∪ slots. Each pattern " +
+            "must be unique across the control-plane mount union (ADR 0002 Decision 2).",
+        );
+      }
+      byPath.set(reg.path, reg);
+    }
+  }
   const storage = opts.storage ?? memory();
   // One wrapped sink (#73) for the handler's own diagnostics, threaded into
   // every instance and the storage bus so the whole runtime reports through it.
@@ -639,6 +684,27 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     return map;
   }
 
+  /**
+   * The registrations the control plane can mount (ADR 0002 item 6): routed
+   * pages ∪ mount-only slots. Recomputed per call so a reducer-HMR
+   * {@link updateRoute} push into `opts.routes` is reflected. GET/SSR never uses
+   * this (it passes `opts.routes` alone), so a slot pattern stays unservable as
+   * a page. Returns `opts.routes` verbatim when there are no slots (the common
+   * case) to avoid an allocation.
+   */
+  function mountable(): RouteRegistration[] {
+    return opts.slots && opts.slots.length > 0 ? [...opts.routes, ...opts.slots] : opts.routes;
+  }
+
+  /**
+   * Find the registration a live instance was mounted from, across the mount
+   * union (ADR 0002 item 6) — a slot instance's def is in `opts.slots`, not
+   * `opts.routes`, so a runtime `url` reconcile must look in both.
+   */
+  function registrationFor(path: string): RouteRegistration | undefined {
+    return mountable().find((r) => r.path === path);
+  }
+
   // Reconcile an instance to a URL (§7) — `guard` then `load`. Runs on every
   // page load, fresh or warm: the URL is the query key, so a full-page load (or
   // Link mount) must reconcile to its props, not just the first `setup`.
@@ -765,11 +831,45 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     )) as Record<string, unknown>;
   }
 
+  /**
+   * Resolve a control-plane `mount`'s `props` into the record `guard`+`load`
+   * see (ADR 0002 item 6). Unlike a page GET, control-plane props are already a
+   * JSON value model (values arrive typed off the wire — no {@link decodeProps}),
+   * so when the matched registration declares a props schema this only validates
+   * `raw` against it — **before** any mount, so untrusted input never reaches
+   * `guard`/`load` and an invalid value throws {@link ValidationError} (mapped to
+   * 422 over HTTP control, an error envelope over WS) with nothing built. A
+   * schema-less registration passes `raw` through verbatim (back-compat).
+   * `registrations` is the mount union so a slot's schema is found too.
+   */
+  async function resolveMountProps(
+    pathname: string,
+    raw: Record<string, unknown>,
+    registrations: RouteRegistration[],
+  ): Promise<Record<string, unknown>> {
+    const match = matchRoute(
+      registrations.map((r) => r.path),
+      pathname,
+    );
+    const schema = match ? registrations.find((r) => r.path === match.path)?.props : undefined;
+    if (!schema) return raw;
+    return (await validateInput(schema, raw, `props ${match?.path ?? pathname}`)) as Record<
+      string,
+      unknown
+    >;
+  }
+
   async function mountInstance(
     sid: string,
     sessionData: unknown,
     pathname: string,
     search: Record<string, unknown>,
+    // The registrations to match `pathname` against (ADR 0002 item 6): GET/SSR
+    // passes `opts.routes` (pages only, so a slot pattern 404s as a page); the
+    // control plane passes {@link mountable} (routes ∪ slots). Everything else —
+    // warm reuse, session cap, raced-twin dispose, eviction — is identical, so
+    // the two address spaces share one lifecycle (Decision 2, stop-signal #1).
+    registrations: RouteRegistration[] = opts.routes,
   ): Promise<InstanceEntry> {
     const entries = entriesFor(sid);
     const existing = entries.get(pathname);
@@ -784,8 +884,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         // Warm reuse counts as recent use — bump it to most-recent in the LRU
         // (#61) so a live-but-un-adopted instance isn't shed before a colder one.
         if (unattached.delete(existing)) unattached.add(existing);
-        // Reconcile the warm instance to this load's URL (§7).
-        const route = opts.routes.find((r) => r.path === existing.path);
+        // Reconcile the warm instance to this load's URL (§7). Look across the
+        // caller's registration set so a slot instance finds its own def.
+        const route = registrations.find((r) => r.path === existing.path);
         if (route) await reconcileUrl(route.def, existing.instance, search);
         return existing;
       }
@@ -817,11 +918,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     }
 
     const match = matchRoute(
-      opts.routes.map((r) => r.path),
+      registrations.map((r) => r.path),
       pathname,
     );
     if (!match) throw new NotFoundError(pathname);
-    const route = opts.routes.find((r) => r.path === match.path) as RouteRegistration;
+    const route = registrations.find((r) => r.path === match.path) as RouteRegistration;
 
     // Guard → setup → load, with cleanup on throw (#8). A deny or loader redirect
     // throws out before the instance is registered below.
@@ -1116,19 +1217,27 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   // packages/core/test/protocol-conformance.test.ts. Change all three together.
   async function handleControl(req: Request, sid: string, sessionData: unknown) {
     const msg = (await readJsonCapped(req, maxBodyBytes)) as
-      | { type: "mount"; path: string; search?: Record<string, string>; stream?: string }
+      | { type: "mount"; path: string; props?: Record<string, unknown>; stream?: string }
       | { type: "resync"; instance: string }
       | { type: "release"; instance: string; stream: string }
       | { type: "url"; instance: string; props: Record<string, string> };
 
     if (msg.type === "mount") {
       let entry: InstanceEntry;
+      // The control plane mounts over the union (routes ∪ slots, ADR 0002 item 6).
+      const registrations = mountable();
       try {
-        entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
+        // Validate props against the matched registration's schema BEFORE the
+        // mount, so untrusted input never reaches guard/load (a violation throws
+        // ValidationError → 422 via the pipeline's error stage, nothing built).
+        const props = await resolveMountProps(msg.path, msg.props ?? {}, registrations);
+        entry = await mountInstance(sid, sessionData, msg.path, props, registrations);
       } catch (e) {
         // `setup`/`guard` threw redirect() (§10): tell the client to navigate rather
         // than instantiate. A GET load handles this as a 302 (see fetch catch).
         if (isRedirect(e)) return Response.json({ redirect: e.location });
+        // ValidationError / NotFoundError / SessionCapError propagate to
+        // `mapRequestError` (422 / 404 / 429) — nothing was built.
         throw e;
       }
       // Tier-2 soft reload (§7): a `stream` id joins the fresh instance to that
@@ -1154,8 +1263,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       return new Response(null, { status: 204 });
     }
     // Runtime URL change (nav.patch, §7): reconcile guard+load. A guard deny
-    // → redirect JSON for the client to soft-nav (§10).
-    const route = opts.routes.find((r) => r.path === entry.path);
+    // → redirect JSON for the client to soft-nav (§10). Look across the mount
+    // union so a slot instance finds its own def (ADR 0002 item 6).
+    const route = registrationFor(entry.path);
     try {
       if (route) await reconcileUrl(route.def, entry.instance, msg.props);
     } catch (e) {
@@ -1344,6 +1454,19 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       }
     }
     if (req.method === "GET") {
+      // GET serves routed pages ONLY (ADR 0002 item 6): a mount-only slot
+      // pattern is not page-addressable. Reject it here — over `opts.routes`,
+      // not the mount union — BEFORE `mountInstance`, so a slot already warmed
+      // via the control plane (keyed by this pathname) can't be adopted by
+      // warm-reuse and served as a page. A real route falls through unchanged.
+      if (
+        !matchRoute(
+          opts.routes.map((r) => r.path),
+          url.pathname,
+        )
+      ) {
+        throw new NotFoundError(url.pathname);
+      }
       // SSR (§12): setup+guard+load run during SSR; the connection adopts the warm
       // instance via the attach token. Props codec (ADR 0002 §3): a schema'd
       // route decodes + validates the query into typed props here, before the
@@ -1480,8 +1603,8 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                 type: "resync" | "url" | "mount" | "release";
                 instance?: string;
                 path?: string;
-                search?: Record<string, string>;
-                props?: Record<string, string>;
+                /** `mount` props (ADR 0002 item 6) — a JSON value model; `url` props are raw strings. */
+                props?: Record<string, unknown>;
                 /** Client correlation id for `mount` (#65) — echoed on the outcome envelope. */
                 mountId?: string;
               };
@@ -1511,8 +1634,14 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           if (msg.type === "mount" && msg.path) {
             // The socket *is* the stream (§11): join the mount to it directly.
             // `subscribeInstance` is idempotent, so a warm re-mount is a no-op.
+            // Mounts over WS match the same union as HTTP control (ADR 0002 item 6).
+            const registrations = mountable();
             try {
-              const entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
+              // Validate props against the matched registration's schema before
+              // the mount (untrusted) — a violation throws ValidationError,
+              // answered on the socket by the catch below (the WS surface).
+              const props = await resolveMountProps(msg.path, msg.props ?? {}, registrations);
+              const entry = await mountInstance(sid, sessionData, msg.path, props, registrations);
               subscribeInstance(entry);
             } catch (e) {
               // Answer denials on the socket (mirroring the `url` branch) —
@@ -1530,18 +1659,16 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                   redirect: e.location,
                   ...(mountId !== undefined && { mountId }),
                 });
-              } else if (e instanceof SessionCapError) {
-                send({
-                  seq: 0,
-                  instance: "",
-                  error: { name: e.name, message: e.message },
-                  ...(mountId !== undefined && { mountId }),
-                });
-              } else if (e instanceof NotFoundError) {
-                // #65 WS mount parity: mounting an unregistered path 404s over
-                // SSE/control (`handleControl` lets it propagate to the `fetch`
-                // catch); over WS it must answer the socket the same way rather
-                // than silently dying in the transport's generic catch.
+              } else if (
+                e instanceof SessionCapError ||
+                e instanceof NotFoundError ||
+                e instanceof ValidationError
+              ) {
+                // WS mount parity for the mount-time rejections that HTTP control
+                // answers as a status (429 / 404 / 422). Over WS there is no
+                // response slot, so answer the socket with an unbound
+                // (`instance: ""`) error envelope the client correlates by
+                // `mountId` (#65) — invalid props included (ADR 0002 item 6).
                 send({
                   seq: 0,
                   instance: "",
@@ -1566,8 +1693,9 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           if (msg.type === "resync") entry.instance.resync();
           if (msg.type === "url" && msg.props) {
             // Runtime URL change over WS (§7): reconcile guard+load; a guard deny
-            // → a redirect envelope for the client to soft-nav (§10).
-            const route = opts.routes.find((r) => r.path === entry.path);
+            // → a redirect envelope for the client to soft-nav (§10). Look across
+            // the mount union so a slot instance finds its own def (item 6).
+            const route = registrationFor(entry.path);
             try {
               if (route) await reconcileUrl(route.def, entry.instance, msg.props);
             } catch (e) {
