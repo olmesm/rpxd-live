@@ -13,6 +13,32 @@ import type { LiveConnection } from "./connection.ts";
 export type { Register, RegisteredPath } from "@rpxd/core";
 
 /**
+ * Fill a route pattern's `$param` segments from a params record — the shared
+ * segment-fill core behind {@link buildHref} and, in ADR 0002, a live object's
+ * instance identity (`<LiveSlot>`'s mount key). Values are `encodeURIComponent`'d
+ * per segment; a missing param throws. Makes no leading-slash assumption, so it
+ * fills both page paths (`/org/$id`) and any pattern a slot addresses.
+ *
+ * @example
+ * ```ts
+ * fillPattern("/org/$orgId/board", { orgId: "a/c me" }); // "/org/a%2Fc%20me/board"
+ * fillPattern("/chat/$room", { room: "main" });          // "/chat/main"
+ * ```
+ */
+export function fillPattern(pattern: string, params?: Record<string, string>): string {
+  return pattern
+    .split("/")
+    .map((seg) => {
+      if (!seg.startsWith("$")) return seg;
+      const value = params?.[seg.slice(1)];
+      if (value === undefined)
+        throw new Error(`Missing path param "${seg.slice(1)}" for ${pattern}`);
+      return encodeURIComponent(value);
+    })
+    .join("/");
+}
+
+/**
  * Build a concrete href from a route path literal + params + search.
  *
  * @example
@@ -26,22 +52,21 @@ export function buildHref(
   params?: Record<string, string>,
   search?: Record<string, string>,
 ): string {
-  const path = to
-    .split("/")
-    .map((seg) => {
-      if (!seg.startsWith("$")) return seg;
-      const value = params?.[seg.slice(1)];
-      if (value === undefined) throw new Error(`Missing path param "${seg.slice(1)}" for ${to}`);
-      return encodeURIComponent(value);
-    })
-    .join("/");
+  const path = fillPattern(to, params);
   const query = search ? new URLSearchParams(search).toString() : "";
   return query ? `${path}?${query}` : path;
 }
 
-const ConnectionContext = createContext<LiveConnection<unknown, Record<string, unknown>> | null>(
-  null,
-);
+/**
+ * Active-connection context (ADR 0002 item 9): the app shell installs the
+ * app-lifetime {@link LiveConnection} here via {@link RpxdProvider}. `useNav`
+ * and `<LiveSlot>` read it — the latter to `mountSlot` over the same stream.
+ * Internal seam; not part of the public export surface.
+ */
+export const ConnectionContext = createContext<LiveConnection<
+  unknown,
+  Record<string, unknown>
+> | null>(null);
 
 /**
  * Detect a search-only navigation (§7). Wouter's location is pathname-only,
