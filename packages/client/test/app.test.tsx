@@ -124,7 +124,8 @@ describe("LiveApp persistent region (ADR 0002 item 13)", () => {
 
     // The page below the layout remounted…
     expect(container.querySelector('[data-testid="page"]')?.textContent).toBe("PAGE-B");
-    expect(conn.remount).toHaveBeenCalledWith("/b", {}, expect.any(Object));
+    // pageRoute is schema-less, so the tier-2/3 gate is false (ADR 0002 §3).
+    expect(conn.remount).toHaveBeenCalledWith("/b", {}, expect.any(Object), false);
     // …but the layout did NOT remount, and its draft survived the page swap.
     expect(layoutMounts).toBe(1);
     expect(container.querySelector('[data-testid="draft-echo"]')?.textContent).toBe("hello");
@@ -147,11 +148,19 @@ describe("LiveApp persistent region (ADR 0002 item 13)", () => {
 });
 
 describe("useNav().patch URL/wire coherence (finding 3)", () => {
-  /** A connection that only records the props handed to `patchProps`. */
-  function recordingConn(): { conn: AnyConnection; patched: Record<string, unknown>[] } {
+  /**
+   * A connection that only records the props handed to `patchProps`. `hasSchema`
+   * selects the tier-1 codec gate (ADR 0002 §3): a schema'd route sends the
+   * JSON-value record verbatim; a schema-less one sends the URL's string form.
+   */
+  function recordingConn(hasSchema = true): {
+    conn: AnyConnection;
+    patched: Record<string, unknown>[];
+  } {
     const patched: Record<string, unknown>[] = [];
     const conn = {
       store: undefined,
+      hasPropsSchema: hasSchema,
       setRedirectSink: () => {},
       patchProps: (p: Record<string, unknown>) => patched.push(p),
     } as unknown as AnyConnection;
@@ -200,5 +209,28 @@ describe("useNav().patch URL/wire coherence (finding 3)", () => {
     // Wire keeps the string; the URL quotes it so `decodeProps` recovers "20", not 20.
     expect(patched).toEqual([{ v: "20" }]);
     expect(window.location.search).toContain(`v=${encodeURIComponent('"20"')}`);
+  });
+
+  it("SCHEMA-LESS: stringifies the wire record to the URL's string form (ADR pledge)", async () => {
+    // On a schema-less route the codec must NOT decode, so `nav.patch({ page: 2 })`
+    // must NOT put the number 2 on the wire — a schema-less server keeps raw
+    // strings, and a later GET of the resulting URL delivers "2". Sending the
+    // number would diverge wire from GET (the typeof heisenbug the ADR forbids).
+    window.history.replaceState(null, "", "/board");
+    const { conn, patched } = recordingConn(false);
+    await render(
+      <RpxdProvider connection={conn}>
+        <Patcher props={{ page: 2, filter: "done" }} />
+      </RpxdProvider>,
+    );
+    await act(async () => {
+      (container.querySelector('[data-testid="go"]') as HTMLButtonElement).click();
+    });
+    // Wire: the string form the URL round-tripped to (what a schema-less GET yields).
+    expect(patched).toEqual([{ page: "2", filter: "done" }]);
+    // URL: same encoding as the schema'd path — a bare number, a bare string.
+    const qs = new URLSearchParams(window.location.search);
+    expect(qs.get("page")).toBe("2");
+    expect(qs.get("filter")).toBe("done");
   });
 });

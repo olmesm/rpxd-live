@@ -145,7 +145,7 @@ describe("LiveConnection (§11, §12)", () => {
     // decoding (item 7), so a raw "20" would fail a `z.number()` props schema and
     // the soft-nav would silently no-op (finding 3).
     const { conn, requests } = makeConnection(bootstrap);
-    const patch = searchOnlyChange("/board?limit=20", "/board", "");
+    const patch = searchOnlyChange("/board?limit=20", "/board", "", true);
     expect(patch).not.toBeNull();
     conn.patchProps(patch as Record<string, unknown>);
     const control = requests.find((r) => r.url.endsWith("/__rpxd/control"));
@@ -672,6 +672,91 @@ describe("store multiplexing (ADR 0002 item 9)", () => {
       }),
     );
     expect(slot.store.snapshot().state.items).toEqual(["s", "mid"]);
+  });
+
+  it("remount does NOT release a page instance a layout slot still shares (NEW-2 refcount)", async () => {
+    // A layout <LiveSlot> mounts the SAME identity as the current page (Decision-2
+    // sharing), so both back ONE server instance over the shared stream. A tier-2/3
+    // nav swaps the page store — but the wire release must be REFCOUNTED: dropping
+    // the page store leaves the slot store, so the instance's single stream
+    // listener must survive, or the slot freezes and the instance warm-evicts.
+    const bodies: (Record<string, unknown> | null)[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (String(url).endsWith("/__rpxd/control")) bodies.push(body);
+      if (body?.type === "mount") {
+        // The layout slot ("/shared") shares the page instance "pg1"; the nav
+        // mounts a brand-new page instance "pg2".
+        return Response.json({ instance: body.path === "/pg2" ? "pg2" : "pg1", seq: 1 });
+      }
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "pg1",
+      bootstrap: {
+        instance: "pg1",
+        seq: 1,
+        attachToken: "t",
+        snapshot: { state: { items: [] }, session: {} },
+      },
+      fetchImpl,
+      eventSource: (u) => new FakeEventSource(u),
+    });
+    conn.connect();
+    const src = () => FakeEventSource.instances.at(-1) as FakeEventSource;
+    src().emit("open");
+
+    // A layout slot sharing the current page instance.
+    const slot = await conn.mountSlot<{ items: string[] }>("/shared", {});
+    expect(slot.instance).toBe("pg1");
+
+    // Tier-2/3 navigation: remount the page to a new instance.
+    await conn.remount("/pg2", {});
+
+    // "pg1" is STILL held by the slot store, so NO wire release goes out for it —
+    // releasing it would drop the stream listener the surviving slot depends on.
+    const releases = bodies.filter((b) => b?.type === "release");
+    expect(releases).not.toContainEqual(expect.objectContaining({ instance: "pg1" }));
+
+    // The slot store keeps receiving envelopes for the shared instance.
+    src().emit(
+      "env",
+      JSON.stringify({
+        seq: 2,
+        instance: "pg1",
+        full: { state: { items: ["live"] }, session: {} },
+      }),
+    );
+    expect(slot.store.snapshot().state.items).toEqual(["live"]);
+  });
+
+  it("remount DOES release a page instance no slot shares (refcount regression)", async () => {
+    // The un-shared counterpart: nothing else holds the previous page instance,
+    // so dropping the page store empties its set and the wire release fires.
+    const bodies: (Record<string, unknown> | null)[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (String(url).endsWith("/__rpxd/control")) bodies.push(body);
+      if (body?.type === "mount") return Response.json({ instance: "pg2", seq: 1 });
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "pg1",
+      bootstrap: {
+        instance: "pg1",
+        seq: 1,
+        attachToken: "t",
+        snapshot: { state: { items: [] }, session: {} },
+      },
+      fetchImpl,
+      eventSource: (u) => new FakeEventSource(u),
+    });
+    conn.connect();
+    (FakeEventSource.instances.at(-1) as FakeEventSource).emit("open");
+
+    await conn.remount("/pg2", {});
+    const releases = bodies.filter((b) => b?.type === "release");
+    expect(releases).toContainEqual(expect.objectContaining({ instance: "pg1" }));
   });
 });
 

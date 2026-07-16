@@ -129,6 +129,15 @@ export interface ConnectionOptions {
   /** Instance id (from SSR bootstrap or a control mount response). */
   instance: string;
   meta?: Record<string, RpcMeta>;
+  /**
+   * Whether the PRIMARY (page) route declares a props schema (ADR 0002 §3). The
+   * generated client entry seeds it from `route.props !== undefined`; a tier-2/3
+   * {@link LiveConnection.remount} refreshes it for the arriving page. It gates
+   * the URL codec at every tier-1 site (`searchOnlyChange`/`popstate`/`nav.patch`)
+   * so the codec applies ONLY when a schema is declared — schema-less routes keep
+   * raw strings (the ADR's back-compat pledge). Default `false`.
+   */
+  hasPropsSchema?: boolean;
   /** Origin prefix, default same-origin (""). */
   base?: string;
   /** SSR bootstrap: seeds the store and attaches to the warm instance (§12). */
@@ -222,6 +231,13 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   /** Monotonic remount tag — a superseded tier-2 remount must not rebind the store (§7). */
   #remountRunId = 0;
   /**
+   * Whether the CURRENT primary route declares a props schema (ADR 0002 §3).
+   * Seeded from opts (the SSR page), refreshed on every {@link remount} (the
+   * arriving page). Read via {@link hasPropsSchema} by the tier-1 URL sites to
+   * gate the codec — decode with a schema, keep raw strings without one.
+   */
+  #hasPropsSchema: boolean;
+  /**
    * Correlation id of the in-flight socket `mount` frame (#65). A mount that
    * denies before binding answers with `instance: ""`, which the bound-instance
    * filter can never match — the server echoes this id instead. Single slot:
@@ -264,6 +280,7 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     this.#opts = opts;
     this.#instance = opts.instance;
     this.#onRedirect = opts.onRedirect;
+    this.#hasPropsSchema = opts.hasPropsSchema ?? false;
     const primary = this.#makeStore(opts.instance);
     this.#primaryStore = primary as LiveStore;
     this.#registerStore(opts.instance, primary as LiveStore);
@@ -280,6 +297,17 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   /** The store for the PRIMARY (page) instance. A tier-2/3 remount swaps it (§7). */
   get store(): LiveStore<S, Session> {
     return this.#primaryStore as unknown as LiveStore<S, Session>;
+  }
+
+  /**
+   * Whether the CURRENT primary (page) route declares a props schema (ADR 0002
+   * §3). The tier-1 URL sites (`searchOnlyChange`/`popstate`/`nav.patch`) read
+   * this to gate the codec: decode `?limit=20` to the number `20` with a schema,
+   * keep the raw string `"20"` without one (the codec applies only when a schema
+   * is declared). A tier-2/3 {@link remount} refreshes it for the arriving page.
+   */
+  get hasPropsSchema(): boolean {
+    return this.#hasPropsSchema;
   }
 
   /** Register `store` under `instance`, creating the set on first use (finding 4). */
@@ -851,20 +879,25 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    * longer builds a fresh connection — it remounts the new page instance over
    * this same stream and swaps the primary store. `meta` refreshes the primary
    * store's rpc metadata (`rpcMetaFromDef` of the new route) so it
-   * validates/optimistics with the arriving page's contract.
+   * validates/optimistics with the arriving page's contract. `props` is the
+   * arriving page's props record — already schema-decoded (a number) or raw
+   * (strings) by the caller ({@link performNavigation}, ADR 0002 §3); the server
+   * validates the wire body without decoding. `hasPropsSchema` records the new
+   * page's schema presence so subsequent tier-1 patches gate the codec correctly.
    *
    * @example
    * ```ts
-   * await conn.remount("/board/9", { filter: "open" }, rpcMetaFromDef(Board.def));
+   * await conn.remount("/board/9", { filter: "open" }, rpcMetaFromDef(Board.def), true);
    * ```
    */
   async remount(
     path: string,
-    search: Record<string, string>,
+    props: Record<string, unknown>,
     meta?: Record<string, RpcMeta>,
+    hasPropsSchema = false,
   ): Promise<void> {
     const runId = ++this.#remountRunId;
-    const parsed = await this.#mountRequest(path, search);
+    const parsed = await this.#mountRequest(path, props);
     const superseded = runId !== this.#remountRunId;
     if ("redirect" in parsed) {
       if (superseded) return; // a newer remount owns the outcome
@@ -872,13 +905,21 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     }
     if (superseded) {
       // A newer remount already (or will) bind the store; drop the instance we
-      // mounted so it evicts instead of lingering subscribed to the stream.
-      void this.#control({ type: "release", instance: parsed.instance, stream: this.#streamId });
+      // mounted so it evicts instead of lingering subscribed to the stream — but
+      // ONLY if no other store holds it (NEW-2 refcount). The winning remount's
+      // primary or a slot sharing this id may already back `parsed.instance`;
+      // releasing the shared stream listener would freeze their store and let the
+      // instance warm-evict under them. (This branch registered no store of its
+      // own for `parsed.instance`, so `#stores.has` reflects only other holders.)
+      if (!this.#stores.has(parsed.instance)) {
+        void this.#control({ type: "release", instance: parsed.instance, stream: this.#streamId });
+      }
       return;
     }
     const previous = this.#instance;
     const previousStore = this.#primaryStore;
     this.#instance = parsed.instance;
+    this.#hasPropsSchema = hasPropsSchema;
     const nextPrimary = this.#makeStore(parsed.instance, meta) as LiveStore;
     this.#primaryStore = nextPrimary;
     this.#registerStore(parsed.instance, nextPrimary);
@@ -890,30 +931,38 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       this.#pendingMountId = mountId;
       // A page's URL query IS its props record — the mount control carries
       // `props` (ADR 0002 item 6), unified with the `url` message's vocabulary.
-      this.#socket.send(JSON.stringify({ type: "mount", path, props: search, mountId }));
+      this.#socket.send(JSON.stringify({ type: "mount", path, props, mountId }));
     } else {
       // SSE: the server joined the new instance to this stream by id at mount;
       // resync *after* the swap so the fresh store receives its full snapshot.
       void this.#control({ type: "resync", instance: parsed.instance });
     }
-    void this.#control({ type: "release", instance: previous, stream: this.#streamId });
     // Deregister the outgoing page store so its late envelopes stop dispatching.
     // Only THIS store (finding 4): a slot sharing the previous instance id keeps
     // its own store in the set. Guard against the shared-instance case (a re-mount
-    // of the same id — the new primary must not be dropped).
-    if (previous !== parsed.instance) this.#deregisterStore(previous, previousStore);
+    // of the same id — the new primary must not be dropped). Fire the wire release
+    // ONLY when dropping the page store EMPTIED the instance's client store set
+    // (NEW-2 refcount): a layout <LiveSlot> sharing this instance (Decision-2)
+    // must keep the stream's single listener, or its surviving store freezes and
+    // the instance can warm-evict under it.
+    if (previous !== parsed.instance) {
+      const emptied = this.#deregisterStore(previous, previousStore);
+      if (emptied) {
+        void this.#control({ type: "release", instance: previous, stream: this.#streamId });
+      }
+    }
   }
 
   /** POST a `mount` naming this stream; returns the new instance id or a redirect. */
   async #mountRequest(
     path: string,
-    search: Record<string, unknown>,
+    props: Record<string, unknown>,
   ): Promise<{ instance: string } | { redirect: string }> {
     const res = await this.#fetch()(`${this.#opts.base ?? ""}/__rpxd/control`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       // The mount control carries `props` (ADR 0002 item 6).
-      body: JSON.stringify({ type: "mount", path, props: search, stream: this.#streamId }),
+      body: JSON.stringify({ type: "mount", path, props, stream: this.#streamId }),
       credentials: "same-origin",
     });
     if (!res.ok) throw new Error(`remount failed: ${res.status}`);

@@ -100,6 +100,7 @@ export function LiveApp(props: LiveAppProps): ReactElement {
         window.location.pathname,
         window.location.search,
         current.pathname,
+        current.conn.hasPropsSchema,
       );
       if (patch) current.conn.patchProps(patch);
     };

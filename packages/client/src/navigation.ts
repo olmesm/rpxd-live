@@ -51,26 +51,34 @@ export function claimNavigationTicket(
  * Decide what a popstate event means for search reconciliation (§7). Wouter's
  * location is pathname-only, so popstate between two search-variants of one
  * path never reruns the app shell's effect — `guard`/`load` would not see the
- * restored query. Returns the full props record — **decoded** into the
- * JSON-value model (ADR 0002 §3, finding 3) — to reconcile via `patchProps`
+ * restored query. Returns the full props record to reconcile via `patchProps`
  * (tier 1) when the pathname is unchanged; `null` on a pathname change, which
- * the location effect owns. Like the `Link`/`nav` tier-1 path, the decode is
- * what lets `?limit=20` reach a `z.number()` props schema as the number `20`;
- * the server validates the wire body without decoding (item 7).
+ * the location effect owns.
+ *
+ * **Schema-gated (ADR 0002 §3)**: the URL codec applies *only when a schema is
+ * declared*. When `hasSchema`, the query is **decoded** into the JSON-value
+ * model — `?limit=20` reaches a `z.number()` props schema as the number `20`
+ * (the server validates the wire body without decoding, item 7). When schema-
+ * less, the raw string record is kept, matching what a GET delivers — the
+ * ADR's back-compat pledge (a schema-less page must never see `2` on tier-1 but
+ * `"2"` on GET). The caller passes the current primary route's schema presence
+ * ({@link LiveConnection.hasPropsSchema}).
  *
  * @example
  * ```ts
- * const patch = popstateSearchPatch(location.pathname, location.search, current.pathname);
- * if (patch) conn.patchProps(patch); // { limit: 20 } for ?limit=20
+ * const patch = popstateSearchPatch(location.pathname, location.search, current.pathname, true);
+ * if (patch) conn.patchProps(patch); // { limit: 20 } for ?limit=20 (schema'd)
  * ```
  */
 export function popstateSearchPatch(
   pathname: string,
   search: string,
   currentPathname: string,
+  hasSchema: boolean,
 ): Record<string, unknown> | null {
   if (pathname !== currentPathname) return null;
-  return decodeProps(new URLSearchParams(search));
+  const qs = new URLSearchParams(search);
+  return hasSchema ? decodeProps(qs) : Object.fromEntries(qs);
 }
 
 /**
@@ -143,7 +151,16 @@ export async function performNavigation(io: NavigationIo): Promise<void> {
     // rpc meta. `remount`'s own run tag self-releases a superseded instance; the
     // navigation ticket below gates the React commit.
     const conn = io.conn;
-    await conn.remount(io.pathname, io.search, rpcMetaFromDef(mod.default.def));
+    // Schema-gated URL decode (ADR 0002 §3), tier-2/3 half (residual A + B). The
+    // stripped route module keeps its props schema, so `mod.default.props`
+    // exposes schema presence client-side. WITH a schema, decode the URL-derived
+    // search into the JSON-value model before the wire — else the server's props
+    // schema 422s the raw strings and this navigation degrades to a permanent
+    // full-page-reload fallback. WITHOUT one, keep raw strings (the ADR pledge);
+    // `remount` also learns the presence so subsequent tier-1 patches gate too.
+    const hasSchema = mod.default.props !== undefined;
+    const props = hasSchema ? decodeProps(new URLSearchParams(io.search)) : io.search;
+    await conn.remount(io.pathname, props, rpcMetaFromDef(mod.default.def), hasSchema);
     await stateReady(conn);
     if (io.ticket.current !== io.my) return; // superseded — the winner commits
     io.commit({ pathname: io.pathname, route: mod.default, conn });

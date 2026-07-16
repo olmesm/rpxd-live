@@ -866,7 +866,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
    * Two tabs on the same parametric page compute the SAME (pattern, pathname) pair
    * → same key → shared instance (Decision 4 two-tabs semantics preserved); a
    * control-plane mount that resolves to the same pattern as a GET page shares it
-   * too (Decision 2). The ` ` separator can't appear in a URL path, so a
+   * too (Decision 2). The `\n` (newline) separator can't appear in a URL path, so a
    * qualified key can never alias a bare one.
    */
   function keyFor(pattern: string, pathname: string): string {
@@ -2156,7 +2156,18 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
               // Answer denials on the socket (mirroring the `url` branch) —
               // thrown out, they'd otherwise die in the transport's generic
               // catch and the client waits forever.
-              const warm = sessions.get(sid)?.get(msg.path);
+              // A warm entry (for the redirect envelope's seq/instance) lives
+              // under the pattern-QUALIFIED key ({@link keyFor}), not the bare
+              // pathname (NEW-4): a parametric page's warm mount would otherwise
+              // be missed, degrading its redirect envelope to instance:""/seq:0.
+              // `registrations` is the same union `mountInstance` matched against.
+              const warmMatch = matchRoute(
+                registrations.map((r) => r.path),
+                msg.path,
+              );
+              const warm = warmMatch
+                ? sessions.get(sid)?.get(keyFor(warmMatch.path, msg.path))
+                : undefined;
               // A failed mount usually has no bound instance to address the
               // outcome to, so echo the frame's correlation id (#65) — the
               // client matches it against its in-flight mount.

@@ -24,6 +24,14 @@ export default function Layout({ children }: { children: ReactNode }) {
         {/* Soft navigation (Link) keeps the shell — and the chat slot — mounted. */}
         <nav data-testid="shell-nav">
           <Link to="/dashboard">dashboard</Link> ·{" "}
+          {/* A path-changing (tier-2/3) nav that CARRIES a typed query on a
+              schema'd page: reaching it from another route must stay SOFT — the
+              URL codec decodes `20` before the wire so the props schema accepts
+              it (ADR 0002 §3), instead of 422-ing into a permanent full reload. */}
+          <Link to="/dashboard" search={{ limit: "20" }}>
+            dash20
+          </Link>{" "}
+          ·{" "}
           <Link to="/item/$id" params={{ id: "1" }}>
             item
           </Link>{" "}

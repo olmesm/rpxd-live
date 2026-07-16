@@ -192,6 +192,45 @@ function collectBindingName(name: ts.BindingName, out: Set<string>): void {
   }
 }
 
+/** Whether `n` is a function-like node with its own parameter scope. */
+function isFunctionScope(
+  n: ts.Node,
+): n is
+  | ts.FunctionDeclaration
+  | ts.FunctionExpression
+  | ts.ArrowFunction
+  | ts.MethodDeclaration
+  | ts.ConstructorDeclaration
+  | ts.GetAccessorDeclaration
+  | ts.SetAccessorDeclaration {
+  return (
+    ts.isFunctionDeclaration(n) ||
+    ts.isFunctionExpression(n) ||
+    ts.isArrowFunction(n) ||
+    ts.isMethodDeclaration(n) ||
+    ts.isConstructorDeclaration(n) ||
+    ts.isGetAccessorDeclaration(n) ||
+    ts.isSetAccessorDeclaration(n)
+  );
+}
+
+/**
+ * Whether a reference that reached `parent` from child `from` lies within
+ * `parent`'s OWN binding scope (NEW-3). A function-like member's **computed
+ * name** (`[expr](…)`) and its **decorators** evaluate in the scope *enclosing*
+ * the member, not in its parameter scope — so a reference reached through either
+ * must NOT be attributed to the member's parameters. Missing this is a FALSE
+ * shadow: `const o = { [db.key](db) { … } }` would credit the computed-name
+ * `db` to the method's `db` param, prune the still-used import, and crash the
+ * client. Every other position (the body, parameter initializers) is in scope.
+ */
+function inParentOwnScope(parent: ts.Node, from: ts.Node): boolean {
+  if (ts.isDecorator(from)) return false; // decorators evaluate in the enclosing scope
+  // A function-like member's computed name evaluates in the enclosing scope.
+  if (isFunctionScope(parent) && from === parent.name) return false;
+  return true;
+}
+
 /**
  * Whether `scope` — a single lexical scope node — *directly* introduces a value
  * binding named `name` (its own nested scopes are not consulted; the ancestor
@@ -202,15 +241,7 @@ function collectBindingName(name: ts.BindingName, out: Set<string>): void {
  */
 function scopeIntroduces(scope: ts.Node, name: string): boolean {
   const names = new Set<string>();
-  if (
-    ts.isFunctionDeclaration(scope) ||
-    ts.isFunctionExpression(scope) ||
-    ts.isArrowFunction(scope) ||
-    ts.isMethodDeclaration(scope) ||
-    ts.isConstructorDeclaration(scope) ||
-    ts.isGetAccessorDeclaration(scope) ||
-    ts.isSetAccessorDeclaration(scope)
-  ) {
+  if (isFunctionScope(scope)) {
     for (const p of scope.parameters) collectBindingName(p.name, names);
     // A named function expression binds its own name inside its body.
     if (ts.isFunctionExpression(scope) && scope.name) names.add(scope.name.text);
@@ -247,7 +278,10 @@ function isShadowedLocally(id: ts.Identifier): boolean {
   for (let n: ts.Node = id; n.parent; n = n.parent) {
     const parent = n.parent;
     if (ts.isSourceFile(parent)) return false; // module scope → the import
-    if (scopeIntroduces(parent, name)) return true;
+    // Skip `parent`'s bindings when the reference reached it via a position that
+    // evaluates in the ENCLOSING scope — a function-like member's computed name
+    // or decorators (NEW-3). Keep walking to the true enclosing scope.
+    if (inParentOwnScope(parent, n) && scopeIntroduces(parent, name)) return true;
   }
   return false;
 }

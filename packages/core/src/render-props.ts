@@ -69,12 +69,20 @@ export interface NavProp {
   /**
    * Change props only (§7): reruns `guard`+`load`, no `setup`, state preserved.
    *
-   * `props` is the JSON-value record (ADR 0002 §3) — `{ limit: 20 }` the number,
-   * not `{ limit: "20" }` — because the control-plane `url` body is validated
-   * against the props schema WITHOUT decoding (item 7). `patch` writes the values
-   * into the URL with the props codec's URL encoding (`encodeProps`) and sends
-   * the same JSON-value record on the wire, so the URL and the wire agree: a later
-   * full GET or `popstate` decodes the query back to the identical record.
+   * `props` is the caller's JSON-value record — `{ limit: 20 }` the number, not
+   * `{ limit: "20" }`. `patch` always writes it into the URL with the props
+   * codec's URL encoding (`encodeProps`), so the URL round-trips coherently.
+   *
+   * The **wire** record is schema-gated (ADR 0002 §3 — the codec applies only
+   * when a schema is declared):
+   * - **Schema'd route** — the `url` body is validated against the props schema
+   *   WITHOUT decoding (item 7), so the JSON-value record rides the wire verbatim
+   *   (the number stays a number, passing a `z.number()`).
+   * - **Schema-less route** — the values are stringified into the record the URL
+   *   just round-tripped to (`Object.fromEntries(encodeProps(props))`), i.e.
+   *   exactly what a schema-less GET of the resulting URL would deliver. This
+   *   keeps the wire and a later GET/`popstate` in agreement: a schema-less page
+   *   never sees the number `2` on a patch but the string `"2"` on reload.
    */
   patch(props: Record<string, unknown>): void;
 }

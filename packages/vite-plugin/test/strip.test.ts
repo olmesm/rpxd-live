@@ -354,6 +354,38 @@ export default live("/z")
     expect(code).not.toContain('from "./db"'); // destructured shadow, import only in .load
     expect(parsesClean(code)).toBe(true);
   });
+
+  it("KEEPS an import referenced in a KEPT render's COMPUTED member name (NEW-3 false shadow)", () => {
+    // `[db.key]` is a computed member name: it evaluates in the ENCLOSING scope,
+    // NOT the method's own param scope. Attributing that `db` to the method's
+    // `db` parameter is a FALSE shadow → a FALSE prune → a client ReferenceError.
+    // The computed name is a genuine outside use, so the import must be KEPT.
+    const src = `${IMPORTS}
+export default live("/c")
+  .setup(() => ({ n: 0 }))
+  .load(async (_u) => { await db.query(); })
+  .render(() => { const o = { [db.key](db: unknown) { return db; } }; return o; });
+`;
+    const code = (stripLiveModule(src, "c.tsx") as { code: string }).code;
+    expect(code).toContain("import { db }"); // computed name = real enclosing-scope use
+    expect(code).toContain('from "./db"');
+    expect(parsesClean(code)).toBe(true);
+  });
+
+  it("KEEPS an import referenced in a KEPT render's DECORATOR expression (NEW-3 family)", () => {
+    // A decorator expression evaluates in the ENCLOSING scope too — not the
+    // decorated method's param scope. `@db.deco` is a genuine outside use.
+    const src = `${IMPORTS}
+export default live("/d")
+  .setup(() => ({ n: 0 }))
+  .load(async (_u) => { await db.query(); })
+  .render(() => { class C { @db.deco run(db: unknown) { return db; } } return C; });
+`;
+    const code = (stripLiveModule(src, "d.tsx") as { code: string }).code;
+    expect(code).toContain("import { db }"); // decorator = real enclosing-scope use
+    expect(code).toContain('from "./db"');
+    expect(parsesClean(code)).toBe(true);
+  });
 });
 
 /**

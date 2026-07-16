@@ -48,7 +48,10 @@ const route = (await load()).default;
 const conn = new LiveConnection({
   instance: boot.instance,
   bootstrap: boot,
-  meta: rpcMetaFromDef(route.def),${transport === "ws" ? '\n  transport: "ws",' : ""}
+  meta: rpcMetaFromDef(route.def),
+  // Seed the tier-1 codec gate (ADR 0002 §3): decode URL props only when the
+  // primary route declares a props schema. A tier-2/3 remount refreshes it.
+  hasPropsSchema: route.props !== undefined,${transport === "ws" ? '\n  transport: "ws",' : ""}
 });
 conn.connect();
 

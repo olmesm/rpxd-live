@@ -78,24 +78,31 @@ export const ConnectionContext = createContext<LiveConnection<
  * Detect a search-only navigation (§7). Wouter's location is pathname-only,
  * so a navigation that changes just the query string moves the URL bar but
  * never reruns the app shell's effect — `guard`/`load` would silently not
- * rerun. Returns the target's full props record — **decoded** into the
- * JSON-value model (ADR 0002 §3, finding 3) — to reconcile via `patchProps`
+ * rerun. Returns the target's full props record to reconcile via `patchProps`
  * (tier 1) when `href` points at `currentPathname` with a different query;
  * `null` when the pathname changes (the app shell owns those) or nothing
- * changed at all. The decode matters because the `url` message body is
- * validated by the server WITHOUT decoding (item 7): `?limit=20` must arrive
- * as the number `20` to pass a `z.number()` props schema, not the string `"20"`.
+ * changed at all.
+ *
+ * **Schema-gated (ADR 0002 §3)**: the URL codec applies *only when a schema is
+ * declared*. WITH a schema (`hasSchema`), the query is **decoded** into the
+ * JSON-value model — `?limit=20` reaches a `z.number()` props schema as the
+ * number `20`, since the server validates the `url` body WITHOUT decoding (item
+ * 7). WITHOUT one, the raw string record is kept — the ADR's back-compat pledge,
+ * so a schema-less page sees the same `"2"` on tier-1 that a GET would deliver
+ * (no typeof heisenbug). Callers read the presence from the active connection
+ * ({@link LiveConnection.hasPropsSchema}).
  *
  * @example
  * ```ts
- * const patch = searchOnlyChange("/board?limit=20", "/board", "?limit=10");
- * if (patch) connection.patchProps(patch); // { limit: 20 }  (a number)
+ * const patch = searchOnlyChange("/board?limit=20", "/board", "?limit=10", true);
+ * if (patch) connection.patchProps(patch); // { limit: 20 }  (a number, schema'd)
  * ```
  */
 export function searchOnlyChange(
   href: string,
   currentPathname: string,
   currentSearch: string,
+  hasSchema: boolean,
 ): Record<string, unknown> | null {
   const [pathname = href, query = ""] = href.split("?");
   if (pathname !== currentPathname) return null;
@@ -104,9 +111,9 @@ export function searchOnlyChange(
   target.sort();
   current.sort();
   if (target.toString() === current.toString()) return null;
-  // Decode the URL query into props' JSON-value model — the wire encoding the
-  // server validates without decoding (finding 3).
-  return decodeProps(target);
+  // Schema-gated: decode into props' JSON-value model with a schema; keep raw
+  // strings without one (the codec applies only when a schema is declared).
+  return hasSchema ? decodeProps(target) : Object.fromEntries(target);
 }
 
 /**
@@ -157,8 +164,14 @@ export function Link<P extends RegisteredPath>(props: {
     event.preventDefault();
     // A same-path search change is invisible to wouter (pathname-only
     // location): push the history entry, then reconcile guard/load over the
-    // live connection (tier 1, §7) since the app shell's effect won't run.
-    const patch = searchOnlyChange(href, window.location.pathname, window.location.search);
+    // live connection (tier 1, §7) since the app shell's effect won't run. The
+    // codec is schema-gated on the current primary route (ADR 0002 §3).
+    const patch = searchOnlyChange(
+      href,
+      window.location.pathname,
+      window.location.search,
+      connection?.hasPropsSchema ?? false,
+    );
     navigate(href);
     if (patch) connection?.patchProps(patch);
   };
@@ -183,26 +196,40 @@ export function useNav(): Nav {
     navigate: (to, opts) => {
       const href = buildHref(to, opts?.params as Record<string, string> | undefined, opts?.search);
       // Same dead zone as `Link` (§7): a search-only target never reruns the
-      // app shell's effect, so reconcile it over the live connection.
+      // app shell's effect, so reconcile it over the live connection. The codec
+      // is schema-gated on the current primary route (ADR 0002 §3).
       const patch =
         typeof window !== "undefined"
-          ? searchOnlyChange(href, window.location.pathname, window.location.search)
+          ? searchOnlyChange(
+              href,
+              window.location.pathname,
+              window.location.search,
+              connection?.hasPropsSchema ?? false,
+            )
           : null;
       navigate(href);
       if (patch) connection?.patchProps(patch);
     },
     patch: (props) => {
-      // `props` is the JSON-value record (finding 3). Write it into the URL with
-      // the codec's URL encoding (`encodeProps` — a number stays bare, an
-      // ambiguous string is quoted) and send the SAME JSON-value record on the
-      // wire, so the two encodings agree: a later full GET / popstate decodes
-      // the query back to this exact record.
+      // `props` is the caller's JSON-value record. Write it into the URL with the
+      // codec's URL encoding (`encodeProps` — a number stays bare, an ambiguous
+      // string is quoted) — the same URL both a schema'd and schema-less route
+      // produces, so a later full GET / popstate round-trips coherently.
+      const encoded = encodeProps(props);
       if (typeof window !== "undefined") {
         const url = new URL(window.location.href);
-        for (const [k, v] of encodeProps(props)) url.searchParams.set(k, v);
+        for (const [k, v] of encoded) url.searchParams.set(k, v);
         window.history.replaceState(null, "", url);
       }
-      connection?.patchProps(props);
+      // Schema-gated wire record (ADR 0002 §3): a schema'd route validates the
+      // `url` body WITHOUT decoding, so it must receive the JSON-value record
+      // verbatim (the number stays a number). A schema-less route keeps raw
+      // strings, so send the STRING form the URL just round-tripped to
+      // (`Object.fromEntries(encodeProps(...))`) — exactly what a schema-less GET
+      // of that URL would deliver — keeping wire and GET in agreement (no typeof
+      // heisenbug where a number diverges from the "2" a reload would yield).
+      const wire = connection?.hasPropsSchema ? props : Object.fromEntries(encoded);
+      connection?.patchProps(wire);
     },
   };
 }
