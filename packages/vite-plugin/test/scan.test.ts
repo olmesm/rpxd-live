@@ -213,4 +213,15 @@ describe("isLiveScanCandidate (watcher predicate)", () => {
     expect(isLiveScanCandidate("/app/styles.css", root, opts)).toBe(false);
     expect(isLiveScanCandidate("/other/x.tsx", root, opts)).toBe(false);
   });
+  it("re-includes a default-excluded file when a user `include` re-reaches it (finding 5)", () => {
+    const withInclude = { ...opts, include: ["**/test/**"] };
+    expect(isLiveScanCandidate("/app/src/test/x.tsx", root, withInclude)).toBe(true);
+    // The routes/out dirs are excluded structurally — an include never reaches them.
+    expect(isLiveScanCandidate("/app/routes/test/x.tsx", root, withInclude)).toBe(false);
+  });
+  it("honors a user `exclude` glob (finding 5)", () => {
+    const withExclude = { ...opts, exclude: ["**/vendor/**"] };
+    expect(isLiveScanCandidate("/app/src/vendor/x.tsx", root, withExclude)).toBe(false);
+    expect(isLiveScanCandidate("/app/src/app/x.tsx", root, withExclude)).toBe(true);
+  });
 });

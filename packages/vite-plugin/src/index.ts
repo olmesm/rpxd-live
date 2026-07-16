@@ -15,7 +15,12 @@ import {
   scanRoutes,
 } from "./codegen.ts";
 import { fileToRoute, type RouteEntry } from "./routes.ts";
-import { isLiveScanCandidate, type LiveModuleEntry, scanLiveModules } from "./scan.ts";
+import {
+  isLiveScanCandidate,
+  type LiveModuleEntry,
+  type ScanLiveOptions,
+  scanLiveModules,
+} from "./scan.ts";
 import { stripLiveModule } from "./strip.ts";
 
 export {
@@ -74,6 +79,29 @@ export interface RpxdPluginOptions {
    * dirs) are not reachable.
    */
   include?: string[];
+}
+
+/**
+ * Build the {@link ScanLiveOptions} for a project root from plugin options — the
+ * single source of truth every `live()`-scan site shares (codegen scan, the
+ * client-strip transform's registration gate, and the dev-watcher predicate), so
+ * the set of modules registered/served as slots and the set stripped for the
+ * client are computed identically. If the transform omitted the user's
+ * `exclude`/`include`, a module an `include` re-reaches under a default-excluded
+ * path (e.g. `**​/test/**`) would be registered yet not stripped — leaking
+ * server-only setup/guard/load bodies and their imports into the client bundle.
+ * `routesDir`/`outDir` are resolved to absolute paths (both always set).
+ */
+function scanOptsFor(
+  root: string,
+  options: RpxdPluginOptions,
+): ScanLiveOptions & { routesDir: string; outDir: string } {
+  return {
+    routesDir: resolve(root, options.routesDir ?? "routes"),
+    outDir: resolve(root, options.outDir ?? ".rpxd"),
+    exclude: options.exclude,
+    include: options.include,
+  };
 }
 
 /**
@@ -144,8 +172,8 @@ function assertNoUnionConflicts(
  * ```
  */
 export function runCodegen(root: string, options: RpxdPluginOptions = {}): string {
-  const routesDir = resolve(root, options.routesDir ?? "routes");
-  const outDir = resolve(root, options.outDir ?? ".rpxd");
+  const scanOpts = scanOptsFor(root, options);
+  const { routesDir, outDir } = scanOpts;
   const entries = existsSync(routesDir) ? scanRoutes(routesDir) : [];
 
   // Maintain path literals: rename → rewritten; hand-edit → corrected (§7).
@@ -161,12 +189,7 @@ export function runCodegen(root: string, options: RpxdPluginOptions = {}): strin
   // Discover exported live() objects outside the routes dir (ADR 0002 item 4)
   // and reject any pattern claimed by both tables — union uniqueness is the
   // load-bearing invariant (Decision 2).
-  const liveEntries = scanLiveModules(root, {
-    routesDir,
-    outDir,
-    exclude: options.exclude,
-    include: options.include,
-  });
+  const liveEntries = scanLiveModules(root, scanOpts);
   assertNoUnionConflicts(root, entries, liveEntries);
 
   mkdirSync(outDir, { recursive: true });
@@ -200,12 +223,17 @@ export function runCodegen(root: string, options: RpxdPluginOptions = {}): strin
  */
 export function rpxd(options: RpxdPluginOptions = {}): Plugin {
   let root = process.cwd();
-  const routesDirName = options.routesDir ?? "routes";
+  // One scan-options object shared by every live()-scan site below — the strip
+  // set (transform) and the registration set (codegen scan + watcher) must be
+  // computed identically (finding 5). Rebuilt in configResolved once the real
+  // Vite root is known.
+  let scanOpts = scanOptsFor(root, options);
 
   return {
     name: "rpxd",
     configResolved(config) {
       root = config.root;
+      scanOpts = scanOptsFor(root, options);
     },
     buildStart() {
       runCodegen(root, options);
@@ -222,30 +250,30 @@ export function rpxd(options: RpxdPluginOptions = {}): Plugin {
       if (transformOptions?.ssr) return null; // server graph keeps real handlers
       const file = id.split("?", 1)[0] as string; // drop Vite query suffixes
       if (!/\.[cm]?[jt]sx?$/.test(file)) return null; // source modules only
-      const routesDir = resolve(root, routesDirName);
-      const scanOpts = { routesDir, outDir: resolve(root, options.outDir ?? ".rpxd") };
-      // Union of both registration tables: routes-dir pages (excluded from the
-      // scan structurally) and scanned live modules anywhere else.
+      // Union of both registration tables, using the SAME scan opts (incl. the
+      // user's exclude/include) as codegen — otherwise an `include`-reached
+      // module is registered but not stripped (finding 5).
       const registered =
-        isRouteFilePath(file, routesDir) || isLiveScanCandidate(file, root, scanOpts);
+        isRouteFilePath(file, scanOpts.routesDir) || isLiveScanCandidate(file, root, scanOpts);
       if (!registered) return null;
       if (!code.includes("live")) return null; // cheap pre-check before the AST confirm
       return stripLiveModule(code, file);
     },
     configureServer(server) {
-      const routesDir = resolve(root, routesDirName);
-      const outDir = resolve(root, options.outDir ?? ".rpxd");
       runCodegen(root, options);
       // Watch the routes dir and the wider project tree: an exported live()
       // object can live anywhere outside routes (ADR 0002 item 4).
-      server.watcher.add(routesDir);
+      server.watcher.add(scanOpts.routesDir);
       server.watcher.add(root);
 
-      const scanOpts = { routesDir, outDir, exclude: options.exclude, include: options.include };
       const onFileEvent = (file: string) => {
         // Re-run codegen only for route files or live-scan candidates —
         // .rpxd writes, assets, and node_modules never trigger a re-scan.
-        if (!isRouteFilePath(file, routesDir) && !isLiveScanCandidate(file, root, scanOpts)) return;
+        if (
+          !isRouteFilePath(file, scanOpts.routesDir) &&
+          !isLiveScanCandidate(file, root, scanOpts)
+        )
+          return;
         try {
           runCodegen(root, options);
         } catch (err) {

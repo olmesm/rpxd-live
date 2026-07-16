@@ -280,6 +280,83 @@ export default live("/m")
 });
 
 /**
+ * Scope-aware import pruning (ADR 0002 item 5, review R1 finding 6): pruning
+ * resolves each reference to its lexical binding, so an import whose only real
+ * uses are inside stripped spans is pruned *even when* a kept step (`render`)
+ * declares a local binding that shadows the import name. A genuine reference to
+ * the import (no shadow) still keeps it — no false strips.
+ */
+describe("stripLiveModule — scope-aware pruning under shadowing", () => {
+  const IMPORTS = `import { live } from "@rpxd/core";
+import { db } from "./db";
+import { useDb } from "./hooks";`;
+
+  it("prunes an import used only in .load when .render declares a local `const db` shadow", () => {
+    const src = `${IMPORTS}
+export default live("/x")
+  .setup(() => ({ rows: [] as string[] }))
+  .load(async (_u, ctx) => { const rows = await db.query(); ctx.patchState((s) => { s.rows = rows; }); })
+  .render(() => { const db = useDb(); return db.render(); });
+`;
+    const code = (stripLiveModule(src, "x.tsx") as { code: string }).code;
+    expect(code).not.toContain('from "./db"'); // import used only in stripped .load → pruned
+    expect(code).toContain("import { useDb }"); // genuinely used in render → kept
+    expect(code).toContain('from "./hooks"');
+    expect(parsesClean(code)).toBe(true);
+  });
+
+  it("keeps the import when .render references it genuinely (no shadow)", () => {
+    const src = `${IMPORTS}
+export default live("/y")
+  .setup(() => ({ rows: [] as string[] }))
+  .load(async (_u, ctx) => { const rows = await db.query(); ctx.patchState((s) => { s.rows = rows; }); })
+  .render(({ state }) => db.render(state));
+`;
+    const code = (stripLiveModule(src, "y.tsx") as { code: string }).code;
+    expect(code).toContain("import { db }"); // real outside reference → kept
+    expect(code).toContain('from "./db"');
+    expect(parsesClean(code)).toBe(true);
+  });
+
+  it("prunes under a `.render` arrow *parameter* shadow", () => {
+    const src = `${IMPORTS}
+export default live("/p")
+  .setup(() => ({ n: 0 }))
+  .load(async (_u) => { await db.query(); })
+  .render((db) => db.render());
+`;
+    const code = (stripLiveModule(src, "p.tsx") as { code: string }).code;
+    expect(code).not.toContain('from "./db"'); // param `db` shadows the import
+    expect(parsesClean(code)).toBe(true);
+  });
+
+  it("prunes under a nested-arrow local shadow", () => {
+    const src = `${IMPORTS}
+export default live("/n")
+  .setup(() => ({ rows: [] as string[] }))
+  .load(async (_u) => { await db.query(); })
+  .render(({ state }) => { const db = useDb(); return state.rows.map((x) => db.wrap(x)); });
+`;
+    const code = (stripLiveModule(src, "n.tsx") as { code: string }).code;
+    expect(code).not.toContain('from "./db"'); // inner shadow, import only in .load
+    expect(code).toContain("import { useDb }");
+    expect(parsesClean(code)).toBe(true);
+  });
+
+  it("prunes under a destructured `const { db } = x` shadow", () => {
+    const src = `${IMPORTS}
+export default live("/z")
+  .setup(() => ({ rows: [] as string[] }))
+  .load(async (_u) => { await db.query(); })
+  .render(({ state }) => { const { db } = state; return db.render(); });
+`;
+    const code = (stripLiveModule(src, "z.tsx") as { code: string }).code;
+    expect(code).not.toContain('from "./db"'); // destructured shadow, import only in .load
+    expect(parsesClean(code)).toBe(true);
+  });
+});
+
+/**
  * Transform-hook gating: only client (`!ssr`) builds of registered live modules
  * (routes-dir pages OR scanned live modules) are transformed; SSR, non-source,
  * and non-live ids pass through untouched.
@@ -320,5 +397,45 @@ export default live("/x").setup(() => ({})).load(async () => {}).render(() => nu
   it("ignores query suffixes when classifying the id", () => {
     const r = transform(liveSrc, "/app/src/chat.tsx?v=123", false);
     expect(r).toBeTruthy();
+  });
+});
+
+/**
+ * Registration/strip parity (ADR 0002 item 5, review R1 finding 5): the strip
+ * transform's scan opts must carry the user's `exclude`/`include` so the set of
+ * modules registered as slots and the set stripped for the client are computed
+ * identically. A user `include` that re-reaches a default-excluded live module
+ * (e.g. under `**​/test/**`) registers/serves it as a slot — so it MUST also be
+ * stripped, or server-only bodies + their imports leak into the client bundle.
+ */
+describe("rpxd() transform hook — include/exclude parity with registration", () => {
+  const root = "/app";
+  const liveSrc = `import { live } from "@rpxd/core";
+export default live("/w").setup(() => ({})).load(async () => {}).render(() => null);`;
+  const call = (plugin: unknown, id: string) =>
+    // biome-ignore lint/suspicious/noExplicitAny: exercising the plugin hook directly
+    (plugin as any).transform.call({}, liveSrc, id, { ssr: false });
+
+  it("strips a live module an `include` re-reaches under a default-excluded path", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: exercising the plugin hook directly
+    const plugin = rpxd({ include: ["**/test/**"] }) as any;
+    plugin.configResolved({ root });
+    const r = call(plugin, "/app/src/test/widget.tsx");
+    expect(r).toBeTruthy(); // registered as a slot ⇒ must be stripped too
+    expect(r.code).toContain("__rpxdServerStub");
+  });
+
+  it("without the include, the same default-excluded module is left untouched", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: exercising the plugin hook directly
+    const plugin = rpxd() as any;
+    plugin.configResolved({ root });
+    expect(call(plugin, "/app/src/test/widget.tsx")).toBeNull();
+  });
+
+  it("honors a user `exclude` that drops an otherwise-registered module from the strip", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: exercising the plugin hook directly
+    const plugin = rpxd({ exclude: ["**/vendor/**"] }) as any;
+    plugin.configResolved({ root });
+    expect(call(plugin, "/app/src/vendor/widget.tsx")).toBeNull();
   });
 });

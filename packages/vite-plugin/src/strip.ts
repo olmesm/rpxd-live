@@ -12,7 +12,13 @@
  * text yields byte-identical output, so it is HMR-stable. Import pruning is
  * conservative — a binding is removed only when it was referenced *exclusively*
  * inside a stripped span (never a side-effect import, never a binding still used
- * by `optimistic`/`render`/the schema).
+ * by `optimistic`/`render`/the schema). Reference counting is **scope-aware**:
+ * each identifier is resolved to its lexical binding, so a kept step declaring a
+ * local that shadows an import name (`import { db }` used only in `.load`, while
+ * `.render` has its own `const db`) does not keep the import alive — the shadow
+ * binds locally, not to the import. The walk only discounts a reference when it
+ * *confidently* resolves to a local (see {@link isShadowedLocally}); anything it
+ * cannot resolve is treated as a real use, so the conservative direction holds.
  *
  * **Why stubbing `setup` is safe.** The client builds the def (for
  * `rpcMetaFromDef`) but never invokes `setup`/`guard`/`load`/handlers — verified:
@@ -175,12 +181,86 @@ function importRanges(sf: ts.SourceFile): Span[] {
   return ranges;
 }
 
+/** Collect every name a binding pattern introduces (nested destructuring too). */
+function collectBindingName(name: ts.BindingName, out: Set<string>): void {
+  if (ts.isIdentifier(name)) {
+    out.add(name.text);
+    return;
+  }
+  for (const el of name.elements) {
+    if (ts.isBindingElement(el)) collectBindingName(el.name, out);
+  }
+}
+
+/**
+ * Whether `scope` — a single lexical scope node — *directly* introduces a value
+ * binding named `name` (its own nested scopes are not consulted; the ancestor
+ * walk in {@link isShadowedLocally} visits those separately). Only clear, direct
+ * bindings count, so the analysis never mistakes a real import use for a shadow
+ * (a false strip); missing a subtler binding (e.g. hoisted `var` in a sibling
+ * block) merely keeps the import — the safe direction.
+ */
+function scopeIntroduces(scope: ts.Node, name: string): boolean {
+  const names = new Set<string>();
+  if (
+    ts.isFunctionDeclaration(scope) ||
+    ts.isFunctionExpression(scope) ||
+    ts.isArrowFunction(scope) ||
+    ts.isMethodDeclaration(scope) ||
+    ts.isConstructorDeclaration(scope) ||
+    ts.isGetAccessorDeclaration(scope) ||
+    ts.isSetAccessorDeclaration(scope)
+  ) {
+    for (const p of scope.parameters) collectBindingName(p.name, names);
+    // A named function expression binds its own name inside its body.
+    if (ts.isFunctionExpression(scope) && scope.name) names.add(scope.name.text);
+  } else if (ts.isBlock(scope)) {
+    for (const st of scope.statements) {
+      if (ts.isVariableStatement(st)) {
+        for (const d of st.declarationList.declarations) collectBindingName(d.name, names);
+      } else if ((ts.isFunctionDeclaration(st) || ts.isClassDeclaration(st)) && st.name) {
+        names.add(st.name.text);
+      }
+    }
+  } else if (ts.isForStatement(scope) || ts.isForInStatement(scope) || ts.isForOfStatement(scope)) {
+    const init = scope.initializer;
+    if (init && ts.isVariableDeclarationList(init)) {
+      for (const d of init.declarations) collectBindingName(d.name, names);
+    }
+  } else if (ts.isCatchClause(scope)) {
+    if (scope.variableDeclaration) collectBindingName(scope.variableDeclaration.name, names);
+  }
+  return names.has(name);
+}
+
+/**
+ * Whether `id` (a value reference whose text is an imported binding name)
+ * resolves to a *local* declaration that shadows the import, rather than to the
+ * module-scope import itself. Walks ancestors to module scope; the first
+ * enclosing scope that introduces the name wins (lexical shadowing). Reaching
+ * the `SourceFile` means the import — imports live at module scope and cannot be
+ * shadowed there. Only a confident local resolution discounts the reference, so
+ * a genuine import use is never miscounted (no false strips).
+ */
+function isShadowedLocally(id: ts.Identifier): boolean {
+  const name = id.text;
+  for (let n: ts.Node = id; n.parent; n = n.parent) {
+    const parent = n.parent;
+    if (ts.isSourceFile(parent)) return false; // module scope → the import
+    if (scopeIntroduces(parent, name)) return true;
+  }
+  return false;
+}
+
 /**
  * Determine which local binding names are referenced *exclusively* inside
- * stripped spans (and thus safe to prune). A name kept if it has any reference
- * outside a stripped span; pruned only if it has ≥1 reference inside a stripped
- * span and 0 outside — pre-existing unused imports (0 inside, 0 outside) are
- * left untouched.
+ * stripped spans (and thus safe to prune). A name is kept if it has any
+ * reference outside a stripped span; pruned only if it has ≥1 reference inside a
+ * stripped span and 0 outside — pre-existing unused imports (0 inside, 0
+ * outside) are left untouched. References are resolved to their lexical binding,
+ * so a kept step (`render`) declaring a local that *shadows* an import name does
+ * not keep the import alive (finding 6): the shadowed references bind to the
+ * local, not the import.
  */
 function removableNames(sf: ts.SourceFile, spans: Span[], bindingNames: string[]): Set<string> {
   const names = new Set(bindingNames);
@@ -194,6 +274,7 @@ function removableNames(sf: ts.SourceFile, spans: Span[], bindingNames: string[]
     if (!isValueReference(n)) return;
     const pos = n.getStart(sf);
     if (inSpans(pos, imports)) return; // the specifier itself, not a use
+    if (isShadowedLocally(n)) return; // binds to a local shadow, not the import
     const bucket = inSpans(pos, spans) ? inside : outside;
     bucket.set(n.text, (bucket.get(n.text) ?? 0) + 1);
   });
