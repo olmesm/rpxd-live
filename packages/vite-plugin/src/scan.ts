@@ -193,16 +193,11 @@ function spineContains(top: ts.Node, target: ts.Node): boolean {
 }
 
 /**
- * Local names bound to `@rpxd/core`'s `live` export (aliases resolved).
- * Exported so the strip transform ({@link ../strip}) detects the `live()` chain
- * with the exact same binding resolution the discovery scan uses.
- *
- * @example
- * ```ts
- * liveBindings(sf); // Set(["live"]) — or Set(["l"]) for `import { live as l }`
- * ```
+ * Local names bound to `@rpxd/core`'s `live` export (aliases resolved) —
+ * `Set(["live"])`, or `Set(["l"])` for `import { live as l }`. Internal helper
+ * of {@link findLiveCalls}, which is the surface the strip transform shares.
  */
-export function liveBindings(sf: ts.SourceFile): Set<string> {
+function liveBindings(sf: ts.SourceFile): Set<string> {
   const names = new Set<string>();
   for (const stmt of sf.statements) {
     if (!ts.isImportDeclaration(stmt)) continue;

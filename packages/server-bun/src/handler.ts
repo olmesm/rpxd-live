@@ -381,7 +381,7 @@ export interface RpxdHandlerOptions {
 }
 
 /** Default rpc/control body + WS frame cap (§11 ingress DoS guard): 1 MiB. */
-export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
 /**
  * Default per-session mount throttle (ADR 0002 item 14): capacity 96, refill
