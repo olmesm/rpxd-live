@@ -236,8 +236,11 @@
     "packages/vite-plugin": {
       "name": "@rpxd/vite-plugin",
       "version": "0.1.0",
-      "devDependencies": {
+      "dependencies": {
+        "magic-string": "^0.30.0",
         "typescript": "^5.9.0",
+      },
+      "devDependencies": {
         "vite": "^7.0.0",
       },
       "peerDependencies": {

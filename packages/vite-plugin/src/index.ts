@@ -16,6 +16,7 @@ import {
 } from "./codegen.ts";
 import { fileToRoute, type RouteEntry } from "./routes.ts";
 import { isLiveScanCandidate, type LiveModuleEntry, scanLiveModules } from "./scan.ts";
+import { stripLiveModule } from "./strip.ts";
 
 export {
   ensurePathLiteral,
@@ -27,6 +28,7 @@ export {
 export { fileToRoute, pathToPattern, type RouteEntry, sortRoutes } from "./routes.ts";
 export {
   DEFAULT_LIVE_EXCLUDES,
+  findLiveCalls,
   findPatternLiteral,
   isLiveScanCandidate,
   type LiveModuleEntry,
@@ -35,6 +37,7 @@ export {
   type ScanLiveOptions,
   scanLiveModules,
 } from "./scan.ts";
+export { type StripResult, stripLiveModule } from "./strip.ts";
 
 /**
  * Whether a watcher file event refers to a route file inside `routesDir`. The
@@ -206,6 +209,28 @@ export function rpxd(options: RpxdPluginOptions = {}): Plugin {
     },
     buildStart() {
       runCodegen(root, options);
+    },
+    /**
+     * Client-build strip (ADR 0002 item 5): on the **client** graph only
+     * (`!ssr`), stub server-only chain steps of every registered `live()`
+     * module — routes-dir pages *and* scanned live modules — and prune the
+     * imports only they used. The SSR/server graph keeps the real handlers, so
+     * dev and prod share one code path (dev has no build-time treeshake, so the
+     * transform prunes imports itself). Non-live and non-source ids pass through.
+     */
+    transform(code, id, transformOptions) {
+      if (transformOptions?.ssr) return null; // server graph keeps real handlers
+      const file = id.split("?", 1)[0] as string; // drop Vite query suffixes
+      if (!/\.[cm]?[jt]sx?$/.test(file)) return null; // source modules only
+      const routesDir = resolve(root, routesDirName);
+      const scanOpts = { routesDir, outDir: resolve(root, options.outDir ?? ".rpxd") };
+      // Union of both registration tables: routes-dir pages (excluded from the
+      // scan structurally) and scanned live modules anywhere else.
+      const registered =
+        isRouteFilePath(file, routesDir) || isLiveScanCandidate(file, root, scanOpts);
+      if (!registered) return null;
+      if (!code.includes("live")) return null; // cheap pre-check before the AST confirm
+      return stripLiveModule(code, file);
     },
     configureServer(server) {
       const routesDir = resolve(root, routesDirName);

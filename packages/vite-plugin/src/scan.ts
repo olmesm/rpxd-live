@@ -134,16 +134,33 @@ function pruneDirNames(excludes: string[]): Set<string> {
   return names;
 }
 
-/** Depth-first pre-order visit of every descendant node. */
-function forEachDescendant(node: ts.Node, fn: (n: ts.Node) => void): void {
+/**
+ * Depth-first pre-order visit of every descendant node. Exported so the strip
+ * transform ({@link ../strip}) walks the same AST infrastructure the scan uses.
+ *
+ * @example
+ * ```ts
+ * let calls = 0;
+ * forEachDescendant(sourceFile, (n) => { if (ts.isCallExpression(n)) calls++; });
+ * ```
+ */
+export function forEachDescendant(node: ts.Node, fn: (n: ts.Node) => void): void {
   node.forEachChild((child) => {
     fn(child);
     forEachDescendant(child, fn);
   });
 }
 
-/** Pick the ScriptKind for a file so JSX parses without choking on `<T>`. */
-function scriptKindFor(file: string): ts.ScriptKind {
+/**
+ * Pick the ScriptKind for a file so JSX parses without choking on `<T>`.
+ * Exported for reuse by the strip transform (same parse settings as the scan).
+ *
+ * @example
+ * ```ts
+ * const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, scriptKindFor(file));
+ * ```
+ */
+export function scriptKindFor(file: string): ts.ScriptKind {
   if (file.endsWith(".tsx")) return ts.ScriptKind.TSX;
   if (file.endsWith(".jsx")) return ts.ScriptKind.JSX;
   if (file.endsWith(".js")) return ts.ScriptKind.JS;
@@ -175,8 +192,17 @@ function spineContains(top: ts.Node, target: ts.Node): boolean {
   }
 }
 
-/** Local names bound to `@rpxd/core`'s `live` export (aliases resolved). */
-function liveBindings(sf: ts.SourceFile): Set<string> {
+/**
+ * Local names bound to `@rpxd/core`'s `live` export (aliases resolved).
+ * Exported so the strip transform ({@link ../strip}) detects the `live()` chain
+ * with the exact same binding resolution the discovery scan uses.
+ *
+ * @example
+ * ```ts
+ * liveBindings(sf); // Set(["live"]) — or Set(["l"]) for `import { live as l }`
+ * ```
+ */
+export function liveBindings(sf: ts.SourceFile): Set<string> {
   const names = new Set<string>();
   for (const stmt of sf.statements) {
     if (!ts.isImportDeclaration(stmt)) continue;
@@ -240,6 +266,31 @@ function defaultExportTargets(sf: ts.SourceFile): Array<ts.Expression | ts.Ident
   return targets;
 }
 
+/**
+ * Every `live(...)` call in a parsed module whose callee is a local binding of
+ * `@rpxd/core`'s `live` export (aliases resolved via {@link liveBindings}).
+ * Shared by the discovery scan and the client-build strip transform — both must
+ * agree on exactly which calls are `live()` chains. Returns `[]` for a module
+ * that never imports (or never calls) `live`.
+ *
+ * @example
+ * ```ts
+ * const sf = ts.createSourceFile("m.tsx", src, ts.ScriptTarget.Latest, true);
+ * const calls = findLiveCalls(sf); // one CallExpression per exported live object
+ * ```
+ */
+export function findLiveCalls(sf: ts.SourceFile): ts.CallExpression[] {
+  const locals = liveBindings(sf);
+  const calls: ts.CallExpression[] = [];
+  if (locals.size === 0) return calls;
+  forEachDescendant(sf, (n) => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && locals.has(n.expression.text)) {
+      calls.push(n);
+    }
+  });
+  return calls;
+}
+
 type ModuleAnalysis =
   | { kind: "none" }
   | { kind: "entry"; path: string }
@@ -251,16 +302,8 @@ type ModuleAnalysis =
  */
 function analyzeModule(source: string, file: string): ModuleAnalysis {
   const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKindFor(file));
-  const locals = liveBindings(sf);
-  if (locals.size === 0) return { kind: "none" }; // no `live` import — not ours
-
-  const liveCalls: ts.CallExpression[] = [];
-  forEachDescendant(sf, (n) => {
-    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && locals.has(n.expression.text)) {
-      liveCalls.push(n);
-    }
-  });
-  if (liveCalls.length === 0) return { kind: "none" };
+  const liveCalls = findLiveCalls(sf);
+  if (liveCalls.length === 0) return { kind: "none" }; // no `live` import/call — not ours
   if (liveCalls.length > 1) {
     return {
       kind: "error",
