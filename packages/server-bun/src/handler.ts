@@ -859,6 +859,29 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     >;
   }
 
+  /**
+   * Validate a `url` props patch (ADR 0002 item 7) against the live instance's
+   * registration props schema **before** the reconcile, so untrusted input never
+   * reaches `guard`/`load`. Unlike {@link resolveMountProps}, the registration is
+   * already resolved — a `url` patch names a bound instance whose `entry.path` is
+   * the exact pattern ({@link registrationFor}), so no `matchRoute` is needed.
+   * Like `mount`, the patch payload is a JSON value model (no {@link decodeProps}
+   * — the values arrive typed off the control plane). A schema-less registration
+   * passes `raw` through verbatim (byte-identical to pre-ADR `nav.patch`). An
+   * invalid value throws {@link ValidationError} (mapped to 422 over HTTP, an
+   * instance-scoped error envelope over WS) — nothing reconciles.
+   */
+  async function resolveUrlProps(
+    route: RouteRegistration,
+    raw: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!route.props) return raw;
+    return (await validateInput(route.props, raw, `props ${route.path}`)) as Record<
+      string,
+      unknown
+    >;
+  }
+
   async function mountInstance(
     sid: string,
     sessionData: unknown,
@@ -1220,7 +1243,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       | { type: "mount"; path: string; props?: Record<string, unknown>; stream?: string }
       | { type: "resync"; instance: string }
       | { type: "release"; instance: string; stream: string }
-      | { type: "url"; instance: string; props: Record<string, string> };
+      | { type: "url"; instance: string; props: Record<string, unknown> };
 
     if (msg.type === "mount") {
       let entry: InstanceEntry;
@@ -1262,12 +1285,18 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       entry.instance.resync();
       return new Response(null, { status: 204 });
     }
-    // Runtime URL change (nav.patch, §7): reconcile guard+load. A guard deny
-    // → redirect JSON for the client to soft-nav (§10). Look across the mount
-    // union so a slot instance finds its own def (ADR 0002 item 6).
+    // Runtime URL change (nav.patch, §7): validate the props patch against the
+    // instance's registration schema (ADR 0002 item 7), then reconcile guard+load.
+    // An invalid record throws ValidationError → 422 via `mapRequestError` (the
+    // item-3 `props-invalid` surface), before any guard/load. A guard deny →
+    // redirect JSON for the client to soft-nav (§10). Look across the mount union
+    // so a slot instance finds its own def (ADR 0002 item 6).
     const route = registrationFor(entry.path);
     try {
-      if (route) await reconcileUrl(route.def, entry.instance, msg.props);
+      if (route) {
+        const props = await resolveUrlProps(route, msg.props);
+        await reconcileUrl(route.def, entry.instance, props);
+      }
     } catch (e) {
       if (isRedirect(e)) return Response.json({ redirect: e.location });
       throw e;
@@ -1692,18 +1721,37 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           if (!entry) return;
           if (msg.type === "resync") entry.instance.resync();
           if (msg.type === "url" && msg.props) {
-            // Runtime URL change over WS (§7): reconcile guard+load; a guard deny
-            // → a redirect envelope for the client to soft-nav (§10). Look across
-            // the mount union so a slot instance finds its own def (item 6).
+            // Runtime URL change over WS (§7): validate the props patch against
+            // the instance's registration schema (ADR 0002 item 7), then reconcile
+            // guard+load. A guard deny → a redirect envelope for the client to
+            // soft-nav (§10). Look across the mount union so a slot instance finds
+            // its own def (item 6).
             const route = registrationFor(entry.path);
             try {
-              if (route) await reconcileUrl(route.def, entry.instance, msg.props);
+              if (route) {
+                const props = await resolveUrlProps(route, msg.props);
+                await reconcileUrl(route.def, entry.instance, props);
+              }
             } catch (e) {
               if (isRedirect(e)) {
                 send({
                   seq: entry.instance.seq,
                   instance: entry.instance.id,
                   redirect: e.location,
+                });
+              } else if (e instanceof ValidationError) {
+                // WS parity for the 422 the HTTP control path returns on an
+                // invalid props patch. Unlike a denied `mount` — which has no
+                // bound instance and correlates by `mountId` (#65) — a `url`
+                // patch names an already-bound instance, so answer with an
+                // instance-scoped error envelope (mirroring the redirect surface
+                // just above): the client filters it by the bound instance id,
+                // no correlation id needed. No reconcile ran (guard/load never saw
+                // the invalid record).
+                send({
+                  seq: entry.instance.seq,
+                  instance: entry.instance.id,
+                  error: { name: e.name, message: e.message },
                 });
               } else throw e;
             }

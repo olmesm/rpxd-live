@@ -142,7 +142,7 @@ query params (below).
 type Control =
   | { type: "resync"; instance: string }                                        // gap recovery / late attach
   | { type: "mount"; path: string; props: Record<string, unknown>; stream?: string; mountId?: string } // cold / same-route / slot mount
-  | { type: "url"; instance: string; props: Record<string, string> }            // nav.patch → guard + load
+  | { type: "url"; instance: string; props: Record<string, unknown> }           // nav.patch → guard + load
   | { type: "release"; instance: string; stream: string };                      // same-route nav abandons an instance
 ```
 
@@ -173,6 +173,12 @@ type Control =
   outcome to its in-flight mount by id.
 - `url` reconciles the instance to a new URL — `guard` then `load` (§7); a deny
   comes back as `{ redirect }` (SSE control response) or a `redirect` envelope (WS).
+  Its `props` payload is a JSON value model (like `mount`, values arrive already
+  typed, not as raw query strings) validated against the instance's registration
+  props schema **before** `guard`+`load` (ADR 0002 item 7) — an invalid record is
+  a `422` (SSE control response) or an `error` envelope (WS) and no reconcile
+  runs. Unlike a denied `mount`, the instance addressed by `url` is already bound,
+  so the WS `error`/`redirect` envelope carries that instance's id (no `mountId`).
 
 ## Connection lifecycle (§11)
 

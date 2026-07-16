@@ -126,11 +126,17 @@ export interface MountControl {
  * no `setup`, state preserved. A page's URL query is its props record, so the
  * patched payload is `props` (ADR 0002 item 1); a deny comes back as a
  * `{ redirect }` control response (SSE) or a `redirect` envelope (WS).
+ *
+ * Like {@link MountControl}, `props` is a JSON value model — the values arrive
+ * already typed off the control plane, not as raw query strings (ADR 0002 item
+ * 7) — and is validated against the instance's registration props schema (when
+ * declared) **before** `guard`+`load`. An invalid record is a `422` (SSE control
+ * response) or an instance-scoped `error` envelope (WS), and no reconcile runs.
  */
 export interface UrlControl {
   type: "url";
   instance: string;
-  props: Record<string, string>;
+  props: Record<string, unknown>;
 }
 
 /** Same-route forward nav (§7): abandon an instance so it evicts off its stream. */

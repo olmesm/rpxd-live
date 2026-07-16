@@ -245,6 +245,16 @@ describe("wire-protocol conformance (the wire protocol guide)", () => {
     } satisfies UrlControl;
     expect(urlControl.props).toEqual({ filter: "done" });
 
+    // Positive (ADR 0002 item 7): the `url` control's `props` is a JSON value
+    // model — `Record<string, unknown>`, like `mount`, not the raw-string record
+    // it once was. A validated patch carrying a number/boolean/object conforms.
+    const typedUrl = {
+      type: "url",
+      instance: "i",
+      props: { limit: 20, active: true, range: { from: 0 } },
+    } satisfies UrlControl;
+    expect(typedUrl.props.limit).toBe(20);
+
     // Negative: the OLD field name no longer conforms. `props` is present (so
     // the only defect is the excess property), and `search` is not a field on
     // the `url` control message.
