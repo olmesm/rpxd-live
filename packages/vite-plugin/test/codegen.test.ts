@@ -27,6 +27,12 @@ describe("fileToRoute (§7)", () => {
     expect(fileToRoute("__root.tsx")?.kind).toBe("root");
     expect(fileToRoute("__404.tsx")?.kind).toBe("notFound");
     expect(fileToRoute("__error.tsx")?.kind).toBe("error");
+    // ADR 0002 item 13: the persistent region — a shell file, no URL.
+    expect(fileToRoute("__layout.tsx")).toEqual({
+      file: "__layout.tsx",
+      path: null,
+      kind: "layout",
+    });
   });
 
   it("ignores non-route files", () => {
@@ -160,6 +166,18 @@ describe("codegen end-to-end", () => {
     const generated = generateRoutesModule([{ file: "index.tsx", path: "/", kind: "page" }]);
     expect(generated).toContain("export const rootModule = undefined;");
     expect(generated).toContain("export const notFoundModule = undefined;");
+    // ADR 0002 item 13: absent __layout → undefined (layout-less parity).
+    expect(generated).toContain("export const layoutModule = undefined;");
+  });
+
+  it("generateRoutesModule emits a layoutModule importer when __layout is present (ADR 0002 item 13)", () => {
+    const generated = generateRoutesModule([
+      { file: "index.tsx", path: "/", kind: "page" },
+      { file: "__layout.tsx", path: null, kind: "layout" },
+    ]);
+    expect(generated).toContain(
+      'export const layoutModule = () => import("../routes/__layout.tsx");',
+    );
   });
 
   it("keeps HTTP routes out of routes.gen.ts (client-imported); puts them in handlers.gen.ts", () => {

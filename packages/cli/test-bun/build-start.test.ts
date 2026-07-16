@@ -46,6 +46,10 @@ describe("rpxd start (pure Bun, no Vite)", () => {
     const html = await res.text();
     expect(html).toContain("Try rpxd");
     expect(html).toContain('id="__rpxd"');
+    // The persistent region (ADR 0002 item 13): SSR composes Root(Layout(page)),
+    // so __layout.tsx's wrapper wraps the page inside the __root shell.
+    expect(html).toContain('data-shell="app-layout"');
+    expect(html).toMatch(/data-shell="todos-root"[\s\S]*data-shell="app-layout"/);
     // hashed asset from the client build, not the dev virtual entry
     const src = /<script type="module" src="(\/assets\/[^"]+\.js)"><\/script>/.exec(html)?.[1];
     expect(src).toBeTruthy();

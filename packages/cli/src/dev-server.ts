@@ -250,9 +250,10 @@ export async function createDevServer(
       httpRoutes.push({ path: entry.path, def: (mod.default as { def: RouteDefinition }).def });
       continue;
     }
-    // Shell files (§14): __root / __404 / __error
+    // Shell files (§14): __root / __404 / __error / __layout (ADR 0002 item 13)
     const mod = await vite.ssrLoadModule(`/routes/${entry.file}`);
     if (entry.kind === "root") shell.Root = mod.default;
+    if (entry.kind === "layout") shell.Layout = mod.default; // persistent region (ADR 0002 item 13)
     if (entry.kind === "notFound") shell.NotFound = mod.default;
     if (entry.kind === "error") shell.ErrorPage = mod.default;
   }

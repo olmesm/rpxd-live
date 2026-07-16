@@ -7,7 +7,15 @@
  * app shell — including any layout slots multiplexed on the same stream —
  * survive. The previous page stays interactive until the next state arrives.
  */
-import { createElement, type ReactElement, useEffect, useRef, useState } from "react";
+import {
+  createElement,
+  type FunctionComponent,
+  type ReactElement,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useLocation } from "wouter";
 import { navigate } from "wouter/use-browser-location";
 import type { LiveConnection } from "./connection.ts";
@@ -39,6 +47,17 @@ export interface LiveAppProps {
   transport?: "sse" | "ws";
   /** Optional state transform before render (RSC field hydration, §16). */
   transformState?: (state: unknown) => unknown;
+  /**
+   * The persistent region (ADR 0002 item 13) — `__layout.tsx`'s default export,
+   * threaded through by the generated client entry. Rendered inside
+   * {@link RpxdProvider} but **outside** `key={pathname}`, so it mounts once per
+   * app session and survives every navigation (tier 1/2/3): its React state and
+   * any `<LiveSlot>` it hosts (an agent chat panel, Decision 5) keep painting
+   * across page swaps. It receives the current page as `children`. Reaches the
+   * connection and `useNav` via the provider it lives inside. `undefined` (the
+   * default) renders the page directly — byte-identical to a layout-less app.
+   */
+  layout?: FunctionComponent<{ children?: ReactNode }>;
 }
 
 /**
@@ -111,15 +130,20 @@ export function LiveApp(props: LiveAppProps): ReactElement {
     });
   }, [location, current.pathname, current.conn, props.routeModules]);
 
+  // The page is keyed by pathname so every navigation remounts it; the layout
+  // (ADR 0002 item 13) wraps it OUTSIDE that key, so React preserves the layout
+  // instance across page swaps while the page below it remounts.
+  const page = (
+    <LivePage
+      key={current.pathname}
+      route={current.route}
+      conn={current.conn}
+      transformState={props.transformState}
+    />
+  );
+  const Layout = props.layout;
   return (
-    <RpxdProvider connection={current.conn}>
-      <LivePage
-        key={current.pathname}
-        route={current.route}
-        conn={current.conn}
-        transformState={props.transformState}
-      />
-    </RpxdProvider>
+    <RpxdProvider connection={current.conn}>{Layout ? <Layout>{page}</Layout> : page}</RpxdProvider>
   );
 }
 

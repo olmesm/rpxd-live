@@ -27,7 +27,7 @@ const clientEntrySource = (rsc: boolean, transport: "sse" | "ws") => `
 import { createElement } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { LiveApp, LiveConnection, rpcMetaFromDef } from "@rpxd/client";
-import { routeModules, rootModule } from "/.rpxd/routes.gen.ts";
+import { routeModules, rootModule, layoutModule } from "/.rpxd/routes.gen.ts";
 ${
   rsc
     ? `import { configureRscRuntime, flightStream, hydrateRscFields } from "@rpxd/rsc/client";
@@ -52,10 +52,17 @@ const conn = new LiveConnection({
 });
 conn.connect();
 
+// The persistent region (ADR 0002 item 13): load __layout.tsx BEFORE the first
+// paint (like rootModule below) so the layout is present in the hydrated tree —
+// a late-loaded layout would flash a layout-less frame and mismatch the SSR'd
+// Root(Layout(page)) markup.
+const layout = layoutModule ? (await layoutModule()).default : undefined;
+
 const app = createElement(LiveApp, {
   route,
   connection: conn,
-  routeModules,${transport === "ws" ? '\n  transport: "ws",' : ""}${rsc ? "\n  transformState: hydrateRscFields," : ""}
+  routeModules,
+  layout,${transport === "ws" ? '\n  transport: "ws",' : ""}${rsc ? "\n  transformState: hydrateRscFields," : ""}
 });
 
 const Root = rootModule ? (await rootModule()).default : null;

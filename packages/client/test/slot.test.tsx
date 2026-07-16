@@ -423,6 +423,20 @@ describe("<LiveSlot> + LiveConnection pair cancellation (ADR 0002 item 12)", () 
   });
 });
 
+describe("<LiveSlot> SSR-safety (ADR 0002 item 13)", () => {
+  it("renders its fallback (no crash) when there is no connection context — the server render path", async () => {
+    // A layout hosts `<LiveSlot>`s and SSRs with no ConnectionContext
+    // (`useContext` → null server-side, and effects never run in
+    // renderToStaticMarkup). It must render `fallback`, not throw.
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Chat = chatLive();
+    const html = renderToStaticMarkup(
+      <LiveSlot of={Chat} params={{ room: "main" }} fallback={<span>loading</span>} />,
+    );
+    expect(html).toBe("<span>loading</span>");
+  });
+});
+
 describe("<LiveSlot> flap detection", () => {
   it("logs once when identity changes more than the threshold within a second", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });

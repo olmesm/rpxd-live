@@ -96,6 +96,16 @@ function serverRenderProps(ctx: RenderContext, rsc: boolean) {
 /** Userland shell components (§14): __root wraps everything. */
 export interface ShellComponents {
   Root?: FunctionComponent<{ children?: ReactNode }>;
+  /**
+   * The persistent region (ADR 0002 item 13): `__layout.tsx`. On the client it
+   * renders inside `RpxdProvider` but outside the page key; server-side it
+   * composes **between** {@link Root} and the page (`Root(Layout(page))`) so the
+   * hydrated tree matches. Live pages only — never the static 404/error shells,
+   * which the client renders without the layout. Any `<LiveSlot>` it hosts SSRs
+   * as its `fallback` (a slot has no server connection; it client-mounts
+   * post-hydration).
+   */
+  Layout?: FunctionComponent<{ children?: ReactNode }>;
   NotFound?: FunctionComponent<{ path: string }>;
   ErrorPage?: FunctionComponent<{ path: string; message: string }>;
 }
@@ -159,6 +169,17 @@ function wrapWithRoot(page: ReactElement, shell?: ShellComponents): ReactElement
 }
 
 /**
+ * Compose the persistent region (ADR 0002 item 13) around a live page:
+ * `Root(Layout(page))`. Mirrors the client's `Root > RpxdProvider > Layout >
+ * page` tree (the provider adds no DOM), so hydration matches. The static 404/
+ * error shells don't call this — the client never wraps them in the layout.
+ */
+function wrapWithLayout(page: ReactElement, shell?: ShellComponents): ReactElement {
+  const withLayout = shell?.Layout ? createElement(shell.Layout, null, page) : page;
+  return wrapWithRoot(withLayout, shell);
+}
+
+/**
  * Render one route component to a full HTML document (streaming, §12).
  *
  * @example
@@ -175,7 +196,7 @@ export async function renderRoute(
   if (opts.rsc) await ensureFlightRuntime();
   const props = serverRenderProps(ctx, opts.rsc ?? false);
   const page = createElement(route.component, props);
-  const appHtml = await streamToHtml(wrapWithRoot(page, opts.shell));
+  const appHtml = await streamToHtml(wrapWithLayout(page, opts.shell));
   return renderHtmlShell(ctx, appHtml, assets);
 }
 

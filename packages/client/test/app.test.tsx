@@ -1,0 +1,146 @@
+// @vitest-environment jsdom
+/**
+ * `LiveApp` + the persistent region (ADR 0002 item 13). The layout renders
+ * INSIDE `RpxdProvider` but OUTSIDE `key={pathname}`, so it mounts once per app
+ * session and survives navigation: its React state keeps painting across page
+ * swaps while the page component below it remounts. Driven with react-dom/client
+ * + React's `act` under jsdom, navigating via wouter's browser `navigate` the
+ * way {@link LiveApp} itself wires it. A hand-built fake connection stands in for
+ * the app-lifetime `LiveConnection` (real `LiveStore` so the render props are
+ * real); `remount` resolves like the collapsed tier path (ADR item 9).
+ */
+import { act, useEffect, useState } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { navigate } from "wouter/use-browser-location";
+import { LiveApp } from "../src/app.tsx";
+import type { AnyConnection, AnyRoute } from "../src/navigation.ts";
+import { LiveStore } from "../src/store.ts";
+
+// React's `act` requires this flag; jsdom provides `document`/`window`.
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+/** A confirmed primary store so `LivePage` renders content and navigation's `stateReady` resolves. */
+function confirmedConn(): AnyConnection & { remount: ReturnType<typeof vi.fn> } {
+  const store = new LiveStore<{ n: number }, Record<string, never>>({
+    instance: "page",
+    meta: {},
+    send: () => {},
+    requestResync: () => {},
+  });
+  store.applyEnvelope({ seq: 1, instance: "page", full: { state: { n: 0 }, session: {} } });
+  return {
+    store,
+    setRedirectSink: () => {},
+    patchProps: () => {},
+    // Collapsed tiers (ADR item 9): every nav remounts over the same connection.
+    remount: vi.fn(async () => {}),
+  } as unknown as AnyConnection & { remount: ReturnType<typeof vi.fn> };
+}
+
+const pageRoute = (label: string, path: string): AnyRoute =>
+  ({
+    $live: true,
+    path,
+    def: {},
+    component: () => <div data-testid="page">{label}</div>,
+  }) as unknown as AnyRoute;
+
+// The persistent region under test: counts its own mounts (module-scoped, reset
+// per test) and holds a `useState` draft that must survive navigation.
+let layoutMounts = 0;
+function Layout({ children }: { children?: React.ReactNode }) {
+  const [draft, setDraft] = useState("");
+  useEffect(() => {
+    layoutMounts += 1;
+  }, []);
+  return (
+    <div data-testid="layout">
+      <input data-testid="draft" value={draft} onChange={(e) => setDraft(e.target.value)} />
+      <span data-testid="draft-echo">{draft}</span>
+      {children}
+    </div>
+  );
+}
+
+let container: HTMLDivElement;
+let root: Root;
+
+const render = (ui: React.ReactNode) => act(async () => root.render(ui));
+const flush = () => act(async () => {});
+
+beforeEach(() => {
+  layoutMounts = 0;
+  window.history.replaceState(null, "", "/");
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+});
+
+afterEach(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+  vi.restoreAllMocks();
+});
+
+const routeModules = {
+  "/": async () => ({ default: pageRoute("HOME", "/") }),
+  "/b": async () => ({ default: pageRoute("PAGE-B", "/b") }),
+};
+
+describe("LiveApp persistent region (ADR 0002 item 13)", () => {
+  it("mounts the layout once across a tier-3 navigation while the page remounts", async () => {
+    const conn = confirmedConn();
+    await render(
+      <LiveApp
+        route={pageRoute("HOME", "/")}
+        connection={conn}
+        routeModules={routeModules}
+        layout={Layout}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="layout"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="page"]')?.textContent).toBe("HOME");
+    expect(layoutMounts).toBe(1);
+
+    // Type a draft into the layout — this is state the persistent region owns.
+    await act(async () => {
+      const input = container.querySelector('[data-testid="draft"]') as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set as (
+        v: string,
+      ) => void;
+      setter.call(input, "hello");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="draft-echo"]')?.textContent).toBe("hello");
+
+    // Tier-3 navigation: a different page pattern. The connection is app-lifetime.
+    await act(async () => {
+      navigate("/b");
+    });
+    await flush();
+
+    // The page below the layout remounted…
+    expect(container.querySelector('[data-testid="page"]')?.textContent).toBe("PAGE-B");
+    expect(conn.remount).toHaveBeenCalledWith("/b", {}, expect.any(Object));
+    // …but the layout did NOT remount, and its draft survived the page swap.
+    expect(layoutMounts).toBe(1);
+    expect(container.querySelector('[data-testid="draft-echo"]')?.textContent).toBe("hello");
+  });
+
+  it("renders the page directly with no layout (layout-less parity, regression)", async () => {
+    const conn = confirmedConn();
+    await render(
+      <LiveApp route={pageRoute("HOME", "/")} connection={conn} routeModules={routeModules} />,
+    );
+    expect(container.querySelector('[data-testid="layout"]')).toBeNull();
+    expect(container.querySelector('[data-testid="page"]')?.textContent).toBe("HOME");
+
+    await act(async () => {
+      navigate("/b");
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="page"]')?.textContent).toBe("PAGE-B");
+  });
+});

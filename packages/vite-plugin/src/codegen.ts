@@ -125,6 +125,14 @@ ${shellEntry("root", "rootModule")}
 ${shellEntry("notFound", "notFoundModule")}
 ${shellEntry("error", "errorModule")}
 
+/**
+ * The persistent region (ADR 0002 item 13): \`__layout.tsx\`, rendered inside
+ * \`RpxdProvider\` but outside \`key={pathname}\`. Mounted once per app session,
+ * it survives every navigation and may host \`<LiveSlot>\`s. \`undefined\` when
+ * the app has no \`__layout.tsx\` (layout-less parity).
+ */
+${shellEntry("layout", "layoutModule")}
+
 /** All registered page paths. */
 export type RegisteredPath = keyof typeof routeTree;
 

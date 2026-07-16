@@ -122,9 +122,15 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     rootModule?: () => Promise<{ default: ShellComponents["Root"] }>;
     notFoundModule?: () => Promise<{ default: ShellComponents["NotFound"] }>;
     errorModule?: () => Promise<{ default: ShellComponents["ErrorPage"] }>;
+    layoutModule?: () => Promise<{ default: ShellComponents["Layout"] }>;
   };
   const shell: ShellComponents = {
     Root: serverEntryModule.rootModule ? (await serverEntryModule.rootModule()).default : undefined,
+    // The persistent region (ADR 0002 item 13): SSR composes Root(Layout(page))
+    // so the streamed markup matches the client's hydrated tree.
+    Layout: serverEntryModule.layoutModule
+      ? (await serverEntryModule.layoutModule()).default
+      : undefined,
     NotFound: serverEntryModule.notFoundModule
       ? (await serverEntryModule.notFoundModule()).default
       : undefined,
@@ -223,7 +229,13 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     render: async (ctx) => {
       const route = components.get(ctx.path);
       if (!route) return new Response("not found", { status: 404 });
-      const html = await serverEntryModule.renderRoute(route, ctx, assets, { rsc: config.rsc });
+      // Pass `shell` so prod SSR composes Root(Layout(page)) — matching the
+      // client entry, which wraps the app in `rootModule`/`layoutModule` at
+      // hydration (ADR 0002 item 13). Dev already does this via `makeDevRender`.
+      const html = await serverEntryModule.renderRoute(route, ctx, assets, {
+        rsc: config.rsc,
+        shell,
+      });
       return new Response(html, {
         headers: { "content-type": "text/html; charset=utf-8" },
       });

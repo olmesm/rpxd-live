@@ -10,7 +10,7 @@ export interface RouteEntry {
   file: string;
   /** URL path, e.g. `/org/$orgId/board`. `null` for shell files (kind is a shell). */
   path: string | null;
-  kind: "page" | "http" | "root" | "notFound" | "error";
+  kind: "page" | "http" | "root" | "notFound" | "error" | "layout";
 }
 
 const ROUTE_EXT = /\.(tsx|jsx|ts|js)$/;
@@ -23,7 +23,7 @@ const ROUTE_EXT = /\.(tsx|jsx|ts|js)$/;
  * - `index.tsx` → `/` (page)
  * - `org.$orgId.board.tsx` → `/org/$orgId/board` (page)
  * - `api.auth.$.ts` → `/api/auth/$` (http, `$` = catch-all)
- * - `__root.tsx` / `__404.tsx` / `__error.tsx` → shell files, no URL
+ * - `__root.tsx` / `__404.tsx` / `__error.tsx` / `__layout.tsx` → shell files, no URL
  * - non-route files (no recognised extension) → `null`
  *
  * @example
@@ -41,6 +41,10 @@ export function fileToRoute(file: string): RouteEntry | null {
   if (base === "__root") return { file, path: null, kind: "root" };
   if (base === "__404") return { file, path: null, kind: "notFound" };
   if (base === "__error") return { file, path: null, kind: "error" };
+  // The persistent region (ADR 0002 item 13): static React rendered inside
+  // `RpxdProvider` but outside `key={pathname}`, so it — and any `<LiveSlot>`
+  // it hosts — survives every navigation. No URL of its own.
+  if (base === "__layout") return { file, path: null, kind: "layout" };
   if (base.startsWith("__")) return null; // unknown shell file — ignore
   const ext = extMatch[1] as string;
   const kind = ext === "tsx" || ext === "jsx" ? "page" : "http";
