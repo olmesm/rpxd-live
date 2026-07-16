@@ -1,7 +1,22 @@
 # ADR 0002 — Live slots: everything is live
 
-- Status: accepted
+- Status: accepted — **implemented** (all 16 items landed on
+  `claude/nested-live-components-8b0voi`; two review rounds, final verdict
+  clean)
 - Date: 2026-07-15
+
+## Post-implementation follow-ups (non-blocking, from the final review)
+
+- `packages/vite-plugin/src/strip.ts` — **parameter decorators** are a
+  remaining false-shadow corner of the import pruner (requires legacy
+  `experimentalDecorators`, a kept render, and a parameter named after an
+  import used only in stripped code — probe-confirmed but vanishingly rare).
+  Fix direction: carry a passed-through-a-Decorator flag up past the
+  decorated declaration in `isShadowedLocally`.
+- `LiveConnection.mount` (static, cold no-SSR mount; zero production callers
+  today) — add a TSDoc sentence noting schema'd routes should pass decoded
+  props; a raw-string cold mount of a schema'd route fails loudly (422), not
+  silently.
 
 ## Context
 
