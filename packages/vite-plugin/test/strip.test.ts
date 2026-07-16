@@ -386,6 +386,26 @@ export default live("/d")
     expect(code).toContain('from "./db"');
     expect(parsesClean(code)).toBe(true);
   });
+
+  it("KEEPS an import referenced in a KEPT render's PARAMETER-decorator expression (NEW-3 family)", () => {
+    // `@db.deco` on a PARAMETER named `db`: a parameter decorator evaluates in
+    // the scope ENCLOSING the method, not the method's own parameter scope.
+    // Attributing that `db` to the `db` parameter it decorates is a FALSE shadow
+    // → a FALSE prune → a client ReferenceError. The decorator is a genuine
+    // outside use, so the import must be KEPT. (Parameter decorators need legacy
+    // `experimentalDecorators` to *type-check*, but `ts.createSourceFile` parses
+    // them syntactically regardless — the strip transform is syntactic-only.)
+    const src = `${IMPORTS}
+export default live("/pd")
+  .setup(() => ({ n: 0 }))
+  .load(async (_u) => { await db.query(); })
+  .render(() => { class C { run(@db.deco db: unknown) { return db; } } return C; });
+`;
+    const code = (stripLiveModule(src, "pd.tsx") as { code: string }).code;
+    expect(code).toContain("import { db }"); // param decorator = real enclosing-scope use
+    expect(code).toContain('from "./db"');
+    expect(parsesClean(code)).toBe(true);
+  });
 });
 
 /**

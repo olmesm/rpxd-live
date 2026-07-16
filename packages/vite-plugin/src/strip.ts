@@ -275,9 +275,26 @@ function scopeIntroduces(scope: ts.Node, name: string): boolean {
  */
 function isShadowedLocally(id: ts.Identifier): boolean {
   const name = id.text;
+  // A reference inside a PARAMETER decorator (`method(@dec p) {}`) evaluates in
+  // the scope ENCLOSING the method — not the method's own parameter scope. The
+  // walk crosses `Decorator → Parameter` (harmless; a Parameter binds nothing on
+  // its own) and would then attribute the reference at the `Parameter → function`
+  // step to that very function's parameters — a FALSE shadow that prunes a still
+  // -used import and crashes the client. Carry a flag past the decorated
+  // parameter so the enclosing function's own scope is skipped too, then resume
+  // normal resolution in the truly enclosing scopes. (A decorator ON THE METHOD
+  // is already handled: its parent IS the function, skipped by `inParentOwnScope`.)
+  let skipEnclosingFunctionScope = false;
   for (let n: ts.Node = id; n.parent; n = n.parent) {
     const parent = n.parent;
     if (ts.isSourceFile(parent)) return false; // module scope → the import
+    if (ts.isDecorator(n) && ts.isParameter(parent)) skipEnclosingFunctionScope = true;
+    if (skipEnclosingFunctionScope && isFunctionScope(parent)) {
+      // The function owning the decorated parameter: a parameter decorator runs
+      // outside it, so its parameter scope must not shadow the reference.
+      skipEnclosingFunctionScope = false;
+      continue;
+    }
     // Skip `parent`'s bindings when the reference reached it via a position that
     // evaluates in the ENCLOSING scope — a function-like member's computed name
     // or decorators (NEW-3). Keep walking to the true enclosing scope.
