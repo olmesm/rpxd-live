@@ -359,6 +359,108 @@ describe("testLive: mount lifecycle (guard → setup → load)", () => {
   });
 });
 
+describe("testLive: prop-addressed objects (schema) + patchProps (ADR 0002 item 15)", () => {
+  const variantSchema = z.object({ variant: z.enum(["compact", "full"]) });
+
+  const widgetRoute = live("/widget/$id", variantSchema)
+    .setup((ctx) => ({ id: ctx.params.id, variant: "" as "compact" | "full" | "", note: "" }))
+    .load(({ props }, ctx) => {
+      ctx.patchState((s) => {
+        s.variant = props.variant;
+      });
+    })
+    .rpc("setNote", (r) =>
+      r.input(z.object({ text: z.string() })).handler(async ({ text }, ctx) => {
+        ctx.patchState((s) => {
+          s.note = text;
+        });
+      }),
+    )
+    .render(({ state, rpc }) => ({ state, rpc }) as unknown);
+
+  it("mounts a mount-only fixture with params + validated props; typed rpc drives it", async () => {
+    const t = await testLive(widgetRoute, {
+      params: { id: "1" },
+      props: { variant: "compact" },
+    });
+    expect(t.state.id).toBe("1");
+    expect(t.state.variant).toBe("compact"); // the loader already ran with the props
+    await t.rpc.setNote({ text: "hello" });
+    expect(t.state.note).toBe("hello");
+    await t.dispose();
+  });
+
+  it("decodes/validates props at mount (schema output, not the raw string)", async () => {
+    // The enum schema's output type is the narrowed literal; a mount reaching
+    // `load` proves the validated value flowed through, not a loose record.
+    const t = await testLive(widgetRoute, { params: { id: "1" }, props: { variant: "full" } });
+    expect(t.state.variant).toBe("full");
+    await t.dispose();
+  });
+
+  it("patchProps reruns guard+load with new validated props; earlier state survives", async () => {
+    const t = await testLive(widgetRoute, {
+      params: { id: "1" },
+      props: { variant: "compact" },
+    });
+    // An rpc writes a field the loader never touches.
+    await t.rpc.setNote({ text: "keep me" });
+    expect(t.state.note).toBe("keep me");
+
+    await t.patchProps({ variant: "full" });
+    await t.settled();
+    expect(t.state.variant).toBe("full"); // load reran with the new props
+    expect(t.state.note).toBe("keep me"); // keepPreviousData: state preserved across the patch
+    // the patch flush is on the wire
+    expect(t.envelopes.at(-1)?.patches?.some((p) => p.path[0] === "variant")).toBe(true);
+    await t.dispose();
+  });
+
+  it("patchProps rejects invalid props BEFORE guard/load run (parity with the server patch)", async () => {
+    let guardRuns = 0;
+    let loadRuns = 0;
+    const guardedRoute = live("/gwidget/$id", variantSchema)
+      .setup(() => ({ variant: "" as "compact" | "full" | "" }))
+      .guard(() => {
+        guardRuns++;
+      })
+      .load(({ props }, ctx) => {
+        loadRuns++;
+        ctx.patchState((s) => {
+          s.variant = props.variant;
+        });
+      })
+      .render(() => null);
+
+    const t = await testLive(guardedRoute, { params: { id: "1" }, props: { variant: "compact" } });
+    const guardBefore = guardRuns;
+    const loadBefore = loadRuns;
+    await expect(
+      // @ts-expect-error — "nope" is not a valid variant
+      t.patchProps({ variant: "nope" }),
+    ).rejects.toMatchObject({ name: "ValidationError" });
+    expect(guardRuns).toBe(guardBefore); // guard never ran
+    expect(loadRuns).toBe(loadBefore); // load never ran
+    expect(t.state.variant).toBe("compact"); // nothing reconciled
+    await t.dispose();
+  });
+
+  it("rejects the mount when the INITIAL props are invalid (parity with a server mount)", async () => {
+    let setupRan = false;
+    const route = live("/badinit/$id", variantSchema)
+      .setup(() => {
+        setupRan = true;
+        return { variant: "" as "compact" | "full" | "" };
+      })
+      .render(() => null);
+    await expect(
+      // @ts-expect-error — "bogus" is not a valid variant
+      testLive(route, { params: { id: "1" }, props: { variant: "bogus" } }),
+    ).rejects.toMatchObject({ name: "ValidationError" });
+    expect(setupRan).toBe(false); // validation rejects before anything is allocated
+  });
+});
+
 describe("testLive: path params + dispose", () => {
   it("passes typed path params through to setup", async () => {
     const route = live("/org/$orgId")

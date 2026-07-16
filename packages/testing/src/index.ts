@@ -10,6 +10,7 @@
 import {
   type Envelope,
   isSuperseded,
+  type LiveDefinition,
   LiveInstance,
   type LiveRoute,
   memory,
@@ -18,6 +19,7 @@ import {
   type PropsRecord,
   type RpcBatch,
   type StorageAdapter,
+  validateInput,
 } from "@rpxd/core";
 
 /**
@@ -32,17 +34,21 @@ export type TestRpcFacade<Component> = Component extends (props: infer P) => unk
   : Record<string, (payload?: unknown) => Promise<void>>;
 
 /** Options for {@link testLive}. */
-export interface TestLiveOptions<Path extends string, Session> {
+export interface TestLiveOptions<Path extends string, Session, Props = PropsRecord> {
   /** Typed path params for the route literal (§7). Defaults to `{}`. */
   params?: PathParams<Path>;
   /** Session slice the instance mounts with. Defaults to `{}`. */
   session?: Session;
   /**
-   * Props the mount's `guard` + `load` run with (§7) — a page's URL query is
-   * its props record, so this is the initial page load's query. Defaults to
-   * `{}`. Use `t.navigate()` for subsequent URL changes.
+   * Props the mount's `guard` + `load` run with — a page's URL query is its
+   * props record, and a prop-addressed object's are its mount props (ADR 0002).
+   * When the object declared a props schema, this is **typed and validated**
+   * against it (a wrong shape is a compile error, and an invalid value rejects
+   * the mount — parity with a server mount's 422); a schema-less object keeps
+   * the raw {@link PropsRecord}. Defaults to `{}`. Use {@link TestLive.navigate}
+   * or {@link TestLive.patchProps} for subsequent changes.
    */
-  props?: PropsRecord;
+  props?: Props;
   /**
    * Storage adapter — defaults to a fresh `memory()`. Share one adapter
    * between two `testLive` handles to test multiplayer over the pubsub bus.
@@ -55,7 +61,7 @@ export interface TestLiveOptions<Path extends string, Session> {
 /**
  * A mounted live object under test — see {@link testLive}.
  */
-export interface TestLive<S, Session, Rpc> {
+export interface TestLive<S, Session, Rpc, Props = PropsRecord> {
   /** The real underlying instance, for anything the facade doesn't cover. */
   readonly instance: LiveInstance<S, string, Session>;
   /** Current server-confirmed state (live getter). */
@@ -85,11 +91,47 @@ export interface TestLive<S, Session, Rpc> {
    */
   broadcast(topic: string, event: string, payload: unknown): void;
   /**
-   * Reconcile the instance to a new URL (§7), exactly as a `nav.patch` /
-   * page load does: run `guard` (throws `redirect` on a deny) then `load`,
-   * awaiting the stream to settle. Assert on `state`/`envelopes` afterwards.
+   * Reconcile the instance to a new URL (§7) — the URL-flavored patch, for
+   * pages. Exactly as a `nav.patch` / page load does: when the route declared a
+   * props schema, **validate** the record first (a reject surfaces here, before
+   * anything reconciles — parity with the server's 422); then run `guard`
+   * (throws `redirect` on a deny) and `load`, awaiting the stream to settle.
+   * Assert on `state`/`envelopes` afterwards.
+   *
+   * This is the same reconcile as {@link TestLive.patchProps} under the fold —
+   * a page's URL query *is* its props record (ADR 0002). Pick the name that
+   * reads for the object: `navigate` for URL-addressed pages, `patchProps` for
+   * prop-addressed objects.
+   *
+   * @example
+   * ```ts
+   * await t.navigate({ filter: "done" });
+   * expect(t.state.filter).toBe("done");
+   * ```
    */
-  navigate(props: PropsRecord): Promise<void>;
+  navigate(props: Props): Promise<void>;
+  /**
+   * Patch the instance's props record (ADR 0002) — the props-flavored reconcile,
+   * for prop-addressed live objects (the same seam as {@link TestLive.navigate},
+   * URL vocabulary aside). When the object declared a props schema, the record is
+   * **validated first**: an invalid value rejects the returned promise *before*
+   * `guard` or `load` runs (parity with the server mount/patch surface). Then the
+   * mount's `guard` reruns (authorization freshness is never weakened) and `load`
+   * reruns with the new props — identity (path params) is unchanged, so `setup`
+   * does not rerun and state is preserved across the patch (keepPreviousData: a
+   * field an earlier rpc wrote survives). `await t.settled()` to flush streamed
+   * work, then assert on `state`/`envelopes`.
+   *
+   * @example
+   * ```ts
+   * const t = await testLive(widget, { params: { id: "1" }, props: { variant: "compact" } });
+   * await t.rpc.pin({ id: "abc" });          // writes state the loader won't touch
+   * await t.patchProps({ variant: "full" }); // reruns guard+load, keeps prior state
+   * await t.settled();
+   * expect(t.state.variant).toBe("full");
+   * ```
+   */
+  patchProps(next: Props): Promise<void>;
   /**
    * Resolve once everything in flight has landed: pending rpcs (including
    * their streaming flushes), scheduled patch flushes, the mutation queue,
@@ -141,15 +183,28 @@ interface QueuedCall {
  * await expect(testLive(adminRoute)).rejects.toMatchObject({ location: "/login" });
  * ```
  */
-export async function testLive<S, Path extends string, Session, Component>(
-  route: LiveRoute<S, Path, Session, Component>,
-  opts: TestLiveOptions<Path, Session> = {},
-): Promise<TestLive<S, Session, TestRpcFacade<Component>>> {
+export async function testLive<S, Path extends string, Session, Component, Props = PropsRecord>(
+  route: LiveRoute<S, Path, Session, Component, Props>,
+  // `Props` is inferred from the route alone (NoInfer): `opts.props` is
+  // *checked* against the schema output, never a second inference source — so a
+  // route's declared props type wins and a wrong-shaped literal is an error.
+  opts: TestLiveOptions<Path, Session, NoInfer<Props>> = {},
+): Promise<TestLive<S, Session, TestRpcFacade<Component>, Props>> {
   const id = opts.id ?? `test-${++instanceCounter}`;
   const storage = opts.storage ?? memory();
   const params = opts.params ?? ({} as PathParams<Path>);
   const session = opts.session ?? ({} as Session);
-  const props = opts.props ?? {};
+
+  // Validate the initial props against the declared schema (ADR 0002 item 6):
+  // the mounter validates props *before* `guard` (untrusted), and an invalid
+  // value rejects the mount the way a server mount answers 422 — nothing is
+  // allocated. A schema-less object passes the raw record through unchanged.
+  const props: Record<string, unknown> = route.props
+    ? ((await validateInput(route.props, opts.props ?? {}, `props ${route.path}`)) as Record<
+        string,
+        unknown
+      >)
+    : ((opts.props ?? {}) as Record<string, unknown>);
 
   // Mount runs the same ordered lifecycle stages as the server's fresh mount
   // (`buildInstance`, §12): guard → setup → load. Guard runs first — before
@@ -157,14 +212,18 @@ export async function testLive<S, Path extends string, Session, Component>(
   // (`throw redirect`) rejects this call, as the server maps it to a 302.
   if (route.def.guard) {
     await route.def.guard(
-      { params, props },
+      // `props` is the schema output (or the raw record with no schema); the
+      // runtime record already matches the guard's declared `Props`.
+      { params, props: props as Props },
       { params, session, signal: new AbortController().signal },
     );
   }
 
   const instance = await LiveInstance.create({
     id,
-    def: route.def,
+    // The instance is props-type-agnostic (validation is the mounter's job,
+    // done above) — erase the `Props` generic to the record it carries at runtime.
+    def: route.def as LiveDefinition<S, Path, Session>,
     params,
     session,
     storage,
@@ -250,7 +309,28 @@ export async function testLive<S, Path extends string, Session, Component>(
     return run;
   };
 
-  const t: TestLive<S, Session, TestRpcFacade<Component>> = {
+  // The reconcile behind both `navigate` (URL-flavored) and `patchProps`
+  // (props-flavored): a page's URL query *is* its props record (ADR 0002), so
+  // one seam serves both vocabularies. Validate first when a schema is declared
+  // — an invalid value rejects BEFORE `guard`/`load` run, parity with the
+  // server's mount/patch 422 — then re-guard (freshness) and re-load (identity
+  // unchanged, so `setup` never reruns and prior state is preserved).
+  const reconcile = async (next: Props): Promise<void> => {
+    const validated: Record<string, unknown> = route.props
+      ? ((await validateInput(route.props, next, `props ${route.path}`)) as Record<string, unknown>)
+      : (next as Record<string, unknown>);
+    try {
+      await instance.authorize(validated);
+    } catch (e) {
+      // A concurrent reconcile superseded this guard run: the winning one owns
+      // the outcome — skip the stale URL's load quietly.
+      if (isSuperseded(e)) return;
+      throw e;
+    }
+    await instance.load(validated);
+  };
+
+  const t: TestLive<S, Session, TestRpcFacade<Component>, Props> = {
     instance: instance as LiveInstance<S, string, Session>,
     get state() {
       return instance.state;
@@ -275,17 +355,8 @@ export async function testLive<S, Path extends string, Session, Component>(
         self: false,
       });
     },
-    async navigate(props) {
-      try {
-        await instance.authorize(props);
-      } catch (e) {
-        // A concurrent navigate superseded this guard run: the winning
-        // navigate owns the outcome — skip the stale URL's load quietly.
-        if (isSuperseded(e)) return;
-        throw e;
-      }
-      await instance.load(props);
-    },
+    navigate: reconcile,
+    patchProps: reconcile,
     async settled() {
       while (inflight.size > 0) {
         await Promise.all([...inflight]);

@@ -45,3 +45,45 @@ describe("testLive types", () => {
     void testLive(route, { params: {} });
   });
 });
+
+const widget = live("/widget/$id", z.object({ variant: z.enum(["compact", "full"]) }))
+  .setup(() => ({ variant: "" as "compact" | "full" | "" }))
+  .load(({ props }, ctx) => {
+    ctx.patchState((s) => {
+      s.variant = props.variant;
+    });
+  })
+  .render(() => null);
+
+describe("testLive props typing (ADR 0002 item 15)", () => {
+  it("types the `props` option from the route's schema output", async () => {
+    void testLive(widget, { params: { id: "1" }, props: { variant: "compact" } });
+    // @ts-expect-error — "wide" is not a valid variant
+    void testLive(widget, { params: { id: "1" }, props: { variant: "wide" } });
+    // @ts-expect-error — props must match the schema output shape
+    void testLive(widget, { params: { id: "1" }, props: { nope: "x" } });
+  });
+
+  it("types the `patchProps` arg from the route's schema output", async () => {
+    const t = await testLive(widget, { params: { id: "1" }, props: { variant: "compact" } });
+    expectTypeOf(t.patchProps).parameter(0).toEqualTypeOf<{ variant: "compact" | "full" }>();
+    await t.patchProps({ variant: "full" });
+    // @ts-expect-error — "wide" is not a valid variant
+    void t.patchProps({ variant: "wide" });
+  });
+
+  it("keeps a loose record for a schema-less route (back-compat)", async () => {
+    const schemaless = live("/plain")
+      .setup(() => ({ q: "" }))
+      .load(({ props }, ctx) => {
+        ctx.patchState((s) => {
+          s.q = props.filter ?? "";
+        });
+      })
+      .render(() => null);
+    const t = await testLive(schemaless, { props: { filter: "done" } });
+    // schema-less: any string-keyed record is accepted (raw query semantics)
+    await t.patchProps({ anything: "goes" });
+    await t.navigate({ filter: "open" });
+  });
+});
