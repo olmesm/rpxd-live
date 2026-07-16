@@ -8,7 +8,7 @@
  * docs-site/src/content/docs/concepts/wire-protocol.md and pinned by
  * packages/core/test/protocol-conformance.test.ts. Change all three together.
  */
-import { type Envelope, type RpcBatch, redirect } from "@rpxd/core";
+import { type ConnectionStatus, type Envelope, type RpcBatch, redirect } from "@rpxd/core";
 import { LiveStore, type RpcMeta } from "./store.ts";
 
 /** The slice of `EventSource` the connection uses — injectable for tests. */
@@ -72,6 +72,39 @@ export interface Bootstrap {
   snapshot: { state: unknown; session: unknown };
 }
 
+/**
+ * A mounted slot's control surface (ADR 0002 item 9): its own {@link LiveStore}
+ * plus the operations `<LiveSlot>` (item 10) drives it with. A slot rides the
+ * page's app-lifetime connection — its envelopes multiplex over the same stream
+ * — but keeps a store of its own, so its optimistic queue, `keyOf`, and errors
+ * are isolated from the page and from sibling slots.
+ *
+ * @example
+ * ```ts
+ * const chat = await conn.mountSlot(fillPattern("/chat/$id", { id: "main" }), { tools }, { meta });
+ * chat.onDeny((loc) => setDenied(loc)); // render a fallback instead of soft-navigating
+ * chat.store.rpc.send({ text: "hi" });
+ * chat.patchProps({ tools: nextTools }); // re-guard + re-load on the same instance
+ * chat.release(); // on unmount
+ * ```
+ */
+export interface SlotHandle<S = unknown, Session = Record<string, unknown>> {
+  /** The slot's isolated store — subscribe/render it like the page store. */
+  readonly store: LiveStore<S, Session>;
+  /** The server instance id this slot is bound to. */
+  readonly instance: string;
+  /** Tier-1 props change for this slot: a `url` message → re-guard + re-load. */
+  patchProps(props: Record<string, unknown>): void;
+  /** Abandon the slot: release the instance from the stream and deregister its store. */
+  release(): void;
+  /**
+   * Register a runtime-deny sink for this slot (§10). A `guard`/`load` deny —
+   * at mount or on a later `patchProps` — fires this instead of the app-level
+   * redirect, so a denied slot renders `fallback` while the page stays live.
+   */
+  onDeny(fn: (location: string) => void): void;
+}
+
 /** Constructor options for {@link LiveConnection}. */
 export interface ConnectionOptions {
   /** Instance id (from SSR bootstrap or a control mount response). */
@@ -110,8 +143,20 @@ export interface ConnectionOptions {
  */
 export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   readonly #opts: ConnectionOptions;
-  /** The instance the store is currently bound to — swapped by a tier-2 remount (§7). */
+  /** The PRIMARY (page) instance — swapped by a tier-2/3 remount (§7, ADR item 9). */
   #instance: string;
+  /**
+   * instance id → store (ADR item 9). One app-lifetime connection multiplexes
+   * every instance of the session — the page plus any mounted slots — over the
+   * same stream; each keeps its own store (isolated optimistic queue/keyOf).
+   * The primary is always registered under {@link store}.
+   */
+  readonly #stores = new Map<string, LiveStore>();
+  /**
+   * instance id → runtime-deny sink (§10, ADR item 9). Consulted before the
+   * primary redirect check so a slot's deny fires its `onDeny`, never the app.
+   */
+  readonly #denySinks = new Map<string, (location: string) => void>();
   /** Client-owned stream id: names this connection's stream for late-mount/release (§7). */
   readonly #streamId = randomId();
   /** Monotonic remount tag — a superseded tier-2 remount must not rebind the store (§7). */
@@ -123,7 +168,6 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    * latest-wins (§7) already says only the newest mount owns the outcome.
    */
   #pendingMountId: string | null = null;
-  #store: LiveStore<S, Session>;
   /** Runtime-redirect sink (§10) — seeded from opts, settable for SSR connections. */
   #onRedirect: ((location: string) => void) | undefined;
   #source: EventSourceLike | undefined;
@@ -137,10 +181,11 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     this.#opts = opts;
     this.#instance = opts.instance;
     this.#onRedirect = opts.onRedirect;
-    this.#store = this.#makeStore(opts.instance);
+    const primary = this.#makeStore(opts.instance);
+    this.#stores.set(opts.instance, primary as LiveStore);
     if (opts.bootstrap) {
       // Seed confirmed state from the SSR snapshot — no connect spinner (§12).
-      this.#store.applyEnvelope({
+      primary.applyEnvelope({
         seq: opts.bootstrap.seq,
         instance: opts.instance,
         full: opts.bootstrap.snapshot as { state: unknown; session: unknown },
@@ -148,9 +193,9 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     }
   }
 
-  /** The store for the currently-bound instance. A tier-2 remount swaps it (§7). */
+  /** The store for the PRIMARY (page) instance. A tier-2/3 remount swaps it (§7). */
   get store(): LiveStore<S, Session> {
-    return this.#store;
+    return this.#stores.get(this.#instance) as unknown as LiveStore<S, Session>;
   }
 
   /** Install/replace the runtime-redirect sink (§10) — the app shell wires it to soft-nav. */
@@ -158,14 +203,40 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     this.#onRedirect = fn;
   }
 
-  /** Build a store bound to `instance`; its resync/rpc target that exact id. */
-  #makeStore(instance: string): LiveStore<S, Session> {
-    return new LiveStore<S, Session>({
+  /**
+   * Build a store bound to `instance` with its own rpc `meta` (ADR item 9: meta
+   * moves per-store — the page's on construction/remount, a slot's at
+   * `mountSlot`). Its resync/rpc/send target that exact id over the shared stream.
+   */
+  #makeStore<T = S, TSession = Session>(
+    instance: string,
+    meta?: Record<string, RpcMeta>,
+  ): LiveStore<T, TSession> {
+    return new LiveStore<T, TSession>({
       instance,
-      meta: this.#opts.meta,
+      meta: meta ?? this.#opts.meta,
       send: (batch) => this.#send(batch),
-      requestResync: () => this.#control({ type: "resync", instance }),
+      requestResync: () => void this.#control({ type: "resync", instance }),
     });
+  }
+
+  /** Dispatch a downstream envelope to its instance's store, if one is registered. */
+  #dispatchEnvelope(env: Envelope): void {
+    if (this.#handleRedirectEnvelope(env)) return;
+    const store = this.#stores.get(env.instance);
+    if (!store) return; // an instance we don't (or no longer) hold — ignore
+    store.applyEnvelope(env);
+    if (store.status !== "live") store.setStatus("live");
+  }
+
+  /** Fan a transport status change to every registered store (shared transport). */
+  #setStatusAll(status: ConnectionStatus): void {
+    for (const store of this.#stores.values()) store.setStatus(status);
+  }
+
+  /** Resend every store's unacked batches after reconnect — the server dedupes (§11). */
+  #resendAllUnacked(): void {
+    for (const store of this.#stores.values()) store.resendUnacked();
   }
 
   /** Open the transport. SSE reconnects via EventSource; WS retries with backoff. */
@@ -189,23 +260,21 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       ((url: string) => new EventSource(url) as unknown as EventSourceLike);
     const source = factory(`${base}/__rpxd/stream?${query}`);
     this.#source = source;
-    this.store.setStatus("connecting");
+    this.#setStatusAll("connecting");
 
     source.addEventListener("open", () => {
       const reconnected = this.#everOpened;
       this.#everOpened = true;
-      this.store.setStatus("live");
-      if (reconnected) {
-        // Unacked optimistic rpcs are resent with their original ids —
-        // the server dedupes (§11).
-        this.store.resendUnacked();
-      }
+      // Reconnect fans to EVERY store (ADR item 9): unacked optimistic rpcs are
+      // resent with their original ids (server dedupes, §11), and every store —
+      // page and slots — recovers via the server's full-snapshot-on-resubscribe
+      // (subscribeSession resyncs every session instance when the stream
+      // re-subscribes). No per-store resync request is needed on the client.
+      this.#setStatusAll("live");
+      if (reconnected) this.#resendAllUnacked();
     });
     source.addEventListener("env", (event) => {
-      const env = JSON.parse(event.data) as Envelope;
-      if (this.#handleRedirectEnvelope(env)) return;
-      this.store.applyEnvelope(env);
-      if (this.store.status !== "live") this.store.setStatus("live");
+      this.#dispatchEnvelope(JSON.parse(event.data) as Envelope);
     });
     source.addEventListener("error", () => {
       // A refusal before we ever opened (auth/origin 403) closes the
@@ -216,10 +285,10 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       if (!this.#everOpened && source.readyState === ES_CLOSED) {
         source.close();
         this.#source = undefined;
-        this.store.setStatus("error");
+        this.#setStatusAll("error");
         return;
       }
-      this.store.setStatus("reconnecting");
+      this.#setStatusAll("reconnecting");
     });
   }
 
@@ -238,28 +307,27 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       this.#opts.webSocket ?? ((url: string) => new WebSocket(url) as unknown as WebSocketLike);
     const socket = factory(`${wsBase}/__rpxd/ws${attach}`);
     this.#socket = socket;
-    this.store.setStatus(this.#everOpened ? "reconnecting" : "connecting");
+    this.#setStatusAll(this.#everOpened ? "reconnecting" : "connecting");
 
     socket.addEventListener("open", () => {
       const reconnected = this.#everOpened;
       this.#everOpened = true;
       this.#socketOpen = true;
       this.#retryAttempt = 0;
-      this.store.setStatus("live");
-      if (reconnected) this.store.resendUnacked();
+      // Fan to every store (ADR item 9); the server resyncs every session
+      // instance when the new socket re-subscribes (subscribeSession).
+      this.#setStatusAll("live");
+      if (reconnected) this.#resendAllUnacked();
     });
     socket.addEventListener("message", (event) => {
-      const env = JSON.parse(String(event.data)) as Envelope;
-      if (this.#handleRedirectEnvelope(env)) return;
-      this.store.applyEnvelope(env);
-      if (this.store.status !== "live") this.store.setStatus("live");
+      this.#dispatchEnvelope(JSON.parse(String(event.data)) as Envelope);
     });
     const retry = () => {
       if (this.#socket !== socket) return;
       this.#socket = undefined;
       this.#socketOpen = false;
       if (this.#closed) return;
-      this.store.setStatus("reconnecting");
+      this.#setStatusAll("reconnecting");
       // Exponential backoff with jitter (§11): the delay lands in
       // [window/2, window], window doubling per attempt up to the cap —
       // spreads a fleet of clients after a server bounce.
@@ -280,13 +348,13 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
         if (this.#socket !== socket) return;
         this.#socket = undefined;
         this.#socketOpen = false;
-        this.store.setStatus("error");
+        this.#setStatusAll("error");
         return;
       }
       retry();
     });
     socket.addEventListener("error", () => {
-      this.store.setStatus("reconnecting");
+      this.#setStatusAll("reconnecting");
     });
   }
 
@@ -297,15 +365,78 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    * (WS) and is routed to `onRedirect` for a soft-nav (§10).
    */
   patchProps(props: Record<string, string>): void {
-    const instance = this.#instance;
+    this.#sendUrl(this.#instance, props);
+  }
+
+  /**
+   * Send a `url` (tier-1 props) message for one instance and route a deny back
+   * to the right sink: a slot instance's `onDeny` (via {@link #denySinks}) or —
+   * for the primary — the app-level redirect. WS denies arrive as `redirect`
+   * envelopes (see the socket `message` handler); SSE denies come back as a
+   * `{ redirect }` control response consumed here.
+   */
+  #sendUrl(instance: string, props: Record<string, unknown>): void {
     if (this.#opts.transport === "ws" && this.#socketOpen && this.#socket) {
       // A WS deny arrives as a `redirect` envelope on the socket (see message).
       this.#socket.send(JSON.stringify({ type: "url", instance, props }));
       return;
     }
     void this.#control({ type: "url", instance, props }).then((res) => {
-      if (res instanceof Response && res.ok) void this.#consumeRedirect(res);
+      if (res instanceof Response && res.ok) void this.#consumeRedirect(res, instance);
     });
+  }
+
+  /**
+   * Mount a slot over this app-lifetime connection (ADR 0002 item 9). Sends a
+   * `mount` naming this stream; on a `setup`/`guard` deny throws `redirect()`
+   * for `<LiveSlot>` to surface as `fallback`. On success it registers a store
+   * bound to the returned instance, joins that instance to the live stream (a
+   * WS `mount` frame joins the socket; SSE resyncs after the mount already
+   * joined by stream id), and returns a {@link SlotHandle}. The slot's envelopes
+   * multiplex over the page's stream but never touch the page's store.
+   *
+   * @example
+   * ```ts
+   * const chat = await conn.mountSlot("/chat/main", { tools }, { meta: rpcMetaFromDef(Chat.def) });
+   * useLiveStore(chat.store); // render it; page store is untouched
+   * ```
+   */
+  async mountSlot<T = unknown, TSession = Record<string, unknown>>(
+    path: string,
+    props: Record<string, unknown>,
+    opts: { meta?: Record<string, RpcMeta> } = {},
+  ): Promise<SlotHandle<T, TSession>> {
+    const parsed = await this.#mountRequest(path, props);
+    // A mount deny (§10) surfaces to the caller as a thrown redirect — the
+    // slot renders `fallback`; the app is never soft-navigated.
+    if ("redirect" in parsed) throw redirect(parsed.redirect);
+    const instance = parsed.instance;
+    const store = this.#makeStore<T, TSession>(instance, opts.meta);
+    this.#stores.set(instance, store as LiveStore);
+    if (this.#opts.transport === "ws" && this.#socketOpen && this.#socket) {
+      // The socket *is* the stream: the control POST mounted the instance (and
+      // surfaced any deny), but on WS the POST's `stream` id names no SSE
+      // stream — so join the just-mounted instance to THIS socket with a `mount`
+      // frame. `subscribeInstance` is idempotent (warm reuse) and resyncs it.
+      this.#socket.send(JSON.stringify({ type: "mount", path, props }));
+    } else {
+      // SSE: the mount POST carried `stream`, so the server already joined the
+      // instance to this stream — resync so the fresh store gets its snapshot.
+      void this.#control({ type: "resync", instance });
+    }
+    return {
+      store,
+      instance,
+      patchProps: (next) => this.#sendUrl(instance, next),
+      release: () => {
+        void this.#control({ type: "release", instance, stream: this.#streamId });
+        this.#stores.delete(instance);
+        this.#denySinks.delete(instance);
+      },
+      onDeny: (fn) => {
+        this.#denySinks.set(instance, fn);
+      },
+    };
   }
 
   /**
@@ -319,8 +450,23 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    * swap — a remount whose `mountRequest` resolves after a newer one started
    * neither rebinds the store nor fires its redirect; it just releases the
    * instance it mounted so the loser doesn't leak.
+   *
+   * **Tier 3 rides this path (ADR 0002 item 9)**: a different route pattern no
+   * longer builds a fresh connection — it remounts the new page instance over
+   * this same stream and swaps the primary store. `meta` refreshes the primary
+   * store's rpc metadata (`rpcMetaFromDef` of the new route) so it
+   * validates/optimistics with the arriving page's contract.
+   *
+   * @example
+   * ```ts
+   * await conn.remount("/board/9", { filter: "open" }, rpcMetaFromDef(Board.def));
+   * ```
    */
-  async remount(path: string, search: Record<string, string>): Promise<void> {
+  async remount(
+    path: string,
+    search: Record<string, string>,
+    meta?: Record<string, RpcMeta>,
+  ): Promise<void> {
     const runId = ++this.#remountRunId;
     const parsed = await this.#mountRequest(path, search);
     const superseded = runId !== this.#remountRunId;
@@ -336,7 +482,7 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     }
     const previous = this.#instance;
     this.#instance = parsed.instance;
-    this.#store = this.#makeStore(parsed.instance);
+    this.#stores.set(parsed.instance, this.#makeStore(parsed.instance, meta) as LiveStore);
     if (this.#opts.transport === "ws" && this.#socketOpen && this.#socket) {
       // The socket *is* the stream: join the new instance to it (warm-reuse of
       // the just-mounted instance) so its snapshot arrives on this socket. The
@@ -352,12 +498,15 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       void this.#control({ type: "resync", instance: parsed.instance });
     }
     void this.#control({ type: "release", instance: previous, stream: this.#streamId });
+    // Deregister the outgoing page store so its late envelopes stop dispatching.
+    // Guard against the shared-instance case (a re-mount of the same id).
+    if (previous !== parsed.instance) this.#stores.delete(previous);
   }
 
   /** POST a `mount` naming this stream; returns the new instance id or a redirect. */
   async #mountRequest(
     path: string,
-    search: Record<string, string>,
+    search: Record<string, unknown>,
   ): Promise<{ instance: string } | { redirect: string }> {
     const res = await this.#fetch()(`${this.#opts.base ?? ""}/__rpxd/control`, {
       method: "POST",
@@ -370,18 +519,24 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     return (await res.json()) as { instance: string } | { redirect: string };
   }
 
-  /** Route a `{ redirect }` control response to `onRedirect` (§10). */
-  async #consumeRedirect(res: Response): Promise<void> {
+  /**
+   * Route a `{ redirect }` control response (§10). A slot instance's deny fires
+   * its `onDeny` sink; the primary's soft-navs the app. Both are sanitized to a
+   * same-origin target.
+   */
+  async #consumeRedirect(res: Response, instance: string): Promise<void> {
     if (!(res.headers.get("content-type") ?? "").includes("application/json")) return;
     const body = (await res.json().catch(() => null)) as { redirect?: string } | null;
-    if (body?.redirect) this.#navigateSafely(body.redirect);
+    if (body?.redirect) this.#routeRedirect(instance, body.redirect);
   }
 
   /**
-   * A `redirect` envelope (WS runtime deny, §10) → soft-nav. Matches either the
-   * bound instance, or — for a mount denied before any instance bound — the
-   * in-flight socket mount's correlation id (#65). A stale mountId (superseded
-   * remount) matches neither and is dropped, per latest-wins (§7).
+   * A `redirect` envelope (WS runtime deny, §10) → the right sink. Order:
+   * (1) the in-flight socket mount's correlation id (#65) — a mount denied
+   * before any instance bound answers with `instance: ""`; (2) a slot's deny
+   * sink, so a slot deny never soft-navs the app; (3) the primary instance →
+   * app redirect. A stale mountId (superseded remount) matches none and drops,
+   * per latest-wins (§7).
    */
   #handleRedirectEnvelope(env: Envelope): boolean {
     if (!env.redirect) return false;
@@ -390,9 +545,28 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       this.#navigateSafely(env.redirect);
       return true;
     }
+    if (this.#denySinks.has(env.instance)) {
+      this.#routeRedirect(env.instance, env.redirect);
+      return true;
+    }
     if (env.instance !== this.#instance) return false;
     this.#navigateSafely(env.redirect);
     return true;
+  }
+
+  /**
+   * Send a sanitized redirect to a slot's deny sink when one is registered for
+   * `instance`, else soft-nav the app. Unsafe targets are dropped (with a warn).
+   */
+  #routeRedirect(instance: string, target: string): void {
+    const sink = this.#denySinks.get(instance);
+    if (!sink) {
+      this.#navigateSafely(target);
+      return;
+    }
+    const safe = safeRedirectTarget(target);
+    if (safe) sink(safe);
+    else console.warn(`[rpxd] ignoring unsafe redirect target: ${target}`);
   }
 
   /**
@@ -435,8 +609,9 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       credentials: "same-origin",
     }).catch(() => {
       // Delivery is at-least-once: the batch stays pending and is resent on
-      // the next reconnect (§11).
-      this.store.setStatus("reconnecting");
+      // the next reconnect (§11). The transport is shared, so a POST failure
+      // reflects on every store (ADR item 9).
+      this.#setStatusAll("reconnecting");
     });
   }
 

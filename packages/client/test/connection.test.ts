@@ -2,6 +2,7 @@ import type { Envelope, RpcBatch } from "@rpxd/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type EventSourceLike, LiveConnection } from "../src/connection.ts";
 import { buildHref } from "../src/router.tsx";
+import type { RpcMeta } from "../src/store.ts";
 
 class FakeEventSource implements EventSourceLike {
   static instances: FakeEventSource[] = [];
@@ -299,6 +300,245 @@ describe("LiveConnection (§11, §12)", () => {
     );
     conn.close();
     expect((FakeEventSource.instances.at(-1) as FakeEventSource).closed).toBe(true);
+  });
+});
+
+const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+describe("store multiplexing (ADR 0002 item 9)", () => {
+  /** A connection whose control mounts answer with a per-path instance id. */
+  function makeMux(opts: { urlRedirect?: string } = {}) {
+    const requests: { url: string; body: Record<string, unknown> | null }[] = [];
+    const redirects: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      requests.push({ url: String(url), body });
+      if (body?.type === "mount") {
+        const inst = body.path === "/chat/main" ? "slot-i" : "srv-i2";
+        return Response.json({ instance: inst, seq: 1 });
+      }
+      if (body?.type === "url" && opts.urlRedirect) {
+        return Response.json({ redirect: opts.urlRedirect });
+      }
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      bootstrap,
+      fetchImpl,
+      onRedirect: (loc) => redirects.push(loc),
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.connect();
+    const source = () => FakeEventSource.instances.at(-1) as FakeEventSource;
+    source().emit("open");
+    const controls = () =>
+      requests.filter((r) => r.url.endsWith("/__rpxd/control")).map((r) => r.body);
+    const rpcs = () => requests.filter((r) => r.url.endsWith("/__rpxd/rpc"));
+    return { conn, requests, redirects, source, controls, rpcs };
+  }
+
+  it("mountSlot sends a control mount naming the stream and returns a bound handle", async () => {
+    const { conn, controls } = makeMux();
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", { topic: "x" });
+    const mount = controls().find((b) => b?.type === "mount") as {
+      path: string;
+      props: unknown;
+      stream: string;
+    };
+    expect(mount).toMatchObject({ type: "mount", path: "/chat/main", props: { topic: "x" } });
+    expect(typeof mount.stream).toBe("string");
+    expect(slot.instance).toBe("slot-i");
+    // SSE: after the join at mount, resync targets the slot instance.
+    expect(controls()).toContainEqual({ type: "resync", instance: "slot-i" });
+  });
+
+  it("routes envelopes to each instance's own store, never crossing", async () => {
+    const { conn, source } = makeMux();
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", {});
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 5,
+        instance: "i1",
+        patches: [{ op: "add", path: ["items", 1], value: "b" }],
+      }),
+    );
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 1,
+        instance: "slot-i",
+        full: { state: { items: ["z"] }, session: {} },
+      }),
+    );
+    expect(conn.store.snapshot().state.items).toEqual(["a", "b"]);
+    expect(slot.store.snapshot().state).toEqual({ items: ["z"] });
+
+    // A slot-targeted patch must not touch the page store, and vice versa.
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 2,
+        instance: "slot-i",
+        patches: [{ op: "add", path: ["items", 1], value: "y" }],
+      }),
+    );
+    expect(conn.store.snapshot().state.items).toEqual(["a", "b"]); // page untouched
+    expect(slot.store.snapshot().state.items).toEqual(["z", "y"]);
+  });
+
+  it("handle.patchProps sends a url message for the slot instance", async () => {
+    const { conn, controls } = makeMux();
+    const slot = await conn.mountSlot("/chat/main", {});
+    slot.patchProps({ topic: "y" });
+    await tick();
+    expect(controls()).toContainEqual({ type: "url", instance: "slot-i", props: { topic: "y" } });
+  });
+
+  it("handle.release releases the instance and deregisters its store", async () => {
+    const { conn, source, controls } = makeMux();
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", {});
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 1,
+        instance: "slot-i",
+        full: { state: { items: ["s"] }, session: {} },
+      }),
+    );
+    expect(slot.store.snapshot().state.items).toEqual(["s"]);
+
+    slot.release();
+    expect(controls()).toContainEqual(
+      expect.objectContaining({ type: "release", instance: "slot-i" }),
+    );
+    // After release, envelopes for that instance no longer dispatch.
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 2,
+        instance: "slot-i",
+        full: { state: { items: ["gone"] }, session: {} },
+      }),
+    );
+    expect(slot.store.snapshot().state.items).toEqual(["s"]); // unchanged
+  });
+
+  it("a slot runtime deny (url redirect) fires its onDeny sink, not the app redirect (§10)", async () => {
+    const { conn, redirects } = makeMux({ urlRedirect: "/login" });
+    const slot = await conn.mountSlot("/chat/main", {});
+    const denies: string[] = [];
+    slot.onDeny((loc) => denies.push(loc));
+    slot.patchProps({ admin: "1" });
+    await tick();
+    expect(denies).toEqual(["/login"]);
+    expect(redirects).toEqual([]); // the app-level onRedirect is never called
+  });
+
+  it("a slot deny envelope on the stream fires its sink; the primary redirect still works", async () => {
+    const { conn, source, redirects } = makeMux();
+    const slot = await conn.mountSlot("/chat/main", {});
+    const denies: string[] = [];
+    slot.onDeny((loc) => denies.push(loc));
+
+    // A redirect envelope tagged with the slot instance → the slot's sink.
+    source().emit("env", JSON.stringify({ seq: 0, instance: "slot-i", redirect: "/slot-login" }));
+    expect(denies).toEqual(["/slot-login"]);
+    expect(redirects).toEqual([]);
+
+    // A redirect envelope for the primary instance still soft-navs the app.
+    source().emit("env", JSON.stringify({ seq: 0, instance: "i1", redirect: "/app-login" }));
+    expect(redirects).toEqual(["/app-login"]);
+    expect(denies).toEqual(["/slot-login"]); // slot sink not re-fired
+  });
+
+  it("reconnect resends unacked from page AND slot stores, and every store recovers (blast radius)", async () => {
+    const { conn, source, rpcs } = makeMux();
+    const es = source();
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", {});
+    es.emit(
+      "env",
+      JSON.stringify({
+        seq: 1,
+        instance: "slot-i",
+        full: { state: { items: ["s"] }, session: {} },
+      }),
+    );
+
+    void conn.store.call("add", { text: "p" });
+    void slot.store.call("add", { text: "q" });
+    await tick();
+    expect(rpcs()).toHaveLength(2); // one pending batch per store
+
+    // A slow-consumer kill: the SSE stream errors, then the EventSource
+    // auto-reconnects (open again). The server resyncs every subscribed
+    // instance on re-subscribe — modelled here by fresh fulls after open.
+    es.emit("error");
+    es.emit("open");
+    expect(rpcs()).toHaveLength(4); // both unacked batches resent (server dedupes)
+
+    es.emit(
+      "env",
+      JSON.stringify({
+        seq: 10,
+        instance: "i1",
+        full: { state: { items: ["a", "recovered"] }, session: {} },
+      }),
+    );
+    es.emit(
+      "env",
+      JSON.stringify({
+        seq: 5,
+        instance: "slot-i",
+        full: { state: { items: ["s2"] }, session: {} },
+      }),
+    );
+    expect(conn.store.snapshot().state.items).toEqual(["a", "recovered"]);
+    expect(slot.store.snapshot().state.items).toEqual(["s2"]);
+  });
+
+  it("remount reuses the transport (no new EventSource) and leaves slot stores flowing", async () => {
+    const { conn, source } = makeMux();
+    const before = FakeEventSource.instances.length;
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", {});
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 1,
+        instance: "slot-i",
+        full: { state: { items: ["s"] }, session: {} },
+      }),
+    );
+
+    // A tier-3 page swap: remount over the same stream with the new route meta.
+    const meta: Record<string, RpcMeta> = {
+      add: {
+        optimistic: (s: { items: string[] }, { text }: { text: string }) => s.items.push(text),
+      },
+    };
+    await conn.remount("/other", {}, meta);
+    expect(FakeEventSource.instances.length).toBe(before); // NO new transport built
+
+    // The swapped primary store optimistics with the NEW route meta.
+    source().emit(
+      "env",
+      JSON.stringify({ seq: 1, instance: "srv-i2", full: { state: { items: [] }, session: {} } }),
+    );
+    void conn.store.call("add", { text: "opt" });
+    await tick();
+    expect(conn.store.snapshot().state.items).toEqual(["opt"]); // meta.optimistic ran
+
+    // Envelopes keep flowing to the slot store across the page swap.
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 2,
+        instance: "slot-i",
+        patches: [{ op: "add", path: ["items", 1], value: "mid" }],
+      }),
+    );
+    expect(slot.store.snapshot().state.items).toEqual(["s", "mid"]);
   });
 });
 

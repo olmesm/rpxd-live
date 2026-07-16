@@ -1,16 +1,16 @@
 /**
- * SPA navigation runtime (§7): renders the current route and swaps route +
- * connection on location changes — soft navigation, no page load. Path params
- * are identity; a path change is a soft reload. When the new path matches the
- * *same* route pattern (tier 2), the connection is reused — a fresh instance is
- * mounted over the live stream and the store rebinds to it; the SSE transport
- * and app shell survive. A *different* pattern (tier 3) swaps the connection and
- * component. The previous page stays interactive until the next state arrives.
+ * SPA navigation runtime (§7, ADR 0002 item 9): renders the current route and
+ * swaps the route + component on location changes — soft navigation, no page
+ * load. Path params are identity; a path change is a soft reload. Every tier
+ * remounts a fresh page instance over ONE app-lifetime connection and rebinds
+ * the primary store to it (tier 3 = tier 2 + component swap); the transport and
+ * app shell — including any layout slots multiplexed on the same stream —
+ * survive. The previous page stays interactive until the next state arrives.
  */
 import { createElement, type ReactElement, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { navigate } from "wouter/use-browser-location";
-import { LiveConnection } from "./connection.ts";
+import type { LiveConnection } from "./connection.ts";
 import {
   type AnyConnection,
   type AnyRoute,
@@ -31,19 +31,25 @@ export interface LiveAppProps {
   connection: LiveConnection<any, any>;
   /** Lazy route-module table from `.rpxd/routes.gen.ts`. */
   routeModules: Record<string, () => Promise<{ default: AnyRoute }>>;
-  /** Transport for post-navigation mounts (§11). */
+  /**
+   * Transport (§11) — the generated entry bakes it into {@link connection} at
+   * construction; carried here for parity/back-compat since navigation now
+   * reuses the app-lifetime connection rather than building one (ADR item 9).
+   */
   transport?: "sse" | "ws";
   /** Optional state transform before render (RSC field hydration, §16). */
   transformState?: (state: unknown) => unknown;
 }
 
 /**
- * The framework's client shell (§7): one live page at a time, soft-swapped
- * on navigation. `Link`/`nav.navigate` push history; this component matches
- * the new pathname against the route table, mounts the live object over the
- * control channel, waits for its snapshot, then swaps route + connection
- * and closes the old one. Unmatched paths fall back to a full page load so
- * the server's 404/error pages stay authoritative.
+ * The framework's client shell (§7, ADR 0002 item 9): one live page at a time,
+ * soft-swapped on navigation over ONE app-lifetime connection. `Link`/
+ * `nav.navigate` push history; this component matches the new pathname against
+ * the route table, remounts the new page instance over the existing live stream
+ * (tier 3 = tier 2 + component swap), waits for its snapshot, then swaps route +
+ * pathname — the connection is never closed on navigation, so a layout slot's
+ * stream survives every page change. Unmatched paths fall back to a full page
+ * load so the server's 404/error pages stay authoritative.
  *
  * @example
  * ```tsx
@@ -95,27 +101,15 @@ export function LiveApp(props: LiveAppProps): ReactElement {
       search,
       my,
       ticket,
-      currentRoutePath: current.route.path,
+      // One app-lifetime connection (ADR 0002 item 9): every navigation remounts
+      // over it — tier 3 no longer builds (or closes) a connection.
       conn: current.conn,
       routeModules: props.routeModules,
-      transport: props.transport,
-      mount: (p, s, o) => LiveConnection.mount(p, s, o),
-      commit: (page, closePrevious) =>
-        setCurrent((prev) => {
-          if (closePrevious) prev.conn.close();
-          return page;
-        }),
+      commit: (page) => setCurrent(page),
       softNavigate: navigate,
       hardLoad: (url) => window.location.assign(url),
     });
-  }, [
-    location,
-    current.pathname,
-    current.conn,
-    current.route.path,
-    props.routeModules,
-    props.transport,
-  ]);
+  }, [location, current.pathname, current.conn, props.routeModules]);
 
   return (
     <RpxdProvider connection={current.conn}>

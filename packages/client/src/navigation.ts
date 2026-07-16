@@ -83,26 +83,12 @@ export interface NavigationIo {
   my: number;
   /** Shared ticket counter — compared against `my` before every commit. */
   ticket: { current: number };
-  /** The mounted page's route pattern — tier 2 (same pattern) vs 3 (§7). */
-  currentRoutePath: string;
-  /** The mounted page's connection — reused by a tier-2 remount. */
+  /** The app-lifetime connection — every navigation remounts over it (ADR item 9). */
   conn: AnyConnection;
   /** Lazy route-module table from `.rpxd/routes.gen.ts`. */
   routeModules: Record<string, () => Promise<{ default: AnyRoute }>>;
-  /** Transport for tier-3 mounts (§11). */
-  transport?: "sse" | "ws";
-  /** Mount a fresh connection (tier 3) — `LiveConnection.mount` in production. */
-  mount: (
-    pathname: string,
-    search: Record<string, string>,
-    opts: {
-      meta: ReturnType<typeof rpcMetaFromDef>;
-      transport?: "sse" | "ws";
-      onRedirect: (location: string) => void;
-    },
-  ) => Promise<AnyConnection>;
-  /** Commit the new page; `closePrevious` closes the outgoing connection (tier 3). */
-  commit: (page: CurrentPage, closePrevious: boolean) => void;
+  /** Commit the new page (route + pathname). The connection is app-lifetime — never closed here. */
+  commit: (page: CurrentPage) => void;
   /** Soft-navigate via the router (redirects, §10). */
   softNavigate: (location: string) => void;
   /** Full page load — unmatched routes and failed navigations. */
@@ -123,16 +109,17 @@ function stateReady(conn: AnyConnection): Promise<void> {
 }
 
 /**
- * Run one navigation (§7): match the pathname against the route table, mount
- * the live object (tier-2 remount over the live stream, or a tier-3 fresh
- * connection), wait for its snapshot, then commit — unless a newer navigation
- * claimed the ticket in the meantime. Unmatched paths and non-redirect
- * failures fall back to a hard load so the server's 404/error pages stay
- * authoritative.
+ * Run one navigation (§7, ADR 0002 item 9). The two tier branches collapse:
+ * **every** pathname change remounts the new page instance over the same
+ * app-lifetime connection (tier 3 = tier 2 + a component swap), refreshing the
+ * primary store's rpc meta for the arriving route, waits for its snapshot, then
+ * commits — unless a newer navigation claimed the ticket meanwhile. Unmatched
+ * paths and non-redirect failures fall back to a hard load so the server's
+ * 404/error pages stay authoritative.
  *
  * @example
  * ```ts
- * void performNavigation({ pathname, search, my, ticket, ...io });
+ * void performNavigation({ pathname, search, my, ticket, conn, routeModules, ...io });
  * ```
  */
 export async function performNavigation(io: NavigationIo): Promise<void> {
@@ -148,30 +135,18 @@ export async function performNavigation(io: NavigationIo): Promise<void> {
   }
   try {
     const mod = await load();
-    // Tier 2 vs 3 (§7): same route pattern reuses the connection (soft
-    // reload over the live stream); a different pattern swaps it.
-    if (match.path === io.currentRoutePath) {
-      const conn = io.conn;
-      await conn.remount(io.pathname, io.search);
-      await stateReady(conn);
-      if (io.ticket.current !== io.my) return; // superseded — the next remount wins
-      io.commit({ pathname: io.pathname, route: mod.default, conn }, false);
-    } else {
-      const conn = await io.mount(io.pathname, io.search, {
-        meta: rpcMetaFromDef(mod.default.def),
-        transport: io.transport,
-        onRedirect: (loc) => io.softNavigate(loc),
-      });
-      await stateReady(conn);
-      if (io.ticket.current !== io.my) {
-        conn.close(); // superseded by a later navigation
-        return;
-      }
-      io.commit({ pathname: io.pathname, route: mod.default, conn }, true);
-    }
+    // One path for every tier (ADR item 9): remount the new page instance over
+    // the existing stream, swapping the primary store to the arriving route's
+    // rpc meta. `remount`'s own run tag self-releases a superseded instance; the
+    // navigation ticket below gates the React commit.
+    const conn = io.conn;
+    await conn.remount(io.pathname, io.search, rpcMetaFromDef(mod.default.def));
+    await stateReady(conn);
+    if (io.ticket.current !== io.my) return; // superseded — the winner commits
+    io.commit({ pathname: io.pathname, route: mod.default, conn });
   } catch (e) {
-    // `mount`/`remount` threw redirect() (§10) — soft-navigate to the target
-    // instead of hard-loading the original path.
+    // `remount` threw redirect() (§10) — soft-navigate to the target instead of
+    // hard-loading the original path.
     if (isRedirect(e)) {
       if (io.ticket.current === io.my) io.softNavigate(e.location);
       return;
