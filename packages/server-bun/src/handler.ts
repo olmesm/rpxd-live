@@ -512,7 +512,14 @@ interface InstanceEntry {
  * unsubscribed and left to evict.
  */
 interface StreamHandle {
-  subscribeInstance: (entry: InstanceEntry) => void;
+  /**
+   * Join `entry` to this stream, returning whether it FRESHLY joined (`true`) or
+   * was already subscribed (`false`). A fresh join resyncs; an already-joined one
+   * stays silent (the SSE tier-2 re-mount contract). The WS `mount`-frame branch
+   * uses the `false` return to resync a late-registered store without
+   * double-sending on a fresh join (ADR 0002 items 8/9/11).
+   */
+  subscribeInstance: (entry: InstanceEntry) => boolean;
   releaseInstance: (instanceId: string) => void;
   /** Push a synthetic envelope down this stream — for acks that can't come
    * from an instance (e.g. an unknown-instance error ack). */
@@ -1420,10 +1427,17 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     /** instanceId → this subscriber's unsub, so a single instance is joined once. */
     const unsubs = new Map<string, () => void>();
 
-    const subscribeInstance = (entry: InstanceEntry, initial = false) => {
+    // Returns whether this call FRESHLY joined the instance (true) or found it
+    // already on this stream (false) — the WS `mount`-frame branch needs the
+    // distinction to snapshot a late-registered store without double-sending on a
+    // fresh join (ADR 0002 items 8/9/11). SSE callers ignore the return.
+    const subscribeInstance = (entry: InstanceEntry, initial = false): boolean => {
       // Idempotent: a warm instance already on this stream must not double-join
-      // (tier-2 re-mount of a still-live path, §7).
-      if (unsubs.has(entry.instance.id)) return;
+      // (tier-2 re-mount of a still-live path, §7). A fresh join resyncs below;
+      // an already-joined one stays silent here (the SSE tier-2 re-mount contract:
+      // no double-send). The WS join-frame's late-store resync is handled by its
+      // caller, which keys off this `false` return.
+      if (unsubs.has(entry.instance.id)) return false;
       if (entry.evictTimer) {
         clearTimeout(entry.evictTimer);
         entry.evictTimer = undefined;
@@ -1443,6 +1457,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       } else {
         entry.instance.resync();
       }
+      return true;
     };
 
     const releaseInstance = (instanceId: string) => {
@@ -2142,7 +2157,6 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
               return;
             }
             // The socket *is* the stream (§11): join the mount to it directly.
-            // `subscribeInstance` is idempotent, so a warm re-mount is a no-op.
             // Mounts over WS match the same union as HTTP control (ADR 0002 item 6).
             const registrations = mountable();
             try {
@@ -2151,7 +2165,19 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
               // answered on the socket by the catch below (the WS surface).
               const props = await resolveMountProps(msg.path, msg.props ?? {}, registrations);
               const entry = await mountInstance(sid, sessionData, msg.path, props, registrations);
-              subscribeInstance(entry);
+              // A `mount` frame is the client registering a NEW store for this
+              // instance and asking for its snapshot (buildSlotHandle sends it right
+              // after the store registers). `subscribeInstance` snapshots a FRESH
+              // join, but a SECOND tab's socket already subscribed this warm
+              // instance at connect (subscribeSession's connect loop) — before the
+              // client held the store, so that resync was dropped client-side (an
+              // envelope for an instance it doesn't hold yet, connection.ts). The
+              // frame is the only point that late store can be snapshotted, so
+              // resync when the join was NOT fresh (ADR 0002 items 8/9/11 — the
+              // PR #129 second-tab starvation). Item 8's dedup already kept `load`
+              // from re-running on identical props, so this only re-sends state,
+              // never re-loads.
+              if (!subscribeInstance(entry)) entry.instance.resync();
             } catch (e) {
               // Answer denials on the socket (mirroring the `url` branch) —
               // thrown out, they'd otherwise die in the transport's generic

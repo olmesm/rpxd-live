@@ -43,6 +43,7 @@ const boardDef: LiveDefinition<BoardState, "/org/$orgId/board", Record<string, u
 // guard/setup never run when validation rejects.
 let chatSetup = 0;
 let chatGuard = 0;
+let chatLoad = 0;
 const chatSchema = z.object({ tools: z.array(z.string()) });
 interface ChatState {
   tools: string[];
@@ -56,6 +57,7 @@ const chatDef: LiveDefinition<ChatState, "/chat", Record<string, unknown>, { too
     chatGuard++;
   },
   load: async ({ props }, ctx) => {
+    chatLoad++;
     ctx.patchState((s) => {
       s.tools = props.tools;
     });
@@ -142,6 +144,7 @@ class SseReader {
 function makeHandler(overrides: Partial<Parameters<typeof createRpxdHandler>[0]> = {}) {
   chatSetup = 0;
   chatGuard = 0;
+  chatLoad = 0;
   return createRpxdHandler({
     routes: [{ path: "/org/$orgId/board", def: boardDef }],
     slots: [{ path: "/chat", def: chatDef, props: chatSchema }],
@@ -419,6 +422,72 @@ describe("union-table control-plane mounts (ADR 0002 item 6)", () => {
     });
     const full = await sse.next();
     expect((full?.full?.state as { seen: unknown }).seen).toEqual({ filter: "done" });
+    await handler.dispose();
+  });
+
+  // ADR 0002 items 8/9/11 — the WS slot-join double layer (PR #129 CI): on WS the
+  // socket *is* the stream, so after the control mount resolves the instance id the
+  // client sends a `mount` FRAME to join its freshly-registered store to the socket.
+  // For a SECOND tab the slot is already warm, so subscribeSession's connect-time
+  // loop already subscribed the instance on this socket and resynced it — but that
+  // snapshot predates the client's store (connection.ts drops envelopes for an
+  // instance it doesn't hold yet). The join frame is therefore the ONLY moment the
+  // late store can be snapshotted; the idempotent subscribe must still resync it,
+  // and item 8's dedup must keep it from re-running `load`.
+  it("WS: a mount frame for an already-warm slot resyncs the newly-joined store without re-running load (2nd-tab race)", async () => {
+    const handler = makeHandler();
+
+    // Tab 1: a fresh socket mounts the chat slot. Its frame builds the instance and
+    // resyncs — this tab works today (the instance was born after the socket).
+    const aEnvs: Envelope[] = [];
+    const sockA = handler.socket("session-a", {}, (e) => aEnvs.push(e));
+    await sockA.message(JSON.stringify({ type: "mount", path: "/chat", props: { tools: ["x"] } }));
+    expect(chatLoad).toBe(1);
+    expect(aEnvs.some((e) => e.full)).toBe(true); // tab 1 got its snapshot
+
+    // Tab 2: a second socket opens while chat is already warm. The connect-time
+    // resync fires immediately — but a real client has not registered its store yet,
+    // so that snapshot is wasted (documents the race).
+    const bEnvs: Envelope[] = [];
+    const sockB = handler.socket("session-a", {}, (e) => bEnvs.push(e));
+    expect(bEnvs.some((e) => e.full)).toBe(true); // connect-time snapshot (store-less → dropped client-side)
+    bEnvs.length = 0; // from here, only what the join FRAME produces counts
+
+    await sockB.message(JSON.stringify({ type: "mount", path: "/chat", props: { tools: ["x"] } }));
+
+    // Item 8 dedup holds across the frame path: identical props → no reload.
+    expect(chatLoad).toBe(1);
+    // The join frame MUST resync the late-registered tab-2 store. Without it the warm
+    // instance is already on this socket (idempotent subscribe → early return), no
+    // envelope is emitted, and the client's chat store hangs in `fallback` forever.
+    expect(bEnvs.some((e) => e.full)).toBe(true);
+
+    sockA.close();
+    sockB.close();
+    await handler.dispose();
+  });
+
+  it("WS: a mount frame with CHANGED props on a warm slot re-runs load AND resyncs (tier-1-via-frame preserved)", async () => {
+    const handler = makeHandler();
+    const aEnvs: Envelope[] = [];
+    const sockA = handler.socket("session-a", {}, (e) => aEnvs.push(e));
+    await sockA.message(JSON.stringify({ type: "mount", path: "/chat", props: { tools: ["x"] } }));
+    expect(chatLoad).toBe(1);
+
+    // A second socket, warm slot, but the join frame legitimately carries NEW props:
+    // the reconcile must re-run `load` (item 8: changed props reload) and the late
+    // store must be snapshotted with the new state.
+    const bEnvs: Envelope[] = [];
+    const sockB = handler.socket("session-a", {}, (e) => bEnvs.push(e));
+    bEnvs.length = 0;
+    await sockB.message(JSON.stringify({ type: "mount", path: "/chat", props: { tools: ["y"] } }));
+
+    expect(chatLoad).toBe(2); // changed props → load re-ran
+    const snap = bEnvs.find((e) => e.full);
+    expect((snap?.full?.state as ChatState | undefined)?.tools).toEqual(["y"]);
+
+    sockA.close();
+    sockB.close();
     await handler.dispose();
   });
 });
