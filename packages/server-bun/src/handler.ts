@@ -7,6 +7,7 @@
 
 import { randomBytes } from "node:crypto";
 import {
+  canonicalProps,
   decodeBatch,
   decodeProps,
   defaultDiagnosticSink,
@@ -392,6 +393,15 @@ interface InstanceEntry {
   key: string;
   path: string;
   params: Record<string, string>;
+  /**
+   * Canonical serialization ({@link canonicalProps}) of the props most recently
+   * reconciled onto this instance — set after the initial `buildInstance` load
+   * and after every winning `reconcileUrl` (ADR 0002 item 8). The warm-mount
+   * dedup skips `load` when an incoming reconcile's props canonicalize to this
+   * exact string (and the instance is live, not snapshot-restored). A
+   * superseded/failed reconcile leaves it untouched so the next attempt reloads.
+   */
+  lastProps?: string;
   attach?: { token: string; expires: number };
   evictTimer?: ReturnType<typeof setTimeout>;
   /**
@@ -719,18 +729,49 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     def: RouteRegistration["def"],
     instance: InstanceEntry["instance"],
     props: Record<string, unknown>,
-  ): Promise<void> {
+    // ADR 0002 item 8: skip the `load` half (guard always runs) when the caller
+    // has determined the props are unchanged since the last winning reconcile
+    // and the instance is live. Never weakens `guard` — authorization freshness.
+    skipLoad = false,
+  ): Promise<boolean> {
     try {
       if (def.guard) await instance.authorize(props); // deny → throw redirect → 302
     } catch (e) {
       // A newer URL superseded this guard run mid-flight: the winning run owns
       // the outcome. Bail without loading — falling through would load a URL
-      // this run never authorized (a swallowed deny would leak its data).
-      if (isSuperseded(e)) return;
+      // this run never authorized (a swallowed deny would leak its data). Report
+      // "not reconciled" so the dedup key isn't advanced to a superseded run's props.
+      if (isSuperseded(e)) return false;
       throw e;
     }
-    if (!def.load) return;
-    await instance.loadForRender(props);
+    if (!def.load || skipLoad) return true; // no loader / deduped skip → reconciled
+    return instance.loadForRender(props); // false when a newer run superseded this load
+  }
+
+  /**
+   * Warm-mount dedup (ADR 0002 item 8): reconcile a **live in-memory** instance
+   * to `props`, ALWAYS rerunning `guard` (authorization freshness is never
+   * weakened, §10) but SKIPPING `load` when `props` canonicalize
+   * ({@link canonicalProps}) to the entry's last winning reconcile AND the
+   * instance wasn't just cold-woken from a snapshot (a restored instance may
+   * have missed broadcasts, §9, so it always reloads). The single place the
+   * skip rule lives — the warm-reuse branch of {@link mountInstance} and the
+   * `url` control message (HTTP + WS) all funnel through it, so the multi-tab
+   * storm (a second tab re-mounting a slot-bearing page) re-guards without
+   * re-running every slot's `load`. `entry.lastProps` advances only on a run
+   * that actually reconciled; a guard deny (`throw redirect`) propagates to the
+   * caller exactly as an un-deduped reconcile would, and a superseded/failed
+   * run leaves the key untouched so the next attempt reloads.
+   */
+  async function reconcileEntry(
+    entry: InstanceEntry,
+    def: RouteRegistration["def"],
+    props: Record<string, unknown>,
+  ): Promise<void> {
+    const canonical = canonicalProps(props);
+    const skipLoad = canonical === entry.lastProps && !entry.instance.restoredFromSnapshot;
+    const reconciled = await reconcileUrl(def, entry.instance, props, skipLoad);
+    if (reconciled) entry.lastProps = canonical;
   }
 
   /**
@@ -907,10 +948,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         // Warm reuse counts as recent use — bump it to most-recent in the LRU
         // (#61) so a live-but-un-adopted instance isn't shed before a colder one.
         if (unattached.delete(existing)) unattached.add(existing);
-        // Reconcile the warm instance to this load's URL (§7). Look across the
-        // caller's registration set so a slot instance finds its own def.
+        // Reconcile the warm instance to this load's URL (§7), with the item-8
+        // dedup: re-guard always, re-load only on a props change. Look across
+        // the caller's registration set so a slot instance finds its own def.
         const route = registrations.find((r) => r.path === existing.path);
-        if (route) await reconcileUrl(route.def, existing.instance, search);
+        if (route) await reconcileEntry(existing, route.def, search);
         return existing;
       }
       // The authenticated session changed (login/logout, §10): the principal —
@@ -967,6 +1009,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       key: pathname,
       path: match.path,
       params: match.params,
+      // The initial `buildInstance` load reconciled these props (ADR 0002 item
+      // 8): seed the dedup key so an immediate warm re-mount with identical
+      // props re-guards without re-loading (the multi-tab storm).
+      lastProps: canonicalProps(search),
       attach: { token: crypto.randomUUID(), expires: Date.now() + attachTtlMs },
       everAttached: false,
     };
@@ -1295,7 +1341,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     try {
       if (route) {
         const props = await resolveUrlProps(route, msg.props);
-        await reconcileUrl(route.def, entry.instance, props);
+        await reconcileEntry(entry, route.def, props); // item 8 dedup: re-guard always, re-load on change
       }
     } catch (e) {
       if (isRedirect(e)) return Response.json({ redirect: e.location });
@@ -1730,7 +1776,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
             try {
               if (route) {
                 const props = await resolveUrlProps(route, msg.props);
-                await reconcileUrl(route.def, entry.instance, props);
+                await reconcileEntry(entry, route.def, props); // item 8 dedup: re-guard always, re-load on change
               }
             } catch (e) {
               if (isRedirect(e)) {

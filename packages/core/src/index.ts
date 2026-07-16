@@ -46,7 +46,7 @@ export {
 } from "./live.ts";
 export { matchHttpPath, matchHttpRoute, matchPath, matchRoute, type RouteMatch } from "./match.ts";
 export { runPipeline, type Stage, type StageResult } from "./pipeline.ts";
-export { decodeProps, encodeProps } from "./props-codec.ts";
+export { canonicalProps, decodeProps, encodeProps } from "./props-codec.ts";
 export { isRedirect, RedirectError, redirect } from "./redirect.ts";
 export {
   isRoute,

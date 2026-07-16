@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeProps, encodeProps } from "../src/props-codec.ts";
+import { canonicalProps, decodeProps, encodeProps } from "../src/props-codec.ts";
 
 /**
  * A representative set of JSON-object props records — the codec must survive a
@@ -75,5 +75,26 @@ describe("decodeProps parse-else-string", () => {
       ok: true,
       cursor: null,
     });
+  });
+});
+
+describe("canonicalProps deep-equality serialization (ADR 0002 item 8)", () => {
+  it("is order-independent (top-level and nested keys)", () => {
+    expect(canonicalProps({ a: 1, b: 2 })).toBe(canonicalProps({ b: 2, a: 1 }));
+    expect(canonicalProps({ x: { p: 1, q: 2 } })).toBe(canonicalProps({ x: { q: 2, p: 1 } }));
+  });
+
+  it("distinguishes different values and different string/number types", () => {
+    expect(canonicalProps({ tab: "a" })).not.toBe(canonicalProps({ tab: "b" }));
+    expect(canonicalProps({ v: 20 })).not.toBe(canonicalProps({ v: "20" }));
+  });
+
+  it("preserves array order (arrays are significant, not sorted)", () => {
+    expect(canonicalProps({ xs: [1, 2] })).not.toBe(canonicalProps({ xs: [2, 1] }));
+    expect(canonicalProps({ xs: [1, 2] })).toBe(canonicalProps({ xs: [1, 2] }));
+  });
+
+  it("omits undefined-valued keys (JSON parity), so `{a:1}` ≡ `{a:1, b:undefined}`", () => {
+    expect(canonicalProps({ a: 1, b: undefined })).toBe(canonicalProps({ a: 1 }));
   });
 });

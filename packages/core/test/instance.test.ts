@@ -432,9 +432,11 @@ describe("loadForRender render gate (§12)", () => {
     const { inst } = await make(def);
     const first = inst.loadForRender({}); // starts run 1, awaits, no patch yet
     const second = inst.loadForRender({}); // supersedes run 1
-    // The superseded first render must resolve rather than orphan its gate.
-    await expect(first).resolves.toBeUndefined();
-    await expect(second).resolves.toBeUndefined();
+    // The superseded first render must resolve (not orphan its gate), and it
+    // reports `false` — it did NOT win the latest-wins race (ADR 0002 item 8);
+    // the winning second run reports `true`.
+    await expect(first).resolves.toBe(false);
+    await expect(second).resolves.toBe(true);
     gates.first?.(); // let the superseded run drain
   });
 
@@ -1289,7 +1291,9 @@ describe("diagnostic sink (#73)", () => {
         },
       };
       const { inst } = await make(def); // no emit injected
-      await expect(inst.loadForRender({})).resolves.toBeUndefined();
+      // A loader data-throw is userland state, not a superseded run, so the run
+      // still settles as the current one and reports `true` (ADR 0002 item 8).
+      await expect(inst.loadForRender({})).resolves.toBe(true);
       expect(spy).toHaveBeenCalledWith(
         expect.stringContaining("instance/load-failed"),
         expect.anything(),
@@ -1313,8 +1317,9 @@ describe("diagnostic sink (#73)", () => {
           throw new Error("sink blew up");
         },
       });
-      // The throwing sink must not propagate out of the load path.
-      await expect(inst.loadForRender({})).resolves.toBeUndefined();
+      // The throwing sink must not propagate out of the load path; the run
+      // still settles as current and reports `true` (ADR 0002 item 8).
+      await expect(inst.loadForRender({})).resolves.toBe(true);
       expect(spy).toHaveBeenCalled(); // the sink throw was caught + reported
     } finally {
       spy.mockRestore();

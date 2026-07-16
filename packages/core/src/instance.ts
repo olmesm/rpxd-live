@@ -202,6 +202,13 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   /** rpcId → ack envelope, for at-least-once dedupe (§11). */
   readonly #acks = new Map<string, Envelope>();
   #disposed = false;
+  /**
+   * Whether this in-memory instance was born by restoring a snapshot (cold
+   * wake), rather than being continuously live (ADR 0002 item 8). Set once at
+   * {@link create} and never cleared — a restored instance may have missed
+   * broadcasts while evicted (§9), so warm-mount dedup never skips its `load`.
+   */
+  #restoredFromSnapshot = false;
 
   private constructor(opts: CreateInstanceOptions<S, Path, Session>) {
     this.id = opts.id;
@@ -242,6 +249,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     if (snap && snap.version === inst.#version) {
       inst.#session = (snap.session as Session) ?? opts.session;
       inst.#seq = snap.seq;
+      inst.#restoredFromSnapshot = true; // cold wake — reconcile fully (§9, ADR 0002 item 8)
     }
     inst.#state = opts.def.setup({
       params: opts.params,
@@ -268,6 +276,17 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   /** Number of attached envelope listeners — drives warm-TTL eviction (§11). */
   get subscriberCount(): number {
     return this.#listeners.size;
+  }
+
+  /**
+   * Whether this instance was restored from a snapshot at {@link create} (a cold
+   * wake) rather than being continuously live (ADR 0002 item 8). The warm-mount
+   * dedup reads it to force a full `load` on a restored instance — its state may
+   * be stale from broadcasts missed while it was evicted (§9). `false` for a
+   * freshly-built instance; never flips back once set.
+   */
+  get restoredFromSnapshot(): boolean {
+    return this.#restoredFromSnapshot;
   }
 
   /** Attach an envelope listener (a connection). Returns detach. */
@@ -462,9 +481,16 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * data-complete). A `redirect` thrown before the first patch propagates (302 /
    * soft-nav); one thrown after is mid-stream — ignored, with a server-side log
    * (redirect before the first patch to navigate; per-URL denies belong in `guard`).
+   *
+   * Resolves `true` when this run is still the current load run at settle time —
+   * i.e. it reconciled and was **not** superseded by a newer URL (ADR 0002 item
+   * 8, so the warm-mount dedup only advances its props key on a winning run) —
+   * and `false` when a newer run claimed the tag mid-flight. `true` too when the
+   * def has no `load` (nothing to reconcile). A redirect still propagates as a
+   * throw before either value is returned.
    */
-  async loadForRender(props: Record<string, unknown>): Promise<void> {
-    if (!this.#def.load || this.#disposed) return;
+  async loadForRender(props: Record<string, unknown>): Promise<boolean> {
+    if (!this.#def.load || this.#disposed) return true;
     const gate = makeDeferred<void>();
     const runId = this.#loadRunId + 1; // #runLoad claims exactly this tag
     // A newer render reconcile supersedes any pending one: resolve the outgoing
@@ -488,6 +514,10 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       }
     });
     await gate.promise;
+    // Won iff no newer run bumped the tag while this one was in flight (§7
+    // latest-wins). A superseded run's flushes were dropped, so its props never
+    // reconciled — the caller must not treat them as the new dedup baseline.
+    return this.#loadRunId === runId;
   }
 
   async #runLoad(props: Record<string, unknown>): Promise<void> {

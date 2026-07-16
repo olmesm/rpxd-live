@@ -75,3 +75,37 @@ function isJsonParseable(value: string): boolean {
     return false;
   }
 }
+
+/**
+ * Serialize a props record to a canonical string for deep-equality (ADR 0002
+ * item 8, warm-mount dedup). Unlike {@link encodeProps}, this is **not** a wire
+ * codec: it exists only so two props records can be compared by string identity.
+ * Object keys are sorted **recursively** so `{ a: 1, b: 2 }` and `{ b: 2, a: 1 }`
+ * canonicalize identically (a validated schema needn't preserve key order); array
+ * order is significant and preserved; `undefined`-valued keys are omitted (JSON
+ * parity), so a value that can't survive the wire never forces a false diff. The
+ * result is compared, never parsed — its exact shape is an implementation detail.
+ *
+ * @example
+ * ```ts
+ * canonicalProps({ b: 2, a: 1 }) === canonicalProps({ a: 1, b: 2 }); // true
+ * canonicalProps({ tab: "a" }) === canonicalProps({ tab: "b" });     // false
+ * ```
+ */
+export function canonicalProps(props: Record<string, unknown>): string {
+  return stableStringify(props);
+}
+
+/** Recursive stable stringify: object keys sorted, arrays in order, undefined omitted. */
+function stableStringify(value: unknown): string {
+  if (value === undefined) return "null"; // array slot → null (JSON parity); object keys omitted below
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const obj = value as Record<string, unknown>;
+  const parts: string[] = [];
+  for (const key of Object.keys(obj).sort()) {
+    if (obj[key] === undefined) continue; // JSON omits undefined-valued keys
+    parts.push(`${JSON.stringify(key)}:${stableStringify(obj[key])}`);
+  }
+  return `{${parts.join(",")}}`;
+}
