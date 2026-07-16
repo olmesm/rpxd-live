@@ -39,12 +39,6 @@ export interface LiveAppProps {
   connection: LiveConnection<any, any>;
   /** Lazy route-module table from `.rpxd/routes.gen.ts`. */
   routeModules: Record<string, () => Promise<{ default: AnyRoute }>>;
-  /**
-   * Transport (§11) — the generated entry bakes it into {@link connection} at
-   * construction; carried here for parity/back-compat since navigation now
-   * reuses the app-lifetime connection rather than building one (ADR item 9).
-   */
-  transport?: "sse" | "ws";
   /** Optional state transform before render (RSC field hydration, §16). */
   transformState?: (state: unknown) => unknown;
   /**

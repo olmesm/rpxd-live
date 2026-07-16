@@ -913,7 +913,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
 
     let payload = call.payload;
     if (isLongForm(def) && def.input) {
-      payload = await validateInput(def.input, payload, call.rpc);
+      payload = await validateInput(def.input, payload, `rpc "${call.rpc}"`);
     }
     return {
       handler: isLongForm(def) ? def.handler : def,

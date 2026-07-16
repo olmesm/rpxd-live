@@ -1197,10 +1197,18 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
 
   /**
    * Cold mount without SSR: ask the server to mount the route, then connect.
+   *
+   * Unlike SSR/tier-1 navigation, this static path does **not** decode the URL
+   * codec — `props` is sent to the control plane verbatim. A schema'd route must
+   * therefore be passed already-DECODED, JSON-typed props (`{ limit: 20 }`, not
+   * `{ limit: "20" }`); a raw-string record fails loudly with a 422 at the server
+   * (`resolveMountProps` validates without decoding). Pass `hasPropsSchema: true`
+   * via `opts` so subsequent tier-1 patches on the returned connection gate the
+   * codec correctly.
    */
   static async mount<S, Session = Record<string, unknown>>(
     path: string,
-    search: Record<string, string>,
+    props: Record<string, unknown>,
     opts: Omit<ConnectionOptions, "instance"> = {},
   ): Promise<LiveConnection<S, Session>> {
     const fetchImpl = opts.fetchImpl ?? fetch;
@@ -1208,7 +1216,7 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       method: "POST",
       headers: { "content-type": "application/json" },
       // The mount control carries `props` (ADR 0002 item 6).
-      body: JSON.stringify({ type: "mount", path, props: search }),
+      body: JSON.stringify({ type: "mount", path, props }),
       credentials: "same-origin",
     });
     if (!res.ok) throw new Error(`mount failed: ${res.status}`);

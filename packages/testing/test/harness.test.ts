@@ -65,7 +65,7 @@ describe("testLive: mount + typed rpc calls", () => {
     const t = await testLive(todosRoute);
     await expect(t.rpc.add({ text: "" })).rejects.toMatchObject({
       name: "ValidationError",
-      message: expect.stringContaining('Invalid payload for rpc "add"'),
+      message: expect.stringContaining('Invalid input for rpc "add"'),
     });
     expect(t.state.todos).toHaveLength(0);
     await t.dispose();

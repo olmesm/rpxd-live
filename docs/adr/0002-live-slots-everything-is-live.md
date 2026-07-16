@@ -16,10 +16,11 @@
   `isShadowedLocally` now carries a `skipEnclosingFunctionScope` flag past a
   decorated parameter so parameter-decorator references resolve against the
   enclosing scope; regression test added to `strip.test.ts`.
-- `LiveConnection.mount` (static, cold no-SSR mount; zero production callers
+- ~~`LiveConnection.mount` (static, cold no-SSR mount; zero production callers
   today) — add a TSDoc sentence noting schema'd routes should pass decoded
   props; a raw-string cold mount of a schema'd route fails loudly (422), not
-  silently.
+  silently.~~ **Resolved:** TSDoc note added (pass JSON-typed decoded props +
+  `hasPropsSchema` via `opts`); the `search` param was also renamed to `props`.
 
 ## Context
 

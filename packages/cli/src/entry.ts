@@ -65,7 +65,7 @@ const app = createElement(LiveApp, {
   route,
   connection: conn,
   routeModules,
-  layout,${transport === "ws" ? '\n  transport: "ws",' : ""}${rsc ? "\n  transformState: hydrateRscFields," : ""}
+  layout,${rsc ? "\n  transformState: hydrateRscFields," : ""}
 });
 
 const Root = rootModule ? (await rootModule()).default : null;

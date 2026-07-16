@@ -39,7 +39,7 @@ import {
   validateInput,
 } from "@rpxd/core";
 import { readSid, SID_COOKIE, signSessionId, timingSafeEqualStr } from "./cookie.ts";
-import { matchHttpRoute, matchRoute } from "./match.ts";
+import { matchHttpRoute, matchRoute, type RouteMatch } from "./match.ts";
 import { type AllowedOrigins, originAllowed } from "./origin.ts";
 
 /** One registered route: URL path literal + live definition. */
@@ -1016,23 +1016,22 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
 
   /**
    * Resolve a page GET's `?query` string into the props record the loader sees
-   * (ADR 0002 §3). When the matched route declares a props schema, the query is
-   * decoded (per-value try-`JSON.parse`, {@link decodeProps}) and validated
-   * against it — `?limit=20` becomes the number `20` — **before** any mount, so
-   * untrusted input never reaches `guard`/`load` unvalidated and an invalid
-   * value throws {@link ValidationError} (mapped to 422) with nothing built. A
-   * schema-less route keeps the raw string record, byte-identical to pre-ADR
-   * behavior (last value wins on a repeated key, matching `mountInstance`).
+   * (ADR 0002 §3). Takes the already-resolved page {@link RouteMatch} (the GET
+   * handler matches `opts.routes` once and threads it here AND into
+   * {@link mountInstance} — one match per GET, not three). When the matched route
+   * declares a props schema, the query is decoded (per-value try-`JSON.parse`,
+   * {@link decodeProps}) and validated against it — `?limit=20` becomes the
+   * number `20` — **before** any mount, so untrusted input never reaches
+   * `guard`/`load` unvalidated and an invalid value throws {@link ValidationError}
+   * (mapped to 422) with nothing built. A schema-less route keeps the raw string
+   * record, byte-identical to pre-ADR behavior (last value wins on a repeated
+   * key, matching `mountInstance`).
    */
   async function resolveGetProps(
-    pathname: string,
+    match: RouteMatch,
     query: URLSearchParams,
   ): Promise<Record<string, unknown>> {
-    const match = matchRoute(
-      opts.routes.map((r) => r.path),
-      pathname,
-    );
-    const schema = match ? opts.routes.find((r) => r.path === match.path)?.props : undefined;
+    const schema = opts.routes.find((r) => r.path === match.path)?.props;
     if (!schema) {
       const raw: Record<string, string> = {};
       query.forEach((v, k) => {
@@ -1042,11 +1041,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     }
     // Validated output flows onward as props; a violation throws before mount.
     // A props schema is a record schema, so its output is a props record.
-    return (await validateInput(
-      schema,
-      decodeProps(query),
-      `props ${match?.path ?? pathname}`,
-    )) as Record<string, unknown>;
+    return (await validateInput(schema, decodeProps(query), `props ${match.path}`)) as Record<
+      string,
+      unknown
+    >;
   }
 
   /**
@@ -1111,6 +1109,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     // warm reuse, session cap, raced-twin dispose, eviction — is identical, so
     // the two address spaces share one lifecycle (Decision 2, stop-signal #1).
     registrations: RouteRegistration[] = opts.routes,
+    // A pre-resolved match, when the caller already ran `matchRoute` over these
+    // SAME `registrations` for this `pathname` (the GET path matches once for its
+    // page-vs-slot 404 guard and its props schema, then threads it here — one
+    // match per GET). Omit it and the mount matches itself (the control plane).
+    preMatch?: RouteMatch,
   ): Promise<InstanceEntry> {
     // Resolve the caller's matched pattern up front: the session key incorporates
     // it ({@link keyFor}, review R1 finding 1) so a page `/$slug` at the concrete
@@ -1120,10 +1123,12 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     // caller's correct pattern. A hit under the qualified key is therefore
     // guaranteed to be the SAME live object (never a foreign pattern), so warm
     // reuse can reconcile it directly without re-checking the pattern.
-    const match = matchRoute(
-      registrations.map((r) => r.path),
-      pathname,
-    );
+    const match =
+      preMatch ??
+      matchRoute(
+        registrations.map((r) => r.path),
+        pathname,
+      );
     if (!match) throw new NotFoundError(pathname);
     const route = registrations.find((r) => r.path === match.path) as RouteRegistration;
     const key = keyFor(match.path, pathname);
@@ -1963,24 +1968,29 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     }
     if (req.method === "GET") {
       // GET serves routed pages ONLY (ADR 0002 item 6): a mount-only slot
-      // pattern is not page-addressable. Reject it here — over `opts.routes`,
-      // not the mount union — BEFORE `mountInstance`, so a slot already warmed
-      // via the control plane (keyed by this pathname) can't be adopted by
-      // warm-reuse and served as a page. A real route falls through unchanged.
-      if (
-        !matchRoute(
-          opts.routes.map((r) => r.path),
-          url.pathname,
-        )
-      ) {
-        throw new NotFoundError(url.pathname);
-      }
+      // pattern is not page-addressable. Match `opts.routes` (not the mount
+      // union) ONCE here — a miss 404s BEFORE `mountInstance`, so a slot already
+      // warmed via the control plane (keyed by this pathname) can't be adopted by
+      // warm-reuse and served as a page. The single match then threads into both
+      // props resolution and the mount (no repeat `matchRoute` for one GET).
+      const pageMatch = matchRoute(
+        opts.routes.map((r) => r.path),
+        url.pathname,
+      );
+      if (!pageMatch) throw new NotFoundError(url.pathname);
       // SSR (§12): setup+guard+load run during SSR; the connection adopts the warm
       // instance via the attach token. Props codec (ADR 0002 §3): a schema'd
       // route decodes + validates the query into typed props here, before the
       // mount, so guard/load never see unvalidated input (a violation → 422).
-      const search = await resolveGetProps(url.pathname, url.searchParams);
-      const entry = await mountInstance(sid, sessionData, url.pathname, search);
+      const search = await resolveGetProps(pageMatch, url.searchParams);
+      const entry = await mountInstance(
+        sid,
+        sessionData,
+        url.pathname,
+        search,
+        opts.routes,
+        pageMatch,
+      );
       const renderCtx: RenderContext = {
         path: entry.path,
         params: entry.params,

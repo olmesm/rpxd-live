@@ -246,11 +246,14 @@ export class LiveStore<S = unknown, Session = Record<string, unknown>> {
         }
       };
       if (meta?.input) {
-        Promise.resolve(validateInput(meta.input, payload, rpc)).then(enqueue, (e: Error) => {
-          this.#errors.push({ name: e.name, message: e.message, rpc });
-          this.#invalidate();
-          reject(e);
-        });
+        Promise.resolve(validateInput(meta.input, payload, `rpc "${rpc}"`)).then(
+          enqueue,
+          (e: Error) => {
+            this.#errors.push({ name: e.name, message: e.message, rpc });
+            this.#invalidate();
+            reject(e);
+          },
+        );
       } else {
         enqueue(payload);
       }
