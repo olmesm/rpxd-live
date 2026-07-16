@@ -13,6 +13,8 @@ import { live } from "../src/live.ts";
 import {
   type Control,
   type Envelope,
+  type MountBatchControl,
+  type MountBatchResponse,
   type Patch,
   PROTOCOL_VERSION,
   type RpcBatch,
@@ -288,5 +290,48 @@ describe("wire-protocol conformance (the wire protocol guide)", () => {
       search: { filter: "done" },
     } satisfies Control;
     void legacyMount;
+  });
+
+  it("shape pin: the `mount-batch` control + positional response (ADR 0002 item 11)", () => {
+    // N same-tick slot mounts coalesce into ONE control: `mounts[]` carries the
+    // per-entry `{ path, props }` pairs, `stream` joins each success to the open
+    // transport. It's a member of the Control union, alongside single `mount`.
+    const batch = {
+      type: "mount-batch",
+      stream: "s-1",
+      mounts: [
+        { path: "/card/1", props: {} },
+        { path: "/card/2", props: { featured: true } },
+      ],
+    } satisfies MountBatchControl;
+    expect(batch.mounts).toHaveLength(2);
+    expect(batch.mounts[1]?.props).toEqual({ featured: true });
+
+    const asControl: Control = batch; // Control union member
+    expect(asControl.type).toBe("mount-batch");
+
+    // The response is POSITIONAL — results[i] answers mounts[i] — and each entry
+    // is one of `{ instance, seq }` | `{ redirect }` | `{ error }`. One failure
+    // never poisons its siblings: a mounted entry and a denied one coexist.
+    const response = {
+      results: [
+        { instance: "i-1", seq: 1, path: "/card/1", params: { id: "1" } },
+        { redirect: "/login" },
+        { error: { name: "ValidationError", message: "invalid props" } },
+      ],
+    } satisfies MountBatchResponse;
+    expect(response.results).toHaveLength(2 + 1);
+    expect(response.results[0] && "instance" in response.results[0]).toBe(true);
+    expect(response.results[1] && "redirect" in response.results[1]).toBe(true);
+    expect(response.results[2] && "error" in response.results[2]).toBe(true);
+
+    // Negative: `mount-batch` carries `mounts`, not a bare single-mount `path`.
+    const legacyBatch = {
+      type: "mount-batch",
+      mounts: [{ path: "/card/1", props: {} }],
+      // @ts-expect-error a batch has no top-level `path` — the entries carry it
+      path: "/card/1",
+    } satisfies MountBatchControl;
+    void legacyBatch;
   });
 });

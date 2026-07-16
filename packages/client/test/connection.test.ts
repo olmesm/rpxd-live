@@ -1,4 +1,4 @@
-import type { Envelope, RpcBatch } from "@rpxd/core";
+import { type Envelope, isRedirect, type MountBatchResult, type RpcBatch } from "@rpxd/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type EventSourceLike, LiveConnection } from "../src/connection.ts";
 import { buildHref } from "../src/router.tsx";
@@ -539,6 +539,140 @@ describe("store multiplexing (ADR 0002 item 9)", () => {
       }),
     );
     expect(slot.store.snapshot().state.items).toEqual(["s", "mid"]);
+  });
+});
+
+describe("batched slot mounts (ADR 0002 item 11)", () => {
+  /**
+   * A connection whose control POSTs are captured. A `mount-batch` answers
+   * positionally (default: every entry → its own instance; override via
+   * `batchResults` to inject a redirect/error); a lone `mount` answers as today.
+   */
+  function makeBatchConn(
+    opts: { batchResults?: (mounts: { path: string }[]) => MountBatchResult[] } = {},
+  ) {
+    const controlBodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (String(url).endsWith("/__rpxd/control")) {
+        if (body) controlBodies.push(body);
+        if (body?.type === "mount-batch") {
+          const mounts = body.mounts as { path: string }[];
+          const results = opts.batchResults
+            ? opts.batchResults(mounts)
+            : mounts.map((m) => ({ instance: `inst${m.path}`, seq: 1 }));
+          return Response.json({ results });
+        }
+        if (body?.type === "mount") {
+          return Response.json({ instance: `inst${body.path}`, seq: 1 });
+        }
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      bootstrap,
+      fetchImpl,
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.connect();
+    (FakeEventSource.instances.at(-1) as FakeEventSource).emit("open");
+    const posts = () => controlBodies;
+    const of = (type: string) => controlBodies.filter((b) => b?.type === type);
+    return { conn, posts, of };
+  }
+
+  it("coalesces 5 same-tick mountSlot calls into ONE mount-batch POST", async () => {
+    const { conn, of } = makeBatchConn();
+    // Five mounts issued synchronously in one tick → one microtask flush.
+    const handles = await Promise.all(
+      [0, 1, 2, 3, 4].map((i) => conn.mountSlot<{ items: string[] }>(`/card/${i}`, {})),
+    );
+    const batches = of("mount-batch") as { mounts: { path: string }[] }[];
+    expect(batches).toHaveLength(1);
+    expect(of("mount")).toHaveLength(0); // never an unbatched single alongside
+    expect(batches[0]?.mounts.map((m) => m.path)).toEqual([
+      "/card/0",
+      "/card/1",
+      "/card/2",
+      "/card/3",
+      "/card/4",
+    ]);
+    // Each handle resolves with its OWN instance, positionally.
+    expect(handles.map((h) => h.instance)).toEqual([
+      "inst/card/0",
+      "inst/card/1",
+      "inst/card/2",
+      "inst/card/3",
+      "inst/card/4",
+    ]);
+  });
+
+  it("settles each entry independently — a redirect among instances rejects only its caller", async () => {
+    const { conn } = makeBatchConn({
+      batchResults: (mounts) =>
+        mounts.map((m, i) =>
+          i === 2 ? { redirect: "/login" } : { instance: `inst${m.path}`, seq: 1 },
+        ),
+    });
+    const settled = await Promise.allSettled(
+      [0, 1, 2, 3, 4].map((i) => conn.mountSlot(`/card/${i}`, {})),
+    );
+    // Four resolve with their instance; the third rejects with a thrown redirect.
+    expect(settled.map((s) => s.status)).toEqual([
+      "fulfilled",
+      "fulfilled",
+      "rejected",
+      "fulfilled",
+      "fulfilled",
+    ]);
+    const denied = settled[2] as PromiseRejectedResult;
+    expect(isRedirect(denied.reason)).toBe(true);
+    expect(denied.reason.location).toBe("/login");
+    // Siblings are unaffected — instances 0,1,3,4 all bound.
+    const instances = settled
+      .map((s) => (s.status === "fulfilled" ? s.value.instance : null))
+      .filter((x) => x !== null);
+    expect(instances).toEqual(["inst/card/0", "inst/card/1", "inst/card/3", "inst/card/4"]);
+  });
+
+  it("an `{ error }` entry rejects only its caller (siblings unaffected)", async () => {
+    const { conn } = makeBatchConn({
+      batchResults: (mounts) =>
+        mounts.map((m, i) =>
+          i === 1
+            ? { error: { name: "ValidationError", message: "invalid props" } }
+            : { instance: `inst${m.path}`, seq: 1 },
+        ),
+    });
+    const settled = await Promise.allSettled(
+      [0, 1, 2].map((i) => conn.mountSlot(`/card/${i}`, {})),
+    );
+    expect(settled[0]?.status).toBe("fulfilled");
+    expect(settled[1]?.status).toBe("rejected");
+    expect((settled[1] as PromiseRejectedResult).reason).toBeInstanceOf(Error);
+    expect((settled[1] as PromiseRejectedResult).reason.message).toBe("invalid props");
+    expect(settled[2]?.status).toBe("fulfilled");
+  });
+
+  it("a lone same-tick mountSlot stays the unbatched `mount` shape (regression)", async () => {
+    const { conn, of } = makeBatchConn();
+    const handle = await conn.mountSlot("/chat/main", { topic: "x" });
+    expect(of("mount-batch")).toHaveLength(0);
+    const mounts = of("mount") as { path: string; props: unknown; stream: string }[];
+    expect(mounts).toHaveLength(1);
+    expect(mounts[0]).toMatchObject({ type: "mount", path: "/chat/main", props: { topic: "x" } });
+    expect(typeof mounts[0]?.stream).toBe("string"); // still names the stream
+    expect(handle.instance).toBe("inst/chat/main");
+  });
+
+  it("mounts in DIFFERENT ticks send two unbatched `mount`s, no batch", async () => {
+    const { conn, of } = makeBatchConn();
+    await conn.mountSlot("/card/0", {}); // await → the flush completes this tick
+    await conn.mountSlot("/card/1", {}); // enqueued in a later tick → its own flush
+    expect(of("mount")).toHaveLength(2);
+    expect(of("mount-batch")).toHaveLength(0);
   });
 });
 

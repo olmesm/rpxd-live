@@ -147,7 +147,64 @@ export interface ReleaseControl {
 }
 
 /**
+ * Batched mount (ADR 0002 item 11): coalesce N same-tick slot mounts into ONE
+ * control POST. Each `mounts[i]` is one {@link MountControl}'s `{ path, props }`
+ * pair; the optional `stream` id joins every successful mount to that already-open
+ * transport, exactly as {@link MountControl.stream} does for a single mount. The
+ * server runs the identical single-mount path per entry (validate props → mount
+ * → join) and answers with a **positional** {@link MountBatchResponse} — one
+ * result per entry, in order. One entry's failure never poisons its siblings.
+ *
+ * A single same-tick `mountSlot` stays an unbatched {@link MountControl} (a
+ * one-entry batch is never emitted); this shape appears only for 2+ coalesced
+ * mounts.
+ *
+ * @example
+ * ```ts
+ * const frame: MountBatchControl = {
+ *   type: "mount-batch",
+ *   stream: "s-1",
+ *   mounts: [
+ *     { path: "/card/1", props: {} },
+ *     { path: "/card/2", props: {} },
+ *   ],
+ * };
+ * ```
+ */
+export interface MountBatchControl {
+  type: "mount-batch";
+  stream?: string;
+  mounts: { path: string; props: Record<string, unknown> }[];
+}
+
+/**
+ * One positional result of a {@link MountBatchControl} — it answers the entry at
+ * the same index. Exactly one of: `{ instance, seq }` (mounted; the same fields a
+ * single `mount` returns), `{ redirect }` (a `setup`/`guard` deny — the caller
+ * throws `redirect()`), or `{ error }` (props validation / not-found / cap /
+ * unexpected — the caller rejects). A failure here is scoped to this entry: its
+ * siblings still resolve.
+ */
+export type MountBatchResult =
+  | { instance: string; seq: number; path?: string; params?: Record<string, string> }
+  | { redirect: string }
+  | { error: EnvelopeError };
+
+/**
+ * Response to a {@link MountBatchControl}: `results[i]` answers `mounts[i]`,
+ * positionally (ADR 0002 item 11).
+ */
+export interface MountBatchResponse {
+  results: MountBatchResult[];
+}
+
+/**
  * The upstream control-message union (the wire protocol guide, "Control
  * messages"). Reconciles a connection to navigation and gap recovery.
  */
-export type Control = ResyncControl | MountControl | UrlControl | ReleaseControl;
+export type Control =
+  | ResyncControl
+  | MountControl
+  | MountBatchControl
+  | UrlControl
+  | ReleaseControl;

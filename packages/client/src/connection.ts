@@ -8,7 +8,13 @@
  * docs-site/src/content/docs/concepts/wire-protocol.md and pinned by
  * packages/core/test/protocol-conformance.test.ts. Change all three together.
  */
-import { type ConnectionStatus, type Envelope, type RpcBatch, redirect } from "@rpxd/core";
+import {
+  type ConnectionStatus,
+  type Envelope,
+  type MountBatchResult,
+  type RpcBatch,
+  redirect,
+} from "@rpxd/core";
 import { LiveStore, type RpcMeta } from "./store.ts";
 
 /** The slice of `EventSource` the connection uses — injectable for tests. */
@@ -131,6 +137,21 @@ export interface ConnectionOptions {
 }
 
 /**
+ * One `mountSlot` call awaiting the next microtask flush (ADR 0002 item 11).
+ * The flush sends a single `mount` for one queued entry or a `mount-batch` for
+ * many, then settles each entry's promise with its own positional result — so a
+ * sibling's deny/error never affects this one. Generics are erased in the queue
+ * (a heterogeneous batch can't share one type param); `mountSlot` casts back.
+ */
+interface PendingSlotMount {
+  path: string;
+  props: Record<string, unknown>;
+  meta?: Record<string, RpcMeta>;
+  resolve: (handle: SlotHandle) => void;
+  reject: (err: unknown) => void;
+}
+
+/**
  * Client connection for one live object instance.
  *
  * @example
@@ -168,6 +189,14 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    * latest-wins (§7) already says only the newest mount owns the outcome.
    */
   #pendingMountId: string | null = null;
+  /**
+   * `mountSlot` calls queued for the next microtask flush (ADR 0002 item 11).
+   * Same-tick sibling slots coalesce here so a page rendering N `<LiveSlot>`s
+   * sends ONE `mount-batch` POST, not N `mount`s. Drained by {@link #flushSlotMounts}.
+   */
+  #pendingSlotMounts: PendingSlotMount[] = [];
+  /** Whether a microtask flush of {@link #pendingSlotMounts} is already scheduled. */
+  #slotFlushScheduled = false;
   /** Runtime-redirect sink (§10) — seeded from opts, settable for SSR connections. */
   #onRedirect: ((location: string) => void) | undefined;
   #source: EventSourceLike | undefined;
@@ -387,13 +416,18 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   }
 
   /**
-   * Mount a slot over this app-lifetime connection (ADR 0002 item 9). Sends a
-   * `mount` naming this stream; on a `setup`/`guard` deny throws `redirect()`
-   * for `<LiveSlot>` to surface as `fallback`. On success it registers a store
-   * bound to the returned instance, joins that instance to the live stream (a
-   * WS `mount` frame joins the socket; SSE resyncs after the mount already
-   * joined by stream id), and returns a {@link SlotHandle}. The slot's envelopes
-   * multiplex over the page's stream but never touch the page's store.
+   * Mount a slot over this app-lifetime connection (ADR 0002 items 9 + 11). Does
+   * **not** hit the wire immediately: the call is enqueued and a microtask flush
+   * is scheduled, so N sibling slots rendered in one tick coalesce into a single
+   * control POST — a lone same-tick mount stays an unbatched `mount`, 2+ become
+   * one `mount-batch` ({@link #flushSlotMounts}). On a `setup`/`guard` deny the
+   * returned promise rejects with `redirect()` for `<LiveSlot>` to surface as
+   * `fallback`; on a props/cap/not-found error it rejects with an `Error`. On
+   * success it registers a store bound to the returned instance, joins that
+   * instance to the live stream (a WS `mount` frame joins the socket; SSE resyncs
+   * after the mount already joined by stream id), and resolves a {@link SlotHandle}.
+   * The slot's envelopes multiplex over the page's stream but never touch the
+   * page's store, and one entry's outcome is independent of its batch siblings.
    *
    * @example
    * ```ts
@@ -401,17 +435,113 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    * useLiveStore(chat.store); // render it; page store is untouched
    * ```
    */
-  async mountSlot<T = unknown, TSession = Record<string, unknown>>(
+  mountSlot<T = unknown, TSession = Record<string, unknown>>(
     path: string,
     props: Record<string, unknown>,
     opts: { meta?: Record<string, RpcMeta> } = {},
   ): Promise<SlotHandle<T, TSession>> {
-    const parsed = await this.#mountRequest(path, props);
-    // A mount deny (§10) surfaces to the caller as a thrown redirect — the
-    // slot renders `fallback`; the app is never soft-navigated.
-    if ("redirect" in parsed) throw redirect(parsed.redirect);
-    const instance = parsed.instance;
-    const store = this.#makeStore<T, TSession>(instance, opts.meta);
+    return new Promise<SlotHandle<T, TSession>>((resolve, reject) => {
+      this.#pendingSlotMounts.push({
+        path,
+        props,
+        meta: opts.meta,
+        // The queue is heterogeneous (each entry has its own T/TSession), so it
+        // erases the generics; the caller's promise re-applies them on resolve.
+        resolve: resolve as (handle: SlotHandle) => void,
+        reject,
+      });
+      if (!this.#slotFlushScheduled) {
+        this.#slotFlushScheduled = true;
+        queueMicrotask(() => void this.#flushSlotMounts());
+      }
+    });
+  }
+
+  /**
+   * Drain the same-tick {@link #pendingSlotMounts} queue (ADR 0002 item 11).
+   * ONE queued mount → the existing single `mount` POST (unbatched shape
+   * preserved, a regression requirement); 2+ → a single `mount-batch` whose
+   * positional `results[i]` settles entry `i` independently. A network failure
+   * of the whole request rejects every queued entry; a per-entry `redirect`/
+   * `error` result only rejects that one caller.
+   */
+  async #flushSlotMounts(): Promise<void> {
+    this.#slotFlushScheduled = false;
+    const pending = this.#pendingSlotMounts;
+    this.#pendingSlotMounts = [];
+    if (pending.length === 0) return;
+
+    if (pending.length === 1) {
+      // Regression pin: a lone mount stays the unbatched `mount` message.
+      const p = pending[0] as PendingSlotMount;
+      try {
+        const parsed = await this.#mountRequest(p.path, p.props);
+        this.#settleSlotMount(
+          p,
+          "redirect" in parsed ? parsed : { instance: parsed.instance, seq: 0 },
+        );
+      } catch (e) {
+        p.reject(e);
+      }
+      return;
+    }
+
+    let results: MountBatchResult[];
+    try {
+      results = await this.#mountBatchRequest(pending);
+    } catch (e) {
+      // The whole POST failed (network/5xx) — no positional results exist, so
+      // every queued mount rejects. Sibling isolation is a per-result property;
+      // a transport failure is shared, exactly like the rpc POST path.
+      for (const p of pending) p.reject(e);
+      return;
+    }
+    pending.forEach((p, i) => {
+      const result = results[i];
+      if (!result) {
+        // A short/malformed results array (protocol violation) — reject only the
+        // unanswered entries; the answered siblings already settled.
+        p.reject(new Error(`mount-batch response missing result at index ${i}`));
+        return;
+      }
+      this.#settleSlotMount(p, result);
+    });
+  }
+
+  /**
+   * Settle one queued mount from its positional result (ADR 0002 item 11):
+   * `{ redirect }` rejects with `redirect()` (the slot renders `fallback`),
+   * `{ error }` rejects with an `Error`, and `{ instance }` builds the store +
+   * stream join and resolves a {@link SlotHandle}. Isolated per entry — used for
+   * both the single `mount` and each `mount-batch` result.
+   */
+  #settleSlotMount(p: PendingSlotMount, result: MountBatchResult): void {
+    if ("redirect" in result) {
+      // A mount deny (§10) surfaces to the caller as a thrown redirect.
+      p.reject(redirect(result.redirect));
+      return;
+    }
+    if ("error" in result) {
+      p.reject(new Error(result.error.message || result.error.name || "mount failed"));
+      return;
+    }
+    p.resolve(this.#buildSlotHandle(p.path, p.props, result.instance, p.meta));
+  }
+
+  /**
+   * Build the {@link SlotHandle} for a successfully mounted slot instance and
+   * join it to the live stream — the tail the single `mount` and every
+   * `mount-batch` result share. On WS the socket *is* the stream, so a `mount`
+   * frame warm-joins the just-mounted instance to it; on SSE the mount POST
+   * already carried `stream`, so a `resync` fetches the fresh store's snapshot.
+   */
+  #buildSlotHandle(
+    path: string,
+    props: Record<string, unknown>,
+    instance: string,
+    meta?: Record<string, RpcMeta>,
+  ): SlotHandle {
+    const store = this.#makeStore<unknown, Record<string, unknown>>(instance, meta);
     this.#stores.set(instance, store as LiveStore);
     if (this.#opts.transport === "ws" && this.#socketOpen && this.#socket) {
       // The socket *is* the stream: the control POST mounted the instance (and
@@ -437,6 +567,27 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
         this.#denySinks.set(instance, fn);
       },
     };
+  }
+
+  /**
+   * POST a `mount-batch` naming this stream (ADR 0002 item 11): the per-entry
+   * `{ path, props }` pairs in queue order, so the server's positional
+   * `results[]` line up with {@link #pendingSlotMounts}. Throws on a non-ok
+   * response (the whole batch failed); the caller rejects every queued entry.
+   */
+  async #mountBatchRequest(pending: PendingSlotMount[]): Promise<MountBatchResult[]> {
+    const res = await this.#fetch()(`${this.#opts.base ?? ""}/__rpxd/control`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "mount-batch",
+        stream: this.#streamId,
+        mounts: pending.map((p) => ({ path: p.path, props: p.props })),
+      }),
+      credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error(`mount-batch failed: ${res.status}`);
+    return ((await res.json()) as { results: MountBatchResult[] }).results;
   }
 
   /**

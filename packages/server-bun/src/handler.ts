@@ -17,6 +17,7 @@ import {
   isSuperseded,
   type LiveDefinition,
   LiveInstance,
+  type MountBatchResult,
   makeDiagnosticEmit,
   memory,
   type RateLimit,
@@ -321,6 +322,28 @@ export interface RpxdHandlerOptions {
 
 /** Default rpc/control body + WS frame cap (§11 ingress DoS guard): 1 MiB. */
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+
+/**
+ * Batch size at which a `mount-batch` earns the dev **fan-out doctrine**
+ * diagnostic (ADR 0002 item 11, Decision 6): a page coalescing more than this
+ * many slot mounts in one tick is almost always mapping rows to slots — the
+ * antipattern the "Aggregates, not rows" doctrine warns against (a list of
+ * slots = a missing aggregate). Fires an `instance/slot-fanout-high` diagnostic
+ * (dev only, via {@link isDev}), several steps before the hard
+ * {@link RpxdHandlerOptions.maxInstancesPerSession} wall at 32. Purely advisory —
+ * nothing is rejected; the batch mounts normally.
+ */
+export const SLOT_FANOUT_ADVICE = 10;
+
+/**
+ * Hard sanity cap on `mount-batch` length (ADR 0002 item 11): an explicit bound
+ * on top of the natural {@link DEFAULT_MAX_BODY_BYTES} body limit, so a single
+ * frame can't ask the server to `Promise.all` an unbounded number of mounts
+ * (each mount runs `guard`/`setup`/`load`). An over-cap batch is rejected `413`
+ * with nothing mounted. Well above any real page's sibling-slot count — the
+ * dev {@link SLOT_FANOUT_ADVICE} diagnostic fires long before this.
+ */
+export const MAX_MOUNT_BATCH = 64;
 
 /**
  * Default per-connection egress byte budget (§11 slow-consumer guard): 8 MiB —
@@ -1280,44 +1303,171 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     });
   }
 
-  // WIRE CONTRACT — the control-plane messages (mount/resync/url/release) and
-  // the `?attach&seq` adoption below are documented in
+  /**
+   * The outcome of mounting ONE control-plane entry (ADR 0002 items 6 + 11):
+   * `ok` (mounted + joined), `redirect` (a `setup`/`guard` deny), or `error`
+   * (a client-fault the caller maps to a status / positional `{ error }`). The
+   * single `mount` and every `mount-batch` entry both go through {@link mountOne},
+   * so the two share one lifecycle (stop-signal #1 — parameterize, don't fork).
+   */
+  type MountOutcome =
+    | { kind: "ok"; entry: InstanceEntry }
+    | { kind: "redirect"; location: string }
+    | { kind: "error"; error: ValidationError | NotFoundError | SessionCapError };
+
+  /**
+   * Mount one control-plane entry through the EXACT single-mount path (ADR 0002
+   * item 11): validate props against the matched registration's schema (before
+   * `guard`, so untrusted input never reaches it), build the instance, and — when
+   * a `stream` is named — join it to that open transport. Client-fault throws
+   * (props-invalid / not-found / cap) are captured as `{ kind: "error" }` and a
+   * deny as `{ kind: "redirect" }`, so a single caller can re-throw for its
+   * status while a batch caller records a positional result — **one entry's
+   * failure never poisons its siblings**. Only a genuinely unexpected throw
+   * escapes (a real 5xx / per-entry catch).
+   */
+  async function mountOne(
+    path: string,
+    rawProps: Record<string, unknown> | undefined,
+    sid: string,
+    sessionData: unknown,
+    stream: string | undefined,
+    registrations: RouteRegistration[],
+  ): Promise<MountOutcome> {
+    let entry: InstanceEntry;
+    try {
+      const props = await resolveMountProps(path, rawProps ?? {}, registrations);
+      entry = await mountInstance(sid, sessionData, path, props, registrations);
+    } catch (e) {
+      if (isRedirect(e)) return { kind: "redirect", location: e.location };
+      if (
+        e instanceof ValidationError ||
+        e instanceof NotFoundError ||
+        e instanceof SessionCapError
+      ) {
+        return { kind: "error", error: e };
+      }
+      throw e; // genuinely unexpected — propagate (single: 5xx; batch: per-entry catch)
+    }
+    // Tier-2 soft reload / batch join (§7): a `stream` id joins the fresh
+    // instance to that already-open transport so its snapshot flows at once.
+    if (stream) streamRegistry.get(sid)?.get(stream)?.subscribeInstance(entry);
+    return { kind: "ok", entry };
+  }
+
+  // WIRE CONTRACT — the control-plane messages (mount/mount-batch/resync/url/
+  // release) and the `?attach&seq` adoption below are documented in
   // docs-site/src/content/docs/concepts/wire-protocol.md and pinned by
   // packages/core/test/protocol-conformance.test.ts. Change all three together.
   async function handleControl(req: Request, sid: string, sessionData: unknown) {
     const msg = (await readJsonCapped(req, maxBodyBytes)) as
       | { type: "mount"; path: string; props?: Record<string, unknown>; stream?: string }
+      | {
+          type: "mount-batch";
+          mounts?: { path?: string; props?: Record<string, unknown> }[];
+          stream?: string;
+        }
       | { type: "resync"; instance: string }
       | { type: "release"; instance: string; stream: string }
       | { type: "url"; instance: string; props: Record<string, unknown> };
 
     if (msg.type === "mount") {
-      let entry: InstanceEntry;
       // The control plane mounts over the union (routes ∪ slots, ADR 0002 item 6).
-      const registrations = mountable();
-      try {
-        // Validate props against the matched registration's schema BEFORE the
-        // mount, so untrusted input never reaches guard/load (a violation throws
-        // ValidationError → 422 via the pipeline's error stage, nothing built).
-        const props = await resolveMountProps(msg.path, msg.props ?? {}, registrations);
-        entry = await mountInstance(sid, sessionData, msg.path, props, registrations);
-      } catch (e) {
-        // `setup`/`guard` threw redirect() (§10): tell the client to navigate rather
-        // than instantiate. A GET load handles this as a 302 (see fetch catch).
-        if (isRedirect(e)) return Response.json({ redirect: e.location });
-        // ValidationError / NotFoundError / SessionCapError propagate to
-        // `mapRequestError` (422 / 404 / 429) — nothing was built.
-        throw e;
-      }
-      // Tier-2 soft reload (§7): a `stream` id joins the fresh instance to that
-      // already-open SSE stream so its snapshot flows without a reconnect.
-      if (msg.stream) streamRegistry.get(sid)?.get(msg.stream)?.subscribeInstance(entry);
+      const outcome = await mountOne(
+        msg.path,
+        msg.props,
+        sid,
+        sessionData,
+        msg.stream,
+        mountable(),
+      );
+      // `setup`/`guard` denied (§10): tell the client to navigate rather than
+      // instantiate. A GET load handles this as a 302 (see fetch catch).
+      if (outcome.kind === "redirect") return Response.json({ redirect: outcome.location });
+      // ValidationError / NotFoundError / SessionCapError → `mapRequestError`
+      // (422 / 404 / 429) — nothing was built. Re-throw to preserve the status.
+      if (outcome.kind === "error") throw outcome.error;
+      const entry = outcome.entry;
       return Response.json({
         instance: entry.instance.id,
         seq: entry.instance.seq,
         path: entry.path,
         params: entry.params,
       });
+    }
+
+    if (msg.type === "mount-batch") {
+      // Batched slot mounts (ADR 0002 item 11): N same-tick `mountSlot` calls
+      // coalesced into ONE POST. Validate the frame shape (untrusted wire data),
+      // bound the length, then run the EXACT single-mount path per entry and
+      // answer POSITIONALLY — `results[i]` for `mounts[i]`, one entry's failure
+      // never poisoning its siblings.
+      const mounts = msg.mounts;
+      if (!Array.isArray(mounts)) {
+        return new Response("malformed mount-batch: `mounts` must be an array", { status: 400 });
+      }
+      // Sanity cap on top of the natural maxBodyBytes bound: an over-cap batch is
+      // rejected wholesale (413), nothing mounted — like an over-size body.
+      if (mounts.length > MAX_MOUNT_BATCH) {
+        return new Response(`mount-batch exceeds MAX_MOUNT_BATCH (${MAX_MOUNT_BATCH})`, {
+          status: 413,
+        });
+      }
+      // Fan-out doctrine diagnostic (Decision 6): a dev-only nudge toward
+      // "Aggregates, not rows" when a page mounts too many sibling slots at once
+      // (a list of slots = a missing aggregate). Gated on isDev() — NEVER in
+      // production (a real deployment's slot count is not an operator's concern).
+      if (isDev() && mounts.length > SLOT_FANOUT_ADVICE) {
+        emit({
+          category: "instance",
+          type: "slot-fanout-high",
+          level: "warn",
+          detail: { count: mounts.length },
+        });
+      }
+      const registrations = mountable();
+      const results = await Promise.all(
+        mounts.map(async (m): Promise<MountBatchResult> => {
+          // Per-entry shape guard (untrusted): a malformed entry is its own
+          // `{ error }` result, never a throw that poisons the whole batch.
+          if (!m || typeof m.path !== "string") {
+            return { error: { name: "ProtocolError", message: "invalid mount entry" } };
+          }
+          try {
+            const outcome = await mountOne(
+              m.path,
+              m.props,
+              sid,
+              sessionData,
+              msg.stream,
+              registrations,
+            );
+            if (outcome.kind === "redirect") return { redirect: outcome.location };
+            if (outcome.kind === "error") {
+              return { error: { name: outcome.error.name, message: outcome.error.message } };
+            }
+            return {
+              instance: outcome.entry.instance.id,
+              seq: outcome.entry.instance.seq,
+              path: outcome.entry.path,
+              params: outcome.entry.params,
+            };
+          } catch (e) {
+            // A genuinely unexpected per-entry throw: report it, but keep the
+            // batch total — this one entry answers `{ error }`, siblings resolve.
+            emit({
+              category: "request",
+              type: "mount-batch-entry-failed",
+              level: "error",
+              error: e,
+            });
+            return {
+              error: { name: "InternalError", message: safeErrorMessage(e, "mount failed") },
+            };
+          }
+        }),
+      );
+      return Response.json({ results });
     }
     if (msg.type === "release") {
       // Abandoned by a tier-2 forward nav (§7): drop it from that stream so it
