@@ -2,7 +2,7 @@
 title: Testing
 description: Test live objects against the real runtime with the testLive harness — typed rpc calls, server-truth state, and the wire — plus the four test tiers rpxd uses.
 sidebar:
-  order: 12
+  order: 13
 ---
 
 This page shows how to test a live object without a browser or a running

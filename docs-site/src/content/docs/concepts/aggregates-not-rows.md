@@ -7,7 +7,7 @@ sidebar:
 
 A live object owns an **aggregate** — a whole thing with its own behaviour — not
 a single row in a list. This page is the rule for deciding when to reach for a
-[live slot](/rpxd-live/concepts/pubsub/) (`<LiveSlot>`) and when to keep data
+[live slot](/rpxd-live/guides/live-slots-and-layouts/) (`<LiveSlot>`) and when to keep data
 inside one live object.
 
 The short version: give a thing its own live object when it has its own

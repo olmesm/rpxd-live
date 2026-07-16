@@ -2,7 +2,7 @@
 title: CLI generators
 description: Scaffold apps and resources with rpxd init, rpxd auth, and rpxd scaffold — file generators that write code and print the rest, never patching your hand-owned files.
 sidebar:
-  order: 11
+  order: 12
 ---
 
 The `rpxd` CLI can scaffold a new app, a working page, and auth wiring — one

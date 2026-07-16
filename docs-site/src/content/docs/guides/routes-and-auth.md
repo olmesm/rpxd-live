@@ -2,7 +2,7 @@
 title: HTTP routes & authentication
 description: Plain HTTP endpoints via route(), the authenticate hook, and enforcing auth by throwing redirect() from guard. Demonstrated with Better Auth over Prisma/SQLite.
 sidebar:
-  order: 10
+  order: 11
 ---
 
 This page shows how to add login to an rpxd app, protect a page, and serve
