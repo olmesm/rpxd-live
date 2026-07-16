@@ -9,12 +9,18 @@
  *
  * Keep this file in your `tsconfig` `include` so the augmentation is picked up.
  */
+
 import type { Message } from "./routes/chat.tsx";
+import type { ChatMessage, PanelNotice } from "./slots/chat-panel.tsx";
 
 declare module "@rpxd/core" {
   interface Register {
     events: {
       "message.created": Message;
+      // Dashboard chat slot (ADR 0002 item 16): multiplayer messages and the
+      // cross-object notice a page broadcasts onto the chat channel.
+      "panel.message": ChatMessage;
+      "panel.notice": PanelNotice;
     };
   }
 }

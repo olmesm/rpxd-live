@@ -20,6 +20,10 @@ export const routeTree = {
     file: "../routes/chat.tsx",
     pattern: "/chat",
   },
+  "/dashboard": {
+    file: "../routes/dashboard.tsx",
+    pattern: "/dashboard",
+  },
   "/doc": {
     file: "../routes/doc.tsx",
     pattern: "/doc",
@@ -48,6 +52,7 @@ export const routeModules = {
   "/account": () => import("../routes/account.tsx"),
   "/boom": () => import("../routes/boom.tsx"),
   "/chat": () => import("../routes/chat.tsx"),
+  "/dashboard": () => import("../routes/dashboard.tsx"),
   "/doc": () => import("../routes/doc.tsx"),
   "/import": () => import("../routes/import.tsx"),
   "/item/$id": () => import("../routes/item.$id.tsx"),

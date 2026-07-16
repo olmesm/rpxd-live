@@ -4,4 +4,7 @@
  * (ADR 0002). Never imported by the client entry (keeps server-only chain deps
  * off the client). Consumers assert `$live: true` on each default export at boot.
  */
-export const liveModules = {} as const;
+export const liveModules = {
+  "/chat-panel/$channel": () => import("../slots/chat-panel.tsx"),
+  "/featured/$itemId": () => import("../slots/featured-item.tsx"),
+} as const;

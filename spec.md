@@ -3,7 +3,7 @@
 ## 1. Live Objects (Core Model)
 Server-side stateful objects with reducers; client is plain React receiving state.
 
-- One live object per page; everything below is ordinary React fed via props
+- One live object per page; everything below is ordinary React fed via props. A page may **compose** further live objects as slots (`<LiveSlot>`) and share a persistent layout — see ADR 0002; the base model is unchanged
 - Instances are **per-session**; multiplayer via pubsub (no shared instances, no `key`/`scope`)
 - **Lifecycle by cadence** (§7): `setup` (sync) runs on identity — a **path-param** change — and returns the state skeleton + wires subscriptions; `guard` (async, optional) and `load` (async) run on **every URL change** (path *or* search); `load` is the single place URL-dependent data loads. `guard` is auth (deny → `redirect`); `load` streams data via `ctx.patchState`
 - Handlers run server-side as plain async fns; state writes go through `ctx.patchState(mut)` — sync Immer mutators, exact patches; `ctx.state` is a live read-only view (always current, even after awaits)
@@ -189,7 +189,7 @@ Connections are disposable; state is not. SSE default, WS opt-in.
 ## 13. Out of Scope
 Deliberately not covered by this spec; the seams below keep each addable later without a rewrite.
 
-- Nested/sibling live objects + layouts (requires nested live semantics)
+- ~~Nested/sibling live objects + layouts (requires nested live semantics)~~ — **shipped** in ADR 0002 (live slots + `__layout.tsx`); the deferral was overpriced, the control plane was multi-instance from day one. Still deferred there: SSR for slots, cross-instance optimism, runtime-federated microfrontends
 - Transparent id aliasing (wire rewriting) if `keyOf` proves insufficient
 - Devtools time-travel (patch log makes it cheap)
 - Presence recipe (userland, ~20 lines)
