@@ -11,7 +11,7 @@ import { type LiveRoute, type RenderProps, redirect } from "@rpxd/core";
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SlotHandle } from "../src/connection.ts";
+import { type EventSourceLike, LiveConnection, type SlotHandle } from "../src/connection.ts";
 import { buildHref, fillPattern, RpxdProvider } from "../src/router.tsx";
 import { LiveSlot } from "../src/slot.tsx";
 import { LiveStore } from "../src/store.ts";
@@ -90,6 +90,7 @@ class FakeConnection {
       handle: {
         store,
         instance: id,
+        path: id,
         patchProps: vi.fn(),
         release: vi.fn(() => {
           rec.released = true;
@@ -318,6 +319,107 @@ describe("<LiveSlot> denials", () => {
     expect(onDeny).toHaveBeenCalledWith("/login");
     expect(container.textContent).toBe("loading");
     expect(conn.mounts[0]?.released).toBe(true);
+  });
+});
+
+/** Minimal injectable EventSource for the real-connection integration test. */
+class FakeES implements EventSourceLike {
+  static instances: FakeES[] = [];
+  listeners = new Map<string, ((e: { data: string }) => void)[]>();
+  readyState = 0;
+  constructor(public url: string) {
+    FakeES.instances.push(this);
+  }
+  addEventListener(type: string, fn: (e: { data: string }) => void): void {
+    const list = this.listeners.get(type) ?? [];
+    list.push(fn);
+    this.listeners.set(type, list);
+  }
+  emit(type: string, data = ""): void {
+    for (const fn of this.listeners.get(type) ?? []) fn({ data });
+  }
+  close(): void {}
+  static last(): FakeES {
+    return FakeES.instances.at(-1) as FakeES;
+  }
+}
+
+/** Flush the async mount/release microtask chain inside `act`. */
+async function settle(): Promise<void> {
+  await act(async () => {
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+  });
+}
+
+describe("<LiveSlot> + LiveConnection pair cancellation (ADR 0002 item 12)", () => {
+  it("(g) keyed page-subtree remount of the same slot identity → net zero mounts/releases on the wire", async () => {
+    FakeES.instances = [];
+    const control: Record<string, unknown>[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (String(url).endsWith("/__rpxd/control")) {
+        if (body) control.push(body);
+        // Same path → same instance id (a warm re-mount would resolve identically).
+        if (body?.type === "mount") return Response.json({ instance: "inst/chat/main", seq: 1 });
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+    const conn = new LiveConnection({
+      instance: "page",
+      fetchImpl,
+      eventSource: (u) => new FakeES(u),
+    });
+    conn.connect();
+    FakeES.last().emit("open");
+
+    const Chat = chatLive();
+    const page = (k: string) => (
+      <RpxdProvider connection={conn as never}>
+        <div key={k}>
+          <LiveSlot
+            of={Chat}
+            params={{ room: "main" }}
+            props={{ topic: "x" }}
+            fallback={<span>loading</span>}
+          />
+        </div>
+      </RpxdProvider>
+    );
+
+    // Mount page A's slot and confirm its state.
+    await render(page("a"));
+    await settle();
+    await act(async () => {
+      FakeES.last().emit(
+        "env",
+        JSON.stringify({
+          seq: 1,
+          instance: "inst/chat/main",
+          full: { state: { text: "alive" }, session: {} },
+        }),
+      );
+    });
+    expect(container.querySelector('[data-testid="chat"]')?.textContent).toBe("alive");
+    const typed = (t: string) => control.filter((b) => b?.type === t);
+    expect(typed("mount")).toHaveLength(1);
+    expect(typed("release")).toHaveLength(0);
+
+    // A keyed page swap remounts the SAME slot identity in one commit: the old
+    // slot's release and the new slot's mount land in the same tick and cancel.
+    await act(async () => {
+      root.render(page("b"));
+    });
+    await settle();
+
+    // Net zero: no second mount, no release, no url (props unchanged). The slot
+    // survives the remount — same instance, still showing its confirmed state.
+    expect(typed("mount")).toHaveLength(1);
+    expect(typed("mount-batch")).toHaveLength(0);
+    expect(typed("release")).toHaveLength(0);
+    expect(typed("url")).toHaveLength(0);
+    expect(container.querySelector('[data-testid="chat"]')?.textContent).toBe("alive");
+    conn.close();
   });
 });
 

@@ -10,6 +10,7 @@
  */
 import {
   type ConnectionStatus,
+  canonicalProps,
   type Envelope,
   type MountBatchResult,
   type RpcBatch,
@@ -99,9 +100,21 @@ export interface SlotHandle<S = unknown, Session = Record<string, unknown>> {
   readonly store: LiveStore<S, Session>;
   /** The server instance id this slot is bound to. */
   readonly instance: string;
+  /**
+   * The pattern-filled identity path this slot mounted (ADR 0002 item 12). The
+   * release/mount pair-cancellation matches a pending release to a pending mount
+   * by this exact string, so a React remount across a page swap is a no-op.
+   */
+  readonly path: string;
   /** Tier-1 props change for this slot: a `url` message → re-guard + re-load. */
   patchProps(props: Record<string, unknown>): void;
-  /** Abandon the slot: release the instance from the stream and deregister its store. */
+  /**
+   * Abandon the slot. Deferred like a mount (ADR 0002 item 12): the release
+   * joins the next microtask flush, so a same-tick release+mount for this same
+   * identity — a React remount across a keyed page swap — cancels before either
+   * touches the wire (the instance/store survive and the remounting caller
+   * rebinds to them). A release with no cancelling mount flushes for real.
+   */
   release(): void;
   /**
    * Register a runtime-deny sink for this slot (§10). A `guard`/`load` deny —
@@ -152,6 +165,17 @@ interface PendingSlotMount {
 }
 
 /**
+ * One `release()` awaiting the same microtask flush as pending mounts (ADR 0002
+ * item 12). At flush time a release whose `path` matches a pending mount's path
+ * cancels the pair — neither hits the wire, and the mount rebinds to the still-
+ * registered store; a release with no partner flushes a real `release` control.
+ */
+interface PendingRelease {
+  path: string;
+  instance: string;
+}
+
+/**
  * Client connection for one live object instance.
  *
  * @example
@@ -195,7 +219,22 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
    * sends ONE `mount-batch` POST, not N `mount`s. Drained by {@link #flushSlotMounts}.
    */
   #pendingSlotMounts: PendingSlotMount[] = [];
-  /** Whether a microtask flush of {@link #pendingSlotMounts} is already scheduled. */
+  /**
+   * `release()` calls queued for the next microtask flush (ADR 0002 item 12).
+   * Flushed alongside {@link #pendingSlotMounts}: a release paired with a
+   * same-path mount cancels (neither hits the wire); an unpaired one sends a
+   * real `release`. Deferring the release is what makes the cancellation
+   * possible — an immediate fire-and-forget release would always beat the mount.
+   */
+  #pendingReleases: PendingRelease[] = [];
+  /**
+   * instance id → canonical serialization ({@link canonicalProps}) of the props
+   * the server was last told for that slot (mount props, then each `patchProps`).
+   * The pair-cancellation dedup baseline (ADR 0002 item 12): a rebind forwards a
+   * `url` patch only when the remounting caller's props differ from this.
+   */
+  readonly #slotProps = new Map<string, string>();
+  /** Whether a microtask flush of the pending mount/release queues is scheduled. */
   #slotFlushScheduled = false;
   /** Runtime-redirect sink (§10) — seeded from opts, settable for SSR connections. */
   #onRedirect: ((location: string) => void) | undefined;
@@ -450,25 +489,85 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
         resolve: resolve as (handle: SlotHandle) => void,
         reject,
       });
-      if (!this.#slotFlushScheduled) {
-        this.#slotFlushScheduled = true;
-        queueMicrotask(() => void this.#flushSlotMounts());
-      }
+      this.#scheduleSlotFlush();
     });
   }
 
+  /** Schedule the shared mount/release microtask flush once per tick (item 11/12). */
+  #scheduleSlotFlush(): void {
+    if (this.#slotFlushScheduled) return;
+    this.#slotFlushScheduled = true;
+    queueMicrotask(() => void this.#flushSlotMounts());
+  }
+
   /**
-   * Drain the same-tick {@link #pendingSlotMounts} queue (ADR 0002 item 11).
-   * ONE queued mount → the existing single `mount` POST (unbatched shape
-   * preserved, a regression requirement); 2+ → a single `mount-batch` whose
-   * positional `results[i]` settles entry `i` independently. A network failure
-   * of the whole request rejects every queued entry; a per-entry `redirect`/
-   * `error` result only rejects that one caller.
+   * Queue a slot release for the next flush (ADR 0002 item 12) instead of firing
+   * a `release` control immediately. Deferral is what lets a same-tick
+   * release+mount for one identity cancel: a React remount across a keyed page
+   * swap enqueues a release (unmount cleanup) and a mount (the next page's effect)
+   * in the same tick, and {@link #flushSlotMounts} cancels the pair.
+   */
+  #enqueueRelease(path: string, instance: string): void {
+    this.#pendingReleases.push({ path, instance });
+    this.#scheduleSlotFlush();
+  }
+
+  /**
+   * Drain the same-tick mount AND release queues in one pass (ADR 0002 items 11 +
+   * 12). First cancels same-path release+mount pairs (a React remount across a
+   * page swap — {@link #rebindCancelledPair}); then flushes the unpaired releases
+   * ({@link #flushRelease}); then sends the surviving mounts as a single `mount`
+   * or `mount-batch` ({@link #sendSurvivingMounts}). Cancelled pairs never touch
+   * the wire beyond an optional props patch.
    */
   async #flushSlotMounts(): Promise<void> {
     this.#slotFlushScheduled = false;
-    const pending = this.#pendingSlotMounts;
+    const mounts = this.#pendingSlotMounts;
     this.#pendingSlotMounts = [];
+    const releases = this.#pendingReleases;
+    this.#pendingReleases = [];
+
+    // Pair cancellation (ADR 0002 item 12): match each pending mount to a pending
+    // release by PATH — the client can't know a mount's future instance id, but a
+    // same-identity remount reuses the identity path. A matched pair is a React
+    // remount across a page swap: cancel BOTH sides (no `release`, no `mount`) and
+    // rebind the new caller to the still-registered instance. Unmatched releases
+    // and mounts fall through to their normal wire sends, ORDERED release-then-
+    // mount so the across-ticks path (already correct) is preserved.
+    const releasesByPath = new Map<string, PendingRelease[]>();
+    for (const r of releases) {
+      const list = releasesByPath.get(r.path);
+      if (list) list.push(r);
+      else releasesByPath.set(r.path, [r]);
+    }
+    const cancelled = new Set<PendingRelease>();
+    const survivingMounts: PendingSlotMount[] = [];
+    for (const m of mounts) {
+      const rel = releasesByPath.get(m.path)?.[0];
+      // The store must still be registered to rebind onto — deferring the release
+      // deregistration to flush time guarantees it is (a cancelled release never
+      // deregisters). If it somehow isn't, don't cancel: let both sides flow.
+      const store = rel ? this.#stores.get(rel.instance) : undefined;
+      if (rel && store) {
+        releasesByPath.get(m.path)?.shift();
+        cancelled.add(rel);
+        this.#rebindCancelledPair(rel, m, store);
+      } else {
+        survivingMounts.push(m);
+      }
+    }
+    // Releases with no cancelling mount go out for real (normal unmount).
+    for (const r of releases) if (!cancelled.has(r)) this.#flushRelease(r);
+    await this.#sendSurvivingMounts(survivingMounts);
+  }
+
+  /**
+   * Send the mounts that survived pair cancellation (ADR 0002 items 11 + 12):
+   * ONE survivor keeps the unbatched `mount` shape (a regression pin — true even
+   * when it survived because its sibling releases cancelled), 2+ become a single
+   * `mount-batch` whose positional results settle each caller independently.
+   */
+  async #sendSurvivingMounts(pending: PendingSlotMount[]): Promise<void> {
     if (pending.length === 0) return;
 
     if (pending.length === 1) {
@@ -509,6 +608,42 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   }
 
   /**
+   * Flush a real `release` for a slot with no cancelling mount (ADR 0002 item 12):
+   * drop the instance from the stream and deregister its store/deny sink/props —
+   * the deregistration the immediate `release()` used to do inline, now deferred
+   * to flush time so a same-tick mount could have rebound onto it instead.
+   */
+  #flushRelease(r: PendingRelease): void {
+    void this.#control({ type: "release", instance: r.instance, stream: this.#streamId });
+    this.#stores.delete(r.instance);
+    this.#denySinks.delete(r.instance);
+    this.#slotProps.delete(r.instance);
+  }
+
+  /**
+   * Cancel a same-path release+mount pair (ADR 0002 item 12). The cancelled
+   * release never deregistered, so the new caller rebinds to the SAME live
+   * instance — its confirmed state, optimistic queue, and stream subscription all
+   * survive the React remount. Two carry-overs are rewired for the new caller:
+   * (1) the deny sink is cleared here (the rebound handle installs the new
+   * caller's via `onDeny`); (2) **the stale-capability fix** — when the caller's
+   * props differ from what the server last heard for this instance, forward
+   * exactly ONE `url` patchProps. Item 8's dedup makes that guard + load-with-new-
+   * props on the same instance, so a slot shared across pages (e.g. a chat panel
+   * whose tools change per page) never keeps the previous page's props. Identical
+   * props send nothing — a pure React remount is fully a no-op on the wire.
+   */
+  #rebindCancelledPair(rel: PendingRelease, mount: PendingSlotMount, store: LiveStore): void {
+    this.#denySinks.delete(rel.instance);
+    const nextCanon = canonicalProps(mount.props);
+    if (nextCanon !== this.#slotProps.get(rel.instance)) {
+      this.#slotProps.set(rel.instance, nextCanon);
+      this.#sendUrl(rel.instance, mount.props);
+    }
+    mount.resolve(this.#slotHandle(mount.path, rel.instance, store));
+  }
+
+  /**
    * Settle one queued mount from its positional result (ADR 0002 item 11):
    * `{ redirect }` rejects with `redirect()` (the slot renders `fallback`),
    * `{ error }` rejects with an `Error`, and `{ instance }` builds the store +
@@ -543,6 +678,10 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
   ): SlotHandle {
     const store = this.#makeStore<unknown, Record<string, unknown>>(instance, meta);
     this.#stores.set(instance, store as LiveStore);
+    // Seed the pair-cancellation dedup baseline (ADR 0002 item 12): the props the
+    // server now knows for this instance, so a later cancelled-pair rebind can
+    // tell whether the remounting caller needs a `url` patch forwarded.
+    this.#slotProps.set(instance, canonicalProps(props));
     if (this.#opts.transport === "ws" && this.#socketOpen && this.#socket) {
       // The socket *is* the stream: the control POST mounted the instance (and
       // surfaced any deny), but on WS the POST's `stream` id names no SSE
@@ -554,15 +693,26 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       // instance to this stream — resync so the fresh store gets its snapshot.
       void this.#control({ type: "resync", instance });
     }
+    return this.#slotHandle(path, instance, store as LiveStore);
+  }
+
+  /**
+   * Build the {@link SlotHandle} surface over an already-registered store — the
+   * tail shared by a fresh mount ({@link #buildSlotHandle}) and a cancelled-pair
+   * rebind ({@link #rebindCancelledPair}). `patchProps` advances the item-12
+   * props baseline so a later rebind dedups against the true last-sent value;
+   * `release` defers (item 12) so a same-tick remount can cancel it.
+   */
+  #slotHandle(path: string, instance: string, store: LiveStore): SlotHandle {
     return {
       store,
       instance,
-      patchProps: (next) => this.#sendUrl(instance, next),
-      release: () => {
-        void this.#control({ type: "release", instance, stream: this.#streamId });
-        this.#stores.delete(instance);
-        this.#denySinks.delete(instance);
+      path,
+      patchProps: (next) => {
+        this.#slotProps.set(instance, canonicalProps(next));
+        this.#sendUrl(instance, next);
       },
+      release: () => this.#enqueueRelease(path, instance),
       onDeny: (fn) => {
         this.#denySinks.set(instance, fn);
       },
