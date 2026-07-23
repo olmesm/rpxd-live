@@ -75,22 +75,22 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
         expectTypeOf(state).toEqualTypeOf<Draft<{ projects: Project[]; importing: boolean }>>();
         expectTypeOf(ctx.broadcast).parameter(0).toEqualTypeOf<string>();
       })
-      .guard(async ({ params, search }, ctx) => {
+      .guard(async ({ params, props }, ctx) => {
         // guard (§10): typed url, session, signal — but NO patchState (it's a gate).
         expectTypeOf(params).toEqualTypeOf<{ orgId: string }>();
-        expectTypeOf(search).toEqualTypeOf<Record<string, string | undefined>>();
+        expectTypeOf(props).toEqualTypeOf<Record<string, string | undefined>>();
         expectTypeOf(ctx.signal).toEqualTypeOf<AbortSignal>();
         // @ts-expect-error — guard is a gate, not a loader: no patchState
         void ctx.patchState;
       })
-      .load(async ({ params, search }, ctx) => {
+      .load(async ({ params, props }, ctx) => {
         // URL loader (§7): first arg is the whole url — typed path params +
-        // untyped search; ctx is the handler ctx (page-state writes, signal).
+        // untyped props; ctx is the handler ctx (page-state writes, signal).
         expectTypeOf(params).toEqualTypeOf<{ orgId: string }>();
-        expectTypeOf(search).toEqualTypeOf<Record<string, string | undefined>>();
+        expectTypeOf(props).toEqualTypeOf<Record<string, string | undefined>>();
         expectTypeOf(ctx.signal).toEqualTypeOf<AbortSignal>();
         ctx.patchState((s) => {
-          s.importing = search.filter !== undefined;
+          s.importing = props.filter !== undefined;
         });
       })
       .render((props) => {
@@ -202,6 +202,69 @@ describe("fluent live() — full inference, no annotations (§1, §5)", () => {
     expectTypeOf(route.$live).toEqualTypeOf<true>();
     expectTypeOf(route.def.version).toEqualTypeOf<string | undefined>();
     expectTypeOf(route.def.rpc).not.toBeNever();
+  });
+});
+
+describe("the fold — live(pattern, propsSchema?) (ADR 0002 item 2)", () => {
+  const propsSchema = z.object({ variant: z.enum(["compact", "full"]) });
+
+  it("types guard/load props from the schema output, params from the pattern", () => {
+    live("/card/$productId", propsSchema)
+      .setup((ctx) => {
+        // identity vs props: setup sees params only, never the patchable props.
+        expectTypeOf(ctx.params).toEqualTypeOf<{ productId: string }>();
+        // @ts-expect-error — setup ctx has no `props` member (skeleton can't bake a patchable value)
+        void ctx.props;
+        return { chosen: "" };
+      })
+      .guard(async ({ params, props }) => {
+        expectTypeOf(params).toEqualTypeOf<{ productId: string }>();
+        expectTypeOf(props).toEqualTypeOf<{ variant: "compact" | "full" }>();
+      })
+      .load(async ({ params, props }, ctx) => {
+        expectTypeOf(params).toEqualTypeOf<{ productId: string }>();
+        expectTypeOf(props).toEqualTypeOf<{ variant: "compact" | "full" }>();
+        // @ts-expect-error — `nope` is not a key of the schema output
+        void props.nope;
+        ctx.patchState((s) => {
+          s.chosen = props.variant;
+        });
+      })
+      .render(() => null);
+  });
+
+  it("keeps props as the raw PropsRecord when no schema is provided", () => {
+    live("/org/$orgId")
+      .setup((ctx) => {
+        expectTypeOf(ctx.params).toEqualTypeOf<{ orgId: string }>();
+        return { n: 0 };
+      })
+      .load(async ({ params, props }) => {
+        expectTypeOf(params).toEqualTypeOf<{ orgId: string }>();
+        expectTypeOf(props).toEqualTypeOf<Record<string, string | undefined>>();
+      })
+      .render(() => null);
+  });
+
+  it("still infers the rpc facade and .on handlers on a schema'd route (regression)", () => {
+    live("/card/$productId", propsSchema)
+      .setup(() => ({ items: [] as string[] }))
+      .rpc("add", (r) =>
+        r.input(z.object({ text: z.string() })).handler(async (payload, ctx) => {
+          expectTypeOf(payload).toEqualTypeOf<{ text: string }>();
+          ctx.patchState((s) => {
+            s.items.push(payload.text);
+          });
+        }),
+      )
+      .on("some.event", (state, payload) => {
+        expectTypeOf(state).toEqualTypeOf<Draft<{ items: string[] }>>();
+        expectTypeOf(payload).toEqualTypeOf<unknown>();
+      })
+      .render(({ rpc }) => {
+        expectTypeOf(rpc.add).parameter(0).toEqualTypeOf<{ text: string }>();
+        return null;
+      });
   });
 });
 

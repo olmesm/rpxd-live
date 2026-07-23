@@ -10,7 +10,16 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LiveInstance } from "../src/instance.ts";
 import { live } from "../src/live.ts";
-import { type Envelope, type Patch, PROTOCOL_VERSION, type RpcBatch } from "../src/protocol.ts";
+import {
+  type Control,
+  type Envelope,
+  type MountBatchControl,
+  type MountBatchResponse,
+  type Patch,
+  PROTOCOL_VERSION,
+  type RpcBatch,
+  type UrlControl,
+} from "../src/protocol.ts";
 import { memory } from "../src/storage.ts";
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -225,5 +234,104 @@ describe("wire-protocol conformance (the wire protocol guide)", () => {
       ],
     } satisfies RpcBatch;
     void withExcess;
+  });
+
+  it("shape pin: the `url` control message carries `props`, not `search` (ADR 0002 item 1)", () => {
+    // A page's URL query IS its props record — the `url` control message's
+    // payload field renamed search → props. This pins the new name and rejects
+    // the old one, moving in lockstep with wire-protocol.md's Control union.
+    const urlControl = {
+      type: "url",
+      instance: "i",
+      props: { filter: "done" },
+    } satisfies UrlControl;
+    expect(urlControl.props).toEqual({ filter: "done" });
+
+    // Positive (ADR 0002 item 7): the `url` control's `props` is a JSON value
+    // model — `Record<string, unknown>`, like `mount`, not the raw-string record
+    // it once was. A validated patch carrying a number/boolean/object conforms.
+    const typedUrl = {
+      type: "url",
+      instance: "i",
+      props: { limit: 20, active: true, range: { from: 0 } },
+    } satisfies UrlControl;
+    expect(typedUrl.props.limit).toBe(20);
+
+    // Negative: the OLD field name no longer conforms. `props` is present (so
+    // the only defect is the excess property), and `search` is not a field on
+    // the `url` control message.
+    const legacy = {
+      type: "url",
+      instance: "i",
+      props: { filter: "done" },
+      // @ts-expect-error the `url` control carries `props`, not `search` (ADR 0002 item 1)
+      search: { filter: "done" },
+    } satisfies UrlControl;
+    void legacy;
+
+    // The `mount` control now carries `props` too (renamed search → props in
+    // ADR 0002 item 6, unifying the vocabulary with the `url` message). Unlike
+    // `url`'s raw-string record, mount `props` is a JSON value model.
+    const mountControl = {
+      type: "mount",
+      path: "/board",
+      props: { filter: "done", limit: 20 },
+    } satisfies Control;
+    expect(mountControl.props).toEqual({ filter: "done", limit: 20 });
+
+    // Negative: the OLD field name no longer conforms on `mount` either.
+    // `props` is present (so the only defect is the excess property), and
+    // `search` is not a field on the `mount` control message.
+    const legacyMount = {
+      type: "mount",
+      path: "/board",
+      props: { filter: "done" },
+      // @ts-expect-error the `mount` control carries `props`, not `search` (ADR 0002 item 6)
+      search: { filter: "done" },
+    } satisfies Control;
+    void legacyMount;
+  });
+
+  it("shape pin: the `mount-batch` control + positional response (ADR 0002 item 11)", () => {
+    // N same-tick slot mounts coalesce into ONE control: `mounts[]` carries the
+    // per-entry `{ path, props }` pairs, `stream` joins each success to the open
+    // transport. It's a member of the Control union, alongside single `mount`.
+    const batch = {
+      type: "mount-batch",
+      stream: "s-1",
+      mounts: [
+        { path: "/card/1", props: {} },
+        { path: "/card/2", props: { featured: true } },
+      ],
+    } satisfies MountBatchControl;
+    expect(batch.mounts).toHaveLength(2);
+    expect(batch.mounts[1]?.props).toEqual({ featured: true });
+
+    const asControl: Control = batch; // Control union member
+    expect(asControl.type).toBe("mount-batch");
+
+    // The response is POSITIONAL — results[i] answers mounts[i] — and each entry
+    // is one of `{ instance, seq }` | `{ redirect }` | `{ error }`. One failure
+    // never poisons its siblings: a mounted entry and a denied one coexist.
+    const response = {
+      results: [
+        { instance: "i-1", seq: 1, path: "/card/1", params: { id: "1" } },
+        { redirect: "/login" },
+        { error: { name: "ValidationError", message: "invalid props" } },
+      ],
+    } satisfies MountBatchResponse;
+    expect(response.results).toHaveLength(2 + 1);
+    expect(response.results[0] && "instance" in response.results[0]).toBe(true);
+    expect(response.results[1] && "redirect" in response.results[1]).toBe(true);
+    expect(response.results[2] && "error" in response.results[2]).toBe(true);
+
+    // Negative: `mount-batch` carries `mounts`, not a bare single-mount `path`.
+    const legacyBatch = {
+      type: "mount-batch",
+      mounts: [{ path: "/card/1", props: {} }],
+      // @ts-expect-error a batch has no top-level `path` — the entries carry it
+      path: "/card/1",
+    } satisfies MountBatchControl;
+    void legacyBatch;
   });
 });

@@ -20,6 +20,10 @@ export const routeTree = {
     file: "../routes/chat.tsx",
     pattern: "/chat",
   },
+  "/dashboard": {
+    file: "../routes/dashboard.tsx",
+    pattern: "/dashboard",
+  },
   "/doc": {
     file: "../routes/doc.tsx",
     pattern: "/doc",
@@ -48,6 +52,7 @@ export const routeModules = {
   "/account": () => import("../routes/account.tsx"),
   "/boom": () => import("../routes/boom.tsx"),
   "/chat": () => import("../routes/chat.tsx"),
+  "/dashboard": () => import("../routes/dashboard.tsx"),
   "/doc": () => import("../routes/doc.tsx"),
   "/import": () => import("../routes/import.tsx"),
   "/item/$id": () => import("../routes/item.$id.tsx"),
@@ -59,6 +64,14 @@ export const routeModules = {
 export const rootModule = () => import("../routes/__root.tsx");
 export const notFoundModule = () => import("../routes/__404.tsx");
 export const errorModule = () => import("../routes/__error.tsx");
+
+/**
+ * The persistent region (ADR 0002 item 13): `__layout.tsx`, rendered inside
+ * `RpxdProvider` but outside `key={pathname}`. Mounted once per app session,
+ * it survives every navigation and may host `<LiveSlot>`s. `undefined` when
+ * the app has no `__layout.tsx` (layout-less parity).
+ */
+export const layoutModule = () => import("../routes/__layout.tsx");
 
 /** All registered page paths. */
 export type RegisteredPath = keyof typeof routeTree;

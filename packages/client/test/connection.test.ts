@@ -1,7 +1,8 @@
-import type { Envelope, RpcBatch } from "@rpxd/core";
+import { type Envelope, isRedirect, type MountBatchResult, type RpcBatch } from "@rpxd/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type EventSourceLike, LiveConnection } from "../src/connection.ts";
-import { buildHref } from "../src/router.tsx";
+import { buildHref, searchOnlyChange } from "../src/router.tsx";
+import type { RpcMeta } from "../src/store.ts";
 
 class FakeEventSource implements EventSourceLike {
   static instances: FakeEventSource[] = [];
@@ -130,14 +131,28 @@ describe("LiveConnection (§11, §12)", () => {
     );
   });
 
-  it("routes patchSearch (tier 1) through the control endpoint as a url change (§7)", () => {
+  it("routes patchProps (tier 1) through the control endpoint as a url change (§7)", () => {
     const { conn, requests } = makeConnection(bootstrap);
-    conn.patchSearch({ filter: "done" });
+    conn.patchProps({ filter: "done" });
     const control = requests.find((r) => r.url.endsWith("/__rpxd/control"));
-    expect(control?.body).toEqual({ type: "url", instance: "i1", search: { filter: "done" } });
+    expect(control?.body).toEqual({ type: "url", instance: "i1", props: { filter: "done" } });
   });
 
-  it("a guard deny during patchSearch routes { redirect } to onRedirect (§10)", async () => {
+  it("a URL-derived tier-1 nav carries the DECODED (typed) props on the url message (finding 3)", () => {
+    // The Link / useNav.navigate flow: derive the patch from the target's query
+    // string (`searchOnlyChange`) then `patchProps`. `?limit=20` must reach the
+    // `url` body as the number 20 — the server validates the wire body without
+    // decoding (item 7), so a raw "20" would fail a `z.number()` props schema and
+    // the soft-nav would silently no-op (finding 3).
+    const { conn, requests } = makeConnection(bootstrap);
+    const patch = searchOnlyChange("/board?limit=20", "/board", "", true);
+    expect(patch).not.toBeNull();
+    conn.patchProps(patch as Record<string, unknown>);
+    const control = requests.find((r) => r.url.endsWith("/__rpxd/control"));
+    expect(control?.body).toEqual({ type: "url", instance: "i1", props: { limit: 20 } });
+  });
+
+  it("a guard deny during patchProps routes { redirect } to onRedirect (§10)", async () => {
     const redirects: string[] = [];
     const fetchImpl = (async () =>
       Response.json({ redirect: "/login" })) as unknown as typeof fetch;
@@ -148,7 +163,7 @@ describe("LiveConnection (§11, §12)", () => {
       onRedirect: (loc) => redirects.push(loc),
       eventSource: (url) => new FakeEventSource(url),
     });
-    conn.patchSearch({ admin: "1" });
+    conn.patchProps({ admin: "1" });
     await new Promise((r) => setTimeout(r, 0));
     expect(redirects).toEqual(["/login"]);
   });
@@ -164,11 +179,30 @@ describe("LiveConnection (§11, §12)", () => {
       onRedirect: (loc) => redirects.push(loc),
       eventSource: (url) => new FakeEventSource(url),
     });
-    conn.patchSearch({ admin: "1" });
+    conn.patchProps({ admin: "1" });
     await new Promise((r) => setTimeout(r, 0));
     // A server-supplied redirect that isn't a same-origin path must be dropped,
     // not handed to the router / window.location.
     expect(redirects).toEqual([]);
+  });
+
+  it("surfaces a rejected (422) props patch over SSE with a console.warn (finding 3b)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // The server rejects an invalid props record with 422; without surfacing it
+    // the url bar would change while state silently didn't — the finding's bug.
+    const fetchImpl = (async () =>
+      new Response("invalid props", { status: 422 })) as unknown as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      bootstrap,
+      fetchImpl,
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.patchProps({ limit: "abc" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain("i1");
+    warn.mockRestore();
   });
 
   it("tier-2 remount swaps the store, resyncs the new instance, releases the old (§7)", async () => {
@@ -292,13 +326,725 @@ describe("LiveConnection (§11, §12)", () => {
     expect(requests[0]?.body).toEqual({
       type: "mount",
       path: "/org/1/board",
-      search: { filter: "all" },
+      props: { filter: "all" },
     });
     expect((FakeEventSource.instances.at(-1) as FakeEventSource).url).toMatch(
       /^\/__rpxd\/stream\?stream=.+/,
     );
     conn.close();
     expect((FakeEventSource.instances.at(-1) as FakeEventSource).closed).toBe(true);
+  });
+});
+
+const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+describe("store multiplexing (ADR 0002 item 9)", () => {
+  /** A connection whose control mounts answer with a per-path instance id. */
+  function makeMux(opts: { urlRedirect?: string } = {}) {
+    const requests: { url: string; body: Record<string, unknown> | null }[] = [];
+    const redirects: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      requests.push({ url: String(url), body });
+      if (body?.type === "mount") {
+        const inst = body.path === "/chat/main" ? "slot-i" : "srv-i2";
+        return Response.json({ instance: inst, seq: 1 });
+      }
+      if (body?.type === "url" && opts.urlRedirect) {
+        return Response.json({ redirect: opts.urlRedirect });
+      }
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      bootstrap,
+      fetchImpl,
+      onRedirect: (loc) => redirects.push(loc),
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.connect();
+    const source = () => FakeEventSource.instances.at(-1) as FakeEventSource;
+    source().emit("open");
+    const controls = () =>
+      requests.filter((r) => r.url.endsWith("/__rpxd/control")).map((r) => r.body);
+    const rpcs = () => requests.filter((r) => r.url.endsWith("/__rpxd/rpc"));
+    return { conn, requests, redirects, source, controls, rpcs };
+  }
+
+  it("mountSlot sends a control mount naming the stream and returns a bound handle", async () => {
+    const { conn, controls } = makeMux();
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", { topic: "x" });
+    const mount = controls().find((b) => b?.type === "mount") as {
+      path: string;
+      props: unknown;
+      stream: string;
+    };
+    expect(mount).toMatchObject({ type: "mount", path: "/chat/main", props: { topic: "x" } });
+    expect(typeof mount.stream).toBe("string");
+    expect(slot.instance).toBe("slot-i");
+    // SSE: after the join at mount, resync targets the slot instance.
+    expect(controls()).toContainEqual({ type: "resync", instance: "slot-i" });
+  });
+
+  it("routes envelopes to each instance's own store, never crossing", async () => {
+    const { conn, source } = makeMux();
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", {});
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 5,
+        instance: "i1",
+        patches: [{ op: "add", path: ["items", 1], value: "b" }],
+      }),
+    );
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 1,
+        instance: "slot-i",
+        full: { state: { items: ["z"] }, session: {} },
+      }),
+    );
+    expect(conn.store.snapshot().state.items).toEqual(["a", "b"]);
+    expect(slot.store.snapshot().state).toEqual({ items: ["z"] });
+
+    // A slot-targeted patch must not touch the page store, and vice versa.
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 2,
+        instance: "slot-i",
+        patches: [{ op: "add", path: ["items", 1], value: "y" }],
+      }),
+    );
+    expect(conn.store.snapshot().state.items).toEqual(["a", "b"]); // page untouched
+    expect(slot.store.snapshot().state.items).toEqual(["z", "y"]);
+  });
+
+  it("handle.patchProps sends a url message for the slot instance", async () => {
+    const { conn, controls } = makeMux();
+    const slot = await conn.mountSlot("/chat/main", {});
+    slot.patchProps({ topic: "y" });
+    await tick();
+    expect(controls()).toContainEqual({ type: "url", instance: "slot-i", props: { topic: "y" } });
+  });
+
+  it("handle.patchProps forwards a RICH-JSON record verbatim (not URL-decoded — finding 3)", async () => {
+    // SlotHandle.patchProps / LiveSlot prop-diff sends are ALREADY the JSON-value
+    // model — they are not URL-derived, so they must not be run through
+    // `decodeProps`. A nested/number record rides the wire byte-for-byte.
+    const { conn, controls } = makeMux();
+    const slot = await conn.mountSlot("/chat/main", {});
+    const rich = { tools: [{ name: "search" }], limit: 5, label: "20" };
+    slot.patchProps(rich);
+    await tick();
+    expect(controls()).toContainEqual({ type: "url", instance: "slot-i", props: rich });
+  });
+
+  it("handle.release releases the instance and deregisters its store", async () => {
+    const { conn, source, controls } = makeMux();
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", {});
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 1,
+        instance: "slot-i",
+        full: { state: { items: ["s"] }, session: {} },
+      }),
+    );
+    expect(slot.store.snapshot().state.items).toEqual(["s"]);
+
+    // Release is deferred to the next microtask flush (ADR 0002 item 12) so a
+    // same-tick remount could cancel it — an unpaired release still goes out.
+    slot.release();
+    await tick();
+    expect(controls()).toContainEqual(
+      expect.objectContaining({ type: "release", instance: "slot-i" }),
+    );
+    // After release, envelopes for that instance no longer dispatch.
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 2,
+        instance: "slot-i",
+        full: { state: { items: ["gone"] }, session: {} },
+      }),
+    );
+    expect(slot.store.snapshot().state.items).toEqual(["s"]); // unchanged
+  });
+
+  describe("two slots with the SAME identity (finding 4)", () => {
+    // Mount two slots of the same identity path (both resolve to `slot-i`) in
+    // separate ticks so each stays an unbatched `mount`. They share one server
+    // instance id but keep DISTINCT client stores (isolated optimistic queues).
+    async function twoSameIdentity(mux: ReturnType<typeof makeMux>) {
+      const a = await mux.conn.mountSlot<{ items: string[] }>("/chat/main", {});
+      const b = await mux.conn.mountSlot<{ items: string[] }>("/chat/main", {});
+      expect(a.instance).toBe("slot-i");
+      expect(b.instance).toBe("slot-i");
+      expect(a.store).not.toBe(b.store);
+      return { a, b };
+    }
+
+    it("both stores receive the shared instance's snapshot envelope", async () => {
+      const mux = makeMux();
+      const { a, b } = await twoSameIdentity(mux);
+      mux.source().emit(
+        "env",
+        JSON.stringify({
+          seq: 1,
+          instance: "slot-i",
+          full: { state: { items: ["z"] }, session: {} },
+        }),
+      );
+      // Envelopes dispatch to ALL stores for the instance — the pre-fix map kept
+      // only the second store, so the first rendered `fallback` forever.
+      expect(a.store.snapshot().state).toEqual({ items: ["z"] });
+      expect(b.store.snapshot().state).toEqual({ items: ["z"] });
+    });
+
+    it("releasing one keeps the other live and sends NO wire release", async () => {
+      const mux = makeMux();
+      const { a, b } = await twoSameIdentity(mux);
+      const releasesBefore = mux
+        .controls()
+        .filter((c) => (c as { type?: string })?.type === "release").length;
+
+      a.release();
+      await tick();
+      const releasesAfter = mux
+        .controls()
+        .filter((c) => (c as { type?: string })?.type === "release").length;
+      // The instance still has a live client ref (b) — no wire release yet.
+      expect(releasesAfter).toBe(releasesBefore);
+
+      // b still receives envelopes for the shared instance.
+      mux.source().emit(
+        "env",
+        JSON.stringify({
+          seq: 2,
+          instance: "slot-i",
+          full: { state: { items: ["still"] }, session: {} },
+        }),
+      );
+      expect(b.store.snapshot().state).toEqual({ items: ["still"] });
+    });
+
+    it("releasing BOTH sends exactly one wire release", async () => {
+      const mux = makeMux();
+      const { a, b } = await twoSameIdentity(mux);
+      a.release();
+      b.release();
+      await tick();
+      const releases = mux
+        .controls()
+        .filter(
+          (c) =>
+            (c as { type?: string })?.type === "release" &&
+            (c as { instance?: string }).instance === "slot-i",
+        );
+      expect(releases).toHaveLength(1);
+    });
+
+    it("a deny envelope fires BOTH stores' onDeny sinks", async () => {
+      const mux = makeMux();
+      const { a, b } = await twoSameIdentity(mux);
+      const denies: string[] = [];
+      a.onDeny((loc) => denies.push(`a:${loc}`));
+      b.onDeny((loc) => denies.push(`b:${loc}`));
+      mux.source().emit("env", JSON.stringify({ seq: 0, instance: "slot-i", redirect: "/denied" }));
+      expect(denies.sort()).toEqual(["a:/denied", "b:/denied"]);
+      expect(mux.redirects).toEqual([]); // never the app-level redirect
+    });
+  });
+
+  it("a slot runtime deny (url redirect) fires its onDeny sink, not the app redirect (§10)", async () => {
+    const { conn, redirects } = makeMux({ urlRedirect: "/login" });
+    const slot = await conn.mountSlot("/chat/main", {});
+    const denies: string[] = [];
+    slot.onDeny((loc) => denies.push(loc));
+    slot.patchProps({ admin: "1" });
+    await tick();
+    expect(denies).toEqual(["/login"]);
+    expect(redirects).toEqual([]); // the app-level onRedirect is never called
+  });
+
+  it("a slot deny envelope on the stream fires its sink; the primary redirect still works", async () => {
+    const { conn, source, redirects } = makeMux();
+    const slot = await conn.mountSlot("/chat/main", {});
+    const denies: string[] = [];
+    slot.onDeny((loc) => denies.push(loc));
+
+    // A redirect envelope tagged with the slot instance → the slot's sink.
+    source().emit("env", JSON.stringify({ seq: 0, instance: "slot-i", redirect: "/slot-login" }));
+    expect(denies).toEqual(["/slot-login"]);
+    expect(redirects).toEqual([]);
+
+    // A redirect envelope for the primary instance still soft-navs the app.
+    source().emit("env", JSON.stringify({ seq: 0, instance: "i1", redirect: "/app-login" }));
+    expect(redirects).toEqual(["/app-login"]);
+    expect(denies).toEqual(["/slot-login"]); // slot sink not re-fired
+  });
+
+  it("reconnect resends unacked from page AND slot stores, and every store recovers (blast radius)", async () => {
+    const { conn, source, rpcs } = makeMux();
+    const es = source();
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", {});
+    es.emit(
+      "env",
+      JSON.stringify({
+        seq: 1,
+        instance: "slot-i",
+        full: { state: { items: ["s"] }, session: {} },
+      }),
+    );
+
+    void conn.store.call("add", { text: "p" });
+    void slot.store.call("add", { text: "q" });
+    await tick();
+    expect(rpcs()).toHaveLength(2); // one pending batch per store
+
+    // A slow-consumer kill: the SSE stream errors, then the EventSource
+    // auto-reconnects (open again). The server resyncs every subscribed
+    // instance on re-subscribe — modelled here by fresh fulls after open.
+    es.emit("error");
+    es.emit("open");
+    expect(rpcs()).toHaveLength(4); // both unacked batches resent (server dedupes)
+
+    es.emit(
+      "env",
+      JSON.stringify({
+        seq: 10,
+        instance: "i1",
+        full: { state: { items: ["a", "recovered"] }, session: {} },
+      }),
+    );
+    es.emit(
+      "env",
+      JSON.stringify({
+        seq: 5,
+        instance: "slot-i",
+        full: { state: { items: ["s2"] }, session: {} },
+      }),
+    );
+    expect(conn.store.snapshot().state.items).toEqual(["a", "recovered"]);
+    expect(slot.store.snapshot().state.items).toEqual(["s2"]);
+  });
+
+  it("remount reuses the transport (no new EventSource) and leaves slot stores flowing", async () => {
+    const { conn, source } = makeMux();
+    const before = FakeEventSource.instances.length;
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", {});
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 1,
+        instance: "slot-i",
+        full: { state: { items: ["s"] }, session: {} },
+      }),
+    );
+
+    // A tier-3 page swap: remount over the same stream with the new route meta.
+    const meta: Record<string, RpcMeta> = {
+      add: {
+        optimistic: (s: { items: string[] }, { text }: { text: string }) => s.items.push(text),
+      },
+    };
+    await conn.remount("/other", {}, meta);
+    expect(FakeEventSource.instances.length).toBe(before); // NO new transport built
+
+    // The swapped primary store optimistics with the NEW route meta.
+    source().emit(
+      "env",
+      JSON.stringify({ seq: 1, instance: "srv-i2", full: { state: { items: [] }, session: {} } }),
+    );
+    void conn.store.call("add", { text: "opt" });
+    await tick();
+    expect(conn.store.snapshot().state.items).toEqual(["opt"]); // meta.optimistic ran
+
+    // Envelopes keep flowing to the slot store across the page swap.
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 2,
+        instance: "slot-i",
+        patches: [{ op: "add", path: ["items", 1], value: "mid" }],
+      }),
+    );
+    expect(slot.store.snapshot().state.items).toEqual(["s", "mid"]);
+  });
+
+  it("remount does NOT release a page instance a layout slot still shares (NEW-2 refcount)", async () => {
+    // A layout <LiveSlot> mounts the SAME identity as the current page (Decision-2
+    // sharing), so both back ONE server instance over the shared stream. A tier-2/3
+    // nav swaps the page store — but the wire release must be REFCOUNTED: dropping
+    // the page store leaves the slot store, so the instance's single stream
+    // listener must survive, or the slot freezes and the instance warm-evicts.
+    const bodies: (Record<string, unknown> | null)[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (String(url).endsWith("/__rpxd/control")) bodies.push(body);
+      if (body?.type === "mount") {
+        // The layout slot ("/shared") shares the page instance "pg1"; the nav
+        // mounts a brand-new page instance "pg2".
+        return Response.json({ instance: body.path === "/pg2" ? "pg2" : "pg1", seq: 1 });
+      }
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "pg1",
+      bootstrap: {
+        instance: "pg1",
+        seq: 1,
+        attachToken: "t",
+        snapshot: { state: { items: [] }, session: {} },
+      },
+      fetchImpl,
+      eventSource: (u) => new FakeEventSource(u),
+    });
+    conn.connect();
+    const src = () => FakeEventSource.instances.at(-1) as FakeEventSource;
+    src().emit("open");
+
+    // A layout slot sharing the current page instance.
+    const slot = await conn.mountSlot<{ items: string[] }>("/shared", {});
+    expect(slot.instance).toBe("pg1");
+
+    // Tier-2/3 navigation: remount the page to a new instance.
+    await conn.remount("/pg2", {});
+
+    // "pg1" is STILL held by the slot store, so NO wire release goes out for it —
+    // releasing it would drop the stream listener the surviving slot depends on.
+    const releases = bodies.filter((b) => b?.type === "release");
+    expect(releases).not.toContainEqual(expect.objectContaining({ instance: "pg1" }));
+
+    // The slot store keeps receiving envelopes for the shared instance.
+    src().emit(
+      "env",
+      JSON.stringify({
+        seq: 2,
+        instance: "pg1",
+        full: { state: { items: ["live"] }, session: {} },
+      }),
+    );
+    expect(slot.store.snapshot().state.items).toEqual(["live"]);
+  });
+
+  it("remount DOES release a page instance no slot shares (refcount regression)", async () => {
+    // The un-shared counterpart: nothing else holds the previous page instance,
+    // so dropping the page store empties its set and the wire release fires.
+    const bodies: (Record<string, unknown> | null)[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (String(url).endsWith("/__rpxd/control")) bodies.push(body);
+      if (body?.type === "mount") return Response.json({ instance: "pg2", seq: 1 });
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "pg1",
+      bootstrap: {
+        instance: "pg1",
+        seq: 1,
+        attachToken: "t",
+        snapshot: { state: { items: [] }, session: {} },
+      },
+      fetchImpl,
+      eventSource: (u) => new FakeEventSource(u),
+    });
+    conn.connect();
+    (FakeEventSource.instances.at(-1) as FakeEventSource).emit("open");
+
+    await conn.remount("/pg2", {});
+    const releases = bodies.filter((b) => b?.type === "release");
+    expect(releases).toContainEqual(expect.objectContaining({ instance: "pg1" }));
+  });
+});
+
+describe("batched slot mounts (ADR 0002 item 11)", () => {
+  /**
+   * A connection whose control POSTs are captured. A `mount-batch` answers
+   * positionally (default: every entry → its own instance; override via
+   * `batchResults` to inject a redirect/error); a lone `mount` answers as today.
+   */
+  function makeBatchConn(
+    opts: { batchResults?: (mounts: { path: string }[]) => MountBatchResult[] } = {},
+  ) {
+    const controlBodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (String(url).endsWith("/__rpxd/control")) {
+        if (body) controlBodies.push(body);
+        if (body?.type === "mount-batch") {
+          const mounts = body.mounts as { path: string }[];
+          const results = opts.batchResults
+            ? opts.batchResults(mounts)
+            : mounts.map((m) => ({ instance: `inst${m.path}`, seq: 1 }));
+          return Response.json({ results });
+        }
+        if (body?.type === "mount") {
+          return Response.json({ instance: `inst${body.path}`, seq: 1 });
+        }
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      bootstrap,
+      fetchImpl,
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.connect();
+    (FakeEventSource.instances.at(-1) as FakeEventSource).emit("open");
+    const posts = () => controlBodies;
+    const of = (type: string) => controlBodies.filter((b) => b?.type === type);
+    return { conn, posts, of };
+  }
+
+  it("coalesces 5 same-tick mountSlot calls into ONE mount-batch POST", async () => {
+    const { conn, of } = makeBatchConn();
+    // Five mounts issued synchronously in one tick → one microtask flush.
+    const handles = await Promise.all(
+      [0, 1, 2, 3, 4].map((i) => conn.mountSlot<{ items: string[] }>(`/card/${i}`, {})),
+    );
+    const batches = of("mount-batch") as { mounts: { path: string }[] }[];
+    expect(batches).toHaveLength(1);
+    expect(of("mount")).toHaveLength(0); // never an unbatched single alongside
+    expect(batches[0]?.mounts.map((m) => m.path)).toEqual([
+      "/card/0",
+      "/card/1",
+      "/card/2",
+      "/card/3",
+      "/card/4",
+    ]);
+    // Each handle resolves with its OWN instance, positionally.
+    expect(handles.map((h) => h.instance)).toEqual([
+      "inst/card/0",
+      "inst/card/1",
+      "inst/card/2",
+      "inst/card/3",
+      "inst/card/4",
+    ]);
+  });
+
+  it("settles each entry independently — a redirect among instances rejects only its caller", async () => {
+    const { conn } = makeBatchConn({
+      batchResults: (mounts) =>
+        mounts.map((m, i) =>
+          i === 2 ? { redirect: "/login" } : { instance: `inst${m.path}`, seq: 1 },
+        ),
+    });
+    const settled = await Promise.allSettled(
+      [0, 1, 2, 3, 4].map((i) => conn.mountSlot(`/card/${i}`, {})),
+    );
+    // Four resolve with their instance; the third rejects with a thrown redirect.
+    expect(settled.map((s) => s.status)).toEqual([
+      "fulfilled",
+      "fulfilled",
+      "rejected",
+      "fulfilled",
+      "fulfilled",
+    ]);
+    const denied = settled[2] as PromiseRejectedResult;
+    expect(isRedirect(denied.reason)).toBe(true);
+    expect(denied.reason.location).toBe("/login");
+    // Siblings are unaffected — instances 0,1,3,4 all bound.
+    const instances = settled
+      .map((s) => (s.status === "fulfilled" ? s.value.instance : null))
+      .filter((x) => x !== null);
+    expect(instances).toEqual(["inst/card/0", "inst/card/1", "inst/card/3", "inst/card/4"]);
+  });
+
+  it("an `{ error }` entry rejects only its caller (siblings unaffected)", async () => {
+    const { conn } = makeBatchConn({
+      batchResults: (mounts) =>
+        mounts.map((m, i) =>
+          i === 1
+            ? { error: { name: "ValidationError", message: "invalid props" } }
+            : { instance: `inst${m.path}`, seq: 1 },
+        ),
+    });
+    const settled = await Promise.allSettled(
+      [0, 1, 2].map((i) => conn.mountSlot(`/card/${i}`, {})),
+    );
+    expect(settled[0]?.status).toBe("fulfilled");
+    expect(settled[1]?.status).toBe("rejected");
+    expect((settled[1] as PromiseRejectedResult).reason).toBeInstanceOf(Error);
+    expect((settled[1] as PromiseRejectedResult).reason.message).toBe("invalid props");
+    expect(settled[2]?.status).toBe("fulfilled");
+  });
+
+  it("a lone same-tick mountSlot stays the unbatched `mount` shape (regression)", async () => {
+    const { conn, of } = makeBatchConn();
+    const handle = await conn.mountSlot("/chat/main", { topic: "x" });
+    expect(of("mount-batch")).toHaveLength(0);
+    const mounts = of("mount") as { path: string; props: unknown; stream: string }[];
+    expect(mounts).toHaveLength(1);
+    expect(mounts[0]).toMatchObject({ type: "mount", path: "/chat/main", props: { topic: "x" } });
+    expect(typeof mounts[0]?.stream).toBe("string"); // still names the stream
+    expect(handle.instance).toBe("inst/chat/main");
+  });
+
+  it("mounts in DIFFERENT ticks send two unbatched `mount`s, no batch", async () => {
+    const { conn, of } = makeBatchConn();
+    await conn.mountSlot("/card/0", {}); // await → the flush completes this tick
+    await conn.mountSlot("/card/1", {}); // enqueued in a later tick → its own flush
+    expect(of("mount")).toHaveLength(2);
+    expect(of("mount-batch")).toHaveLength(0);
+  });
+});
+
+describe("release/mount pair cancellation (ADR 0002 item 12)", () => {
+  /** A connection whose control mounts answer with a per-path instance id. */
+  function makePairConn() {
+    const control: Record<string, unknown>[] = [];
+    const redirects: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (String(url).endsWith("/__rpxd/control")) {
+        if (body) control.push(body);
+        // A mount answers with an instance id derived from the path, so a warm
+        // re-mount of the same path (across ticks) resolves to the same id.
+        if (body?.type === "mount") return Response.json({ instance: `inst${body.path}`, seq: 1 });
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      bootstrap,
+      fetchImpl,
+      onRedirect: (loc) => redirects.push(loc),
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    conn.connect();
+    const source = () => FakeEventSource.instances.at(-1) as FakeEventSource;
+    source().emit("open");
+    const typed = (t: string) => control.filter((b) => b?.type === t);
+    return { conn, control, typed, redirects, source };
+  }
+
+  it("(a) same-tick release+mount, same props → ZERO control messages, rebinds the same store", async () => {
+    const { conn, typed, source } = makePairConn();
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", { topic: "x" });
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 1,
+        instance: "inst/chat/main",
+        full: { state: { items: ["s"] }, session: {} },
+      }),
+    );
+    const releasesBefore = typed("release").length;
+    const mountsBefore = typed("mount").length;
+    const urlsBefore = typed("url").length;
+
+    // A React remount across a keyed page swap: the unmounting slot releases and
+    // the next page's slot mounts the SAME identity, in one tick.
+    slot.release();
+    const rebound = await conn.mountSlot<{ items: string[] }>("/chat/main", { topic: "x" });
+
+    // Nothing new on the wire — release cancelled the mount and props matched.
+    expect(typed("release")).toHaveLength(releasesBefore);
+    expect(typed("mount")).toHaveLength(mountsBefore);
+    expect(typed("mount-batch")).toHaveLength(0);
+    expect(typed("url")).toHaveLength(urlsBefore);
+    // The rebound handle wraps the SAME live instance + store (state survived).
+    expect(rebound.instance).toBe("inst/chat/main");
+    expect(rebound.store).toBe(slot.store);
+    expect(rebound.store.snapshot().state).toEqual({ items: ["s"] });
+    // Envelopes still dispatch to the surviving store.
+    source().emit(
+      "env",
+      JSON.stringify({
+        seq: 2,
+        instance: "inst/chat/main",
+        patches: [{ op: "add", path: ["items", 1], value: "t" }],
+      }),
+    );
+    expect(rebound.store.snapshot().state.items).toEqual(["s", "t"]);
+  });
+
+  it("(b) same-tick release+mount, CHANGED props → zero mount/release, exactly one url patch", async () => {
+    const { conn, typed } = makePairConn();
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", { tools: ["a"] });
+    const releasesBefore = typed("release").length;
+    const mountsBefore = typed("mount").length;
+
+    slot.release();
+    await conn.mountSlot<{ items: string[] }>("/chat/main", { tools: ["b"] }); // new page's tools
+
+    // The stale-capability fix: no release, no mount, but exactly one url patch
+    // forwarding the new props so the shared slot doesn't keep the old page's.
+    expect(typed("release")).toHaveLength(releasesBefore);
+    expect(typed("mount")).toHaveLength(mountsBefore);
+    expect(typed("url")).toEqual([
+      { type: "url", instance: "inst/chat/main", props: { tools: ["b"] } },
+    ]);
+  });
+
+  it("(c) across ticks → release then mount, ordered (no cancellation)", async () => {
+    const { conn, control } = makePairConn();
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", {});
+    slot.release();
+    await tick(); // the release flushes on its own — no mount to pair with
+    await conn.mountSlot<{ items: string[] }>("/chat/main", {}); // later tick → its own flush
+
+    const releaseIdx = control.findIndex((b) => b?.type === "release");
+    const secondMountIdx = control.map((b) => b?.type).lastIndexOf("mount");
+    expect(releaseIdx).toBeGreaterThanOrEqual(0);
+    expect(releaseIdx).toBeLessThan(secondMountIdx); // release went out before the re-mount
+  });
+
+  it("(d) same-tick release of path A + mount of path B → both go out, no cross-cancellation", async () => {
+    const { conn, typed } = makePairConn();
+    const slotA = await conn.mountSlot<{ items: string[] }>("/chat/a", {});
+    const releasesBefore = typed("release").length;
+
+    slotA.release();
+    const slotB = await conn.mountSlot<{ items: string[] }>("/chat/b", {});
+
+    // Different paths never pair: A's release AND B's (unbatched) mount both send.
+    expect(typed("release").length).toBe(releasesBefore + 1);
+    expect(typed("release").at(-1)).toMatchObject({ type: "release", instance: "inst/chat/a" });
+    expect(typed("mount")).toContainEqual(
+      expect.objectContaining({ type: "mount", path: "/chat/b" }),
+    );
+    expect(typed("mount-batch")).toHaveLength(0); // a lone survivor stays unbatched
+    expect(slotB.instance).toBe("inst/chat/b");
+  });
+
+  it("(e) normal unmount with no remount → release sent on the next flush", async () => {
+    const { conn, typed } = makePairConn();
+    const slot = await conn.mountSlot<{ items: string[] }>("/chat/main", {});
+    const releasesBefore = typed("release").length;
+    slot.release();
+    expect(typed("release").length).toBe(releasesBefore); // deferred — not yet
+    await tick();
+    expect(typed("release").length).toBe(releasesBefore + 1);
+    expect(typed("release").at(-1)).toMatchObject({ type: "release", instance: "inst/chat/main" });
+  });
+
+  it("(f) a rebound handle's onDeny fires on a runtime deny (sink rewired)", async () => {
+    const { conn, source, redirects } = makePairConn();
+    const slot = await conn.mountSlot("/chat/main", { topic: "x" });
+    const stale: string[] = [];
+    slot.onDeny((loc) => stale.push(loc)); // the releasing caller's sink
+
+    slot.release();
+    const rebound = await conn.mountSlot("/chat/main", { topic: "x" });
+    const fresh: string[] = [];
+    rebound.onDeny((loc) => fresh.push(loc)); // the remounting caller's sink
+
+    // A runtime deny for the shared instance must fire the NEW caller's sink,
+    // never the stale one nor the app-level redirect.
+    source().emit(
+      "env",
+      JSON.stringify({ seq: 0, instance: "inst/chat/main", redirect: "/login" }),
+    );
+    expect(fresh).toEqual(["/login"]);
+    expect(stale).toEqual([]);
+    expect(redirects).toEqual([]);
   });
 });
 
@@ -354,7 +1100,7 @@ describe("ws transport (§11 opt-in)", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(ws.sent.some((m) => JSON.parse(m).rpcId)).toBe(true);
 
-    conn.patchSearch({ filter: "done" });
+    conn.patchProps({ filter: "done" });
     expect(ws.sent.some((m) => JSON.parse(m).type === "url")).toBe(true);
 
     const env: Envelope = {
@@ -368,6 +1114,28 @@ describe("ws transport (§11 opt-in)", () => {
     // A WS runtime deny arrives as a redirect envelope → onRedirect (§10).
     ws.emit("message", JSON.stringify({ seq: 6, instance: "i1", redirect: "/403" }));
     expect(redirects).toEqual(["/403"]);
+  });
+
+  it("surfaces a rejected props patch over WS (instance-scoped error envelope) with a console.warn (finding 3b)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { conn, socket } = makeWsConnection();
+    const ws = socket();
+    ws.emit("open");
+    conn.patchProps({ limit: "abc" });
+    // The server answers an invalid `url` patch with an instance-scoped error
+    // envelope (no rpcId, no mountId) — it settles no pending rpc, so it would
+    // otherwise vanish. Consistent with the SSE 422 warn.
+    ws.emit(
+      "message",
+      JSON.stringify({
+        seq: 4,
+        instance: "i1",
+        error: { name: "ValidationError", message: "props limit: expected number" },
+      }),
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain("i1");
+    warn.mockRestore();
   });
 
   it("correlates an unbound mount-deny redirect by mountId (#65)", async () => {
@@ -542,5 +1310,126 @@ describe("ws transport (§11 opt-in)", () => {
       expect(count()).toBe(base + 1);
       conn.close();
     });
+  });
+});
+
+describe("LiveConnection aggregate sync signal (data-rpxd-synced settle marker, deflake FIX 1)", () => {
+  /**
+   * Like {@link makeConnection}, but its control POSTs answer a `mount` with a
+   * fixed instance id so `mountSlot` resolves and registers a SECOND store —
+   * exercising the aggregate across membership changes. Everything else 202s.
+   */
+  function makeSyncConnection() {
+    const requests: { url: string; body: RpcBatch | { type?: string } | null }[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      requests.push({ url: String(url), body });
+      if (body?.type === "mount") {
+        return new Response(JSON.stringify({ instance: "slot-1" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+    const conn = new LiveConnection<{ items: string[] }>({
+      instance: "i1",
+      bootstrap,
+      fetchImpl,
+      eventSource: (url) => new FakeEventSource(url),
+    });
+    return { conn, requests, source: () => FakeEventSource.instances.at(-1) as FakeEventSource };
+  }
+
+  it("is settled only once the primary store is live with nothing pending", () => {
+    const { conn, source } = makeSyncConnection();
+    // Before connect the store is `connecting`, so the aggregate is unsettled.
+    expect(conn.synced).toBe(false);
+    conn.connect();
+    source().emit("open"); // → status live
+    expect(conn.synced).toBe(true);
+  });
+
+  it("is false while any store's status !== live", () => {
+    const { conn, source } = makeSyncConnection();
+    conn.connect();
+    const es = source();
+    es.emit("open");
+    expect(conn.synced).toBe(true);
+    es.readyState = 0; // auto-reconnecting (CONNECTING)
+    es.emit("error"); // transient drop → reconnecting
+    expect(conn.synced).toBe(false);
+  });
+
+  it("flips OFF during an in-flight rpc and back ON at ack", async () => {
+    const { conn, requests, source } = makeSyncConnection();
+    conn.connect();
+    source().emit("open");
+    expect(conn.synced).toBe(true);
+
+    void conn.store.call("noop");
+    await Promise.resolve(); // drain the store's microtask flush
+    expect(conn.synced).toBe(false); // a pending optimistic op
+
+    const batch = requests.at(-1)?.body as RpcBatch;
+    // Ack: an in-order envelope carrying the batch's rpcId settles the op.
+    source().emit(
+      "env",
+      JSON.stringify({ seq: bootstrap.seq + 1, instance: "i1", rpcId: batch.rpcId }),
+    );
+    expect(conn.synced).toBe(true);
+  });
+
+  it("recomputes on membership change: a mounted slot gates synced until live, and dropping it re-settles", async () => {
+    const { conn, source } = makeSyncConnection();
+    conn.connect();
+    source().emit("open");
+    expect(conn.synced).toBe(true);
+
+    const handle = await conn.mountSlot("/slot/1", {});
+    // The slot's fresh store starts `connecting` → the aggregate is unsettled.
+    expect(conn.synced).toBe(false);
+
+    // Its first snapshot arrives → dispatchEnvelope marks it live.
+    source().emit(
+      "env",
+      JSON.stringify({ seq: 0, instance: "slot-1", full: { state: {}, session: {} } }),
+    );
+    expect(conn.synced).toBe(true);
+
+    // A pending rpc on the SLOT store unsettles the aggregate...
+    void handle.store.call("noop");
+    await Promise.resolve();
+    expect(conn.synced).toBe(false);
+
+    // ...and dropping the slot (membership change) re-settles even though that
+    // rpc never acked — the pending store left the tracked set.
+    handle.release();
+    await Promise.resolve();
+    expect(conn.synced).toBe(true);
+  });
+
+  it("subscribeSync fires on snapshot AND membership changes; the unsubscribe stops it", async () => {
+    const { conn, source } = makeSyncConnection();
+    conn.connect();
+    source().emit("open");
+    let calls = 0;
+    const unsub = conn.subscribeSync(() => {
+      calls += 1;
+    });
+
+    void conn.store.call("noop");
+    await Promise.resolve();
+    expect(calls).toBeGreaterThan(0); // snapshot change (pending set) notified
+
+    const beforeMount = calls;
+    await conn.mountSlot("/slot/1", {}); // membership change notifies
+    expect(calls).toBeGreaterThan(beforeMount);
+
+    const afterMount = calls;
+    unsub();
+    void conn.store.call("noop2");
+    await Promise.resolve();
+    expect(calls).toBe(afterMount); // torn down — no longer listening
   });
 });

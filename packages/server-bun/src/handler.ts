@@ -7,7 +7,9 @@
 
 import { randomBytes } from "node:crypto";
 import {
+  canonicalProps,
   decodeBatch,
+  decodeProps,
   defaultDiagnosticSink,
   type Envelope,
   isDev,
@@ -15,27 +17,44 @@ import {
   isSuperseded,
   type LiveDefinition,
   LiveInstance,
+  type MountBatchControl,
+  type MountBatchResult,
+  type MountControl,
   makeDiagnosticEmit,
   memory,
   type RateLimit,
+  type ReleaseControl,
+  type ResyncControl,
   type RouteDefinition,
   type RouteMethod,
   type RpcBatch,
   type RpxdDiagnosticSink,
   runPipeline,
   type Stage,
+  type StandardSchemaV1,
   type StorageAdapter,
   TokenBucket,
+  type UrlControl,
+  ValidationError,
+  validateInput,
 } from "@rpxd/core";
 import { readSid, SID_COOKIE, signSessionId, timingSafeEqualStr } from "./cookie.ts";
-import { matchHttpRoute, matchRoute } from "./match.ts";
+import { matchHttpRoute, matchRoute, type RouteMatch } from "./match.ts";
 import { type AllowedOrigins, originAllowed } from "./origin.ts";
 
 /** One registered route: URL path literal + live definition. */
 export interface RouteRegistration {
   path: string;
-  // biome-ignore lint/suspicious/noExplicitAny: the handler hosts routes of any state shape
-  def: LiveDefinition<any, any, any>;
+  // biome-ignore lint/suspicious/noExplicitAny: the handler hosts routes of any state/props shape
+  def: LiveDefinition<any, any, any, any>;
+  /**
+   * The props schema declared via `live(pattern, propsSchema?)` (ADR 0002),
+   * carried through from `LiveRoute.props`. When present, the page GET path
+   * decodes the `?query` string ({@link decodeProps}) and validates it against
+   * this schema **before** `guard`+`load` — `?limit=20` reaches the loader as
+   * the number `20`. When absent, props stay the raw string record (back-compat).
+   */
+  props?: StandardSchemaV1<unknown, unknown>;
 }
 
 /** One registered HTTP route (`route()`, the routes & auth guide): path + method handlers. */
@@ -48,7 +67,12 @@ export interface HttpRouteRegistration {
 export interface RenderContext {
   path: string;
   params: Record<string, string>;
-  search: Record<string, string | undefined>;
+  /**
+   * The props record for this load — the raw `?query` string values, or the
+   * decoded+validated props (numbers, booleans, objects) when the route
+   * declares a props schema (ADR 0002 §3). Same record the loader saw.
+   */
+  search: Record<string, unknown>;
   state: unknown;
   session: unknown;
   seq: number;
@@ -60,20 +84,49 @@ export interface RenderContext {
  * The `security`-category diagnostic `type`s the runtime emits (#8, now part of
  * the unified diagnostic sink #73) — a rejected cross-origin request, a throttle
  * rejection, a capacity-driven instance eviction, a mount rejected at the
- * per-session cap, and a connection killed for exceeding the egress byte budget.
- * They reach the app as {@link RpxdDiagnostic}s with `category: "security"`
- * through {@link RpxdHandlerOptions.onDiagnostic}.
+ * per-session cap, a connection killed for exceeding the egress byte budget, a
+ * mount refused over the per-session state byte budget, and a mount refused by
+ * the per-session mount throttle (the last two are ADR 0002 item 14). They reach
+ * the app as {@link RpxdDiagnostic}s with `category: "security"` through
+ * {@link RpxdHandlerOptions.onDiagnostic}.
  */
 type SecurityDiagnosticType =
   | "origin-rejected"
   | "rate-limited"
   | "cap-evicted"
   | "cap-rejected"
-  | "stream-overflow";
+  | "stream-overflow"
+  | "session-budget-exceeded"
+  | "mount-throttled";
 
 /** Options for {@link createRpxdHandler}. */
 export interface RpxdHandlerOptions {
+  /**
+   * Router-served live objects: the pages a browser GET / SSR mounts and the
+   * client router navigates. Only these are served over a top-level `GET` (§12);
+   * the control-plane `mount` message also matches them (a routed page is a
+   * mountable slot by construction — Decision 2).
+   */
   routes: RouteRegistration[];
+  /**
+   * Mount-only live objects (ADR 0002 item 6): exported `live()` objects the
+   * control-plane `mount` message can address but a browser GET / SSR **cannot**
+   * — requesting a slot pattern as a page is a `404`. The control plane matches
+   * `mount` against the **union** of {@link routes} and these, so a slot flows
+   * through the exact same warm-reuse / session-cap / eviction path as a page;
+   * only the address space differs. Every pattern must be unique across the
+   * union (a page and a slot claiming one pattern is a boot-time error) — the
+   * scan/config wiring enforces this, and {@link createRpxdHandler} asserts it.
+   *
+   * @example
+   * ```ts
+   * createRpxdHandler({
+   *   routes: [{ path: "/org/$orgId/board", def: boardDef }],
+   *   slots: [{ path: "/chat", def: chatDef, props: chatPropsSchema }],
+   * });
+   * ```
+   */
+  slots?: RouteRegistration[];
   /** Server-only HTTP routes (`route()`, the routes & auth guide), matched before SSR. */
   httpRoutes?: HttpRouteRegistration[];
   storage?: StorageAdapter;
@@ -167,6 +220,57 @@ export interface RpxdHandlerOptions {
    * live routes is already pathological).
    */
   maxInstancesPerSession?: number | null;
+  /**
+   * Soft per-session **state byte budget** (ADR 0002 item 14, Decision 6): the
+   * running sum of each held instance's serialized state size
+   * ({@link LiveInstance.stateBytes}). Where {@link maxInstancesPerSession} caps
+   * *structure* (a thousand tiny instances is an attack bytes can't see), this
+   * caps *substance* (one ballooning instance is an attack counts can't see).
+   *
+   * Enforcement is **soft and at the mount gate only**: a NEW mount for a session
+   * already over budget first tries to shed the session's idle (unsubscribed)
+   * instances — reclaiming their bytes without dropping anyone's live
+   * connection — and, if that can't get under budget, refuses the new mount
+   * (`429` on HTTP control / SSR GET, an error envelope on WS, with a
+   * `security`/`session-budget-exceeded` diagnostic). It **never** rejects a
+   * flush or rpc on an existing instance and **never** evicts a subscribed one —
+   * over-budget just means "no more mounts until space frees", degrading a slot
+   * to its `fallback` rather than corrupting a live object.
+   *
+   * **`null` (the default) disables it.** No number is baked in: a surprise
+   * budget shipped in a patch release would break apps whose legitimate state
+   * happens to exceed it. Opt in with a value comfortably above your largest
+   * expected per-session working set — a few MiB is a reasonable starting point
+   * for a slot-heavy app, sized from the sum of a page's slots' snapshots.
+   *
+   * @example
+   * ```ts
+   * createRpxdHandler({ routes, maxSessionStateBytes: 4 * 1024 * 1024 });
+   * ```
+   */
+  maxSessionStateBytes?: number | null;
+  /**
+   * Per-session **mount throttle** (ADR 0002 item 14, Decision 6): a token bucket
+   * over the control-plane `mount` / `mount-batch` messages (both HTTP and WS),
+   * so a client stuck in a remount loop degrades to `429` → `fallback` instead of
+   * pinning the server in mount work. Costed **per entry** — a `mount-batch` of N
+   * spends N tokens (refused wholesale if fewer than N remain), so a batch can't
+   * bypass the limit. Exceeded → `429` (HTTP) / an error envelope (WS) with a
+   * `security`/`mount-throttled` diagnostic; existing instances' rpcs and flushes
+   * are untouched (only *new* mounts are gated). SSR page `GET`s go through the
+   * separate {@link throttle} instead — this guards the slot control plane.
+   *
+   * **Default ON**, sized generously ({@link DEFAULT_MOUNT_RATE_LIMIT}) so a
+   * realistic navigation pattern (~1 mount per interaction) never trips it; only
+   * a pathological loop does. `null` disables. Buckets are in-process
+   * (single-node); for multi-node, throttle at the proxy/edge.
+   *
+   * @example
+   * ```ts
+   * createRpxdHandler({ routes, mountRateLimit: { capacity: 96, refillPerSec: 32 } });
+   * ```
+   */
+  mountRateLimit?: RateLimit | null;
   /**
    * Opt-in request throttle (#6) — a token bucket per key, keyed by a function
    * you provide so the framework never guesses client identity. `key(req)`
@@ -277,7 +381,38 @@ export interface RpxdHandlerOptions {
 }
 
 /** Default rpc/control body + WS frame cap (§11 ingress DoS guard): 1 MiB. */
-export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+
+/**
+ * Default per-session mount throttle (ADR 0002 item 14): capacity 96, refill
+ * 32/s. Sized so realistic navigation (~1 mount per interaction) never trips it
+ * and even a full {@link MAX_MOUNT_BATCH} (64) batch fits inside one burst, while
+ * a remount loop still degrades to `429` → `fallback`. See
+ * {@link RpxdHandlerOptions.mountRateLimit}.
+ */
+export const DEFAULT_MOUNT_RATE_LIMIT: RateLimit = { capacity: 96, refillPerSec: 32 };
+
+/**
+ * Batch size at which a `mount-batch` earns the dev **fan-out doctrine**
+ * diagnostic (ADR 0002 item 11, Decision 6): a page coalescing more than this
+ * many slot mounts in one tick is almost always mapping rows to slots — the
+ * antipattern the "Aggregates, not rows" doctrine warns against (a list of
+ * slots = a missing aggregate). Fires an `instance/slot-fanout-high` diagnostic
+ * (dev only, via {@link isDev}), several steps before the hard
+ * {@link RpxdHandlerOptions.maxInstancesPerSession} wall at 32. Purely advisory —
+ * nothing is rejected; the batch mounts normally.
+ */
+export const SLOT_FANOUT_ADVICE = 10;
+
+/**
+ * Hard sanity cap on `mount-batch` length (ADR 0002 item 11): an explicit bound
+ * on top of the natural {@link DEFAULT_MAX_BODY_BYTES} body limit, so a single
+ * frame can't ask the server to `Promise.all` an unbounded number of mounts
+ * (each mount runs `guard`/`setup`/`load`). An over-cap batch is rejected `413`
+ * with nothing mounted. Well above any real page's sibling-slot count — the
+ * dev {@link SLOT_FANOUT_ADVICE} diagnostic fires long before this.
+ */
+export const MAX_MOUNT_BATCH = 64;
 
 /**
  * Default per-connection egress byte budget (§11 slow-consumer guard): 8 MiB —
@@ -350,6 +485,15 @@ interface InstanceEntry {
   key: string;
   path: string;
   params: Record<string, string>;
+  /**
+   * Canonical serialization ({@link canonicalProps}) of the props most recently
+   * reconciled onto this instance — set after the initial `buildInstance` load
+   * and after every winning `reconcileUrl` (ADR 0002 item 8). The warm-mount
+   * dedup skips `load` when an incoming reconcile's props canonicalize to this
+   * exact string (and the instance is live, not snapshot-restored). A
+   * superseded/failed reconcile leaves it untouched so the next attempt reloads.
+   */
+  lastProps?: string;
   attach?: { token: string; expires: number };
   evictTimer?: ReturnType<typeof setTimeout>;
   /**
@@ -368,7 +512,14 @@ interface InstanceEntry {
  * unsubscribed and left to evict.
  */
 interface StreamHandle {
-  subscribeInstance: (entry: InstanceEntry) => void;
+  /**
+   * Join `entry` to this stream, returning whether it FRESHLY joined (`true`) or
+   * was already subscribed (`false`). A fresh join resyncs; an already-joined one
+   * stays silent (the SSE tier-2 re-mount contract). The WS `mount`-frame branch
+   * uses the `false` return to resync a late-registered store without
+   * double-sending on a fresh join (ADR 0002 items 8/9/11).
+   */
+  subscribeInstance: (entry: InstanceEntry) => boolean;
   releaseInstance: (instanceId: string) => void;
   /** Push a synthetic envelope down this stream — for acks that can't come
    * from an instance (e.g. an unknown-instance error ack). */
@@ -390,6 +541,39 @@ export function encodeSse(env: Envelope): string {
 }
 
 /**
+ * A control message as it arrives off the wire — the shared {@link Control}
+ * union (the single source of truth, pinned by the protocol-conformance test),
+ * but with the fields validation fills in still optional so the runtime decodes
+ * them explicitly at ingress rather than trusting the wire (#8 / review R1
+ * finding 7). Only the pre-validation relaxations live here; every field name and
+ * shape is inherited from `@rpxd/core`, so the two can't drift:
+ * - `mount`.props may be absent (defaulted to `{}` before {@link resolveMountProps}).
+ * - `mount-batch`.mounts may be absent / its entries partial (shape-checked per entry).
+ * {@link ResyncControl}/{@link UrlControl}/{@link ReleaseControl} arrive complete.
+ */
+type ControlIngress =
+  | ResyncControl
+  | (Omit<MountControl, "props"> & { props?: MountControl["props"] })
+  | (Omit<MountBatchControl, "mounts"> & {
+      mounts?: Partial<MountBatchControl["mounts"][number]>[];
+    })
+  | UrlControl
+  | ReleaseControl;
+
+/**
+ * A WS control frame as it arrives off the wire (review R1 finding 7): the same
+ * shared control types as {@link ControlIngress} minus `mount-batch` (the socket
+ * takes single mounts only), plus the WS-only `mountId` correlation field on
+ * `mount` ({@link MountControl.mountId}). Derived from `@rpxd/core` so the WS and
+ * HTTP control surfaces can't drift from the protocol definition.
+ */
+type WsControlIngress =
+  | ResyncControl
+  | (Omit<MountControl, "props"> & { props?: MountControl["props"] })
+  | UrlControl
+  | ReleaseControl;
+
+/**
  * Create the rpxd request handler.
  *
  * Endpoints:
@@ -405,6 +589,26 @@ export function encodeSse(env: Envelope): string {
  * ```
  */
 export function createRpxdHandler(opts: RpxdHandlerOptions) {
+  // Union uniqueness (ADR 0002 Decision 2): the control plane matches `mount`
+  // against routes ∪ slots by pattern, so a pattern claimed by two *different*
+  // live objects is ambiguous — refuse to start rather than silently pick one.
+  // Same-pattern-same-object (the identical registration in both lists) is
+  // instance sharing, not a conflict, so only distinct objects collide. Fail
+  // closed at construction, style-matched to the session-secret refusal below.
+  {
+    const byPath = new Map<string, RouteRegistration>();
+    for (const reg of opts.slots ? [...opts.routes, ...opts.slots] : opts.routes) {
+      const prior = byPath.get(reg.path);
+      if (prior && prior !== reg) {
+        throw new Error(
+          `rpxd: refusing to start — duplicate live() pattern ${JSON.stringify(reg.path)} ` +
+            "registered by two different live objects across routes ∪ slots. Each pattern " +
+            "must be unique across the control-plane mount union (ADR 0002 Decision 2).",
+        );
+      }
+      byPath.set(reg.path, reg);
+    }
+  }
   const storage = opts.storage ?? memory();
   // One wrapped sink (#73) for the handler's own diagnostics, threaded into
   // every instance and the storage bus so the whole runtime reports through it.
@@ -464,6 +668,16 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     opts.maxUnattachedInstances === undefined ? 1024 : opts.maxUnattachedInstances;
   const maxInstancesPerSession =
     opts.maxInstancesPerSession === undefined ? 32 : opts.maxInstancesPerSession;
+  // Soft per-session state byte budget (ADR 0002 item 14): `null` (default)
+  // disables — no number is baked in, so a patch release can't surprise-break an
+  // app whose legitimate state exceeds an invented default. Read only at the
+  // mount gate, so a disabled budget costs nothing on the hot path.
+  const maxSessionStateBytes = opts.maxSessionStateBytes ?? null;
+  // Per-session mount throttle (ADR 0002 item 14): default ON, `null` disables.
+  const mountRateLimit =
+    opts.mountRateLimit === undefined ? DEFAULT_MOUNT_RATE_LIMIT : opts.mountRateLimit;
+  /** Mount-throttle buckets, keyed by session id (in-process, single-node). */
+  const mountThrottleBuckets = new Map<string, TokenBucket>();
   // Ingress body/frame cap (§11 DoS guard): rpc/control 413s, WS frame drops.
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   // Egress budget (§11 slow-consumer guard): `null` disables, undefined → default.
@@ -622,9 +836,53 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     return map;
   }
 
+  /**
+   * The registrations the control plane can mount (ADR 0002 item 6): routed
+   * pages ∪ mount-only slots. Recomputed per call so a reducer-HMR
+   * {@link updateRoute} push into `opts.routes` is reflected. GET/SSR never uses
+   * this (it passes `opts.routes` alone), so a slot pattern stays unservable as
+   * a page. Returns `opts.routes` verbatim when there are no slots (the common
+   * case) to avoid an allocation.
+   */
+  function mountable(): RouteRegistration[] {
+    return opts.slots && opts.slots.length > 0 ? [...opts.routes, ...opts.slots] : opts.routes;
+  }
+
+  /**
+   * Find the registration a live instance was mounted from, across the mount
+   * union (ADR 0002 item 6) — a slot instance's def is in `opts.slots`, not
+   * `opts.routes`, so a runtime `url` reconcile must look in both.
+   */
+  function registrationFor(path: string): RouteRegistration | undefined {
+    return mountable().find((r) => r.path === path);
+  }
+
+  /**
+   * The session-map + storage key for an instance (review R1 finding 1). ADR 0002
+   * makes the pattern-filled string the instance identity, but two DIFFERENT
+   * patterns can fill to the same concrete pathname — a page `/$slug` navigated to
+   * `/chat` and a mount-only slot `/chat` are distinct live objects that both
+   * concretely live at `/chat`. Keying by pathname alone would let one be served
+   * as the other via warm reuse (skipping the real guard/load), and would collide
+   * their `${sid}:${key}` snapshot rows. So the key incorporates the matched
+   * PATTERN.
+   *
+   * A literal pattern equals its own pathname (`/chat` → `/chat`, every slot, and
+   * every static route), so those keep the bare-pathname key byte-for-byte — only
+   * a PARAMETRIC page (`/$slug` filled to `/chat`) gains the pattern qualifier.
+   * Two tabs on the same parametric page compute the SAME (pattern, pathname) pair
+   * → same key → shared instance (Decision 4 two-tabs semantics preserved); a
+   * control-plane mount that resolves to the same pattern as a GET page shares it
+   * too (Decision 2). The `\n` (newline) separator can't appear in a URL path, so a
+   * qualified key can never alias a bare one.
+   */
+  function keyFor(pattern: string, pathname: string): string {
+    return pattern === pathname ? pathname : `${pattern}\n${pathname}`;
+  }
+
   // Reconcile an instance to a URL (§7) — `guard` then `load`. Runs on every
   // page load, fresh or warm: the URL is the query key, so a full-page load (or
-  // Link mount) must reconcile to its search, not just the first `setup`.
+  // Link mount) must reconcile to its props, not just the first `setup`.
   // `guard` (§10) is awaited so a deny `throw redirect` 302s *before* we serve —
   // the redirect propagates to the caller. SSR sequencing (§12): the first
   // document carries state through the loader's first patch (`loadForRender`),
@@ -635,19 +893,50 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   async function reconcileUrl(
     def: RouteRegistration["def"],
     instance: InstanceEntry["instance"],
-    search: Record<string, string | undefined>,
-  ): Promise<void> {
+    props: Record<string, unknown>,
+    // ADR 0002 item 8: skip the `load` half (guard always runs) when the caller
+    // has determined the props are unchanged since the last winning reconcile
+    // and the instance is live. Never weakens `guard` — authorization freshness.
+    skipLoad = false,
+  ): Promise<boolean> {
     try {
-      if (def.guard) await instance.authorize(search); // deny → throw redirect → 302
+      if (def.guard) await instance.authorize(props); // deny → throw redirect → 302
     } catch (e) {
       // A newer URL superseded this guard run mid-flight: the winning run owns
       // the outcome. Bail without loading — falling through would load a URL
-      // this run never authorized (a swallowed deny would leak its data).
-      if (isSuperseded(e)) return;
+      // this run never authorized (a swallowed deny would leak its data). Report
+      // "not reconciled" so the dedup key isn't advanced to a superseded run's props.
+      if (isSuperseded(e)) return false;
       throw e;
     }
-    if (!def.load) return;
-    await instance.loadForRender(search);
+    if (!def.load || skipLoad) return true; // no loader / deduped skip → reconciled
+    return instance.loadForRender(props); // false when a newer run superseded this load
+  }
+
+  /**
+   * Warm-mount dedup (ADR 0002 item 8): reconcile a **live in-memory** instance
+   * to `props`, ALWAYS rerunning `guard` (authorization freshness is never
+   * weakened, §10) but SKIPPING `load` when `props` canonicalize
+   * ({@link canonicalProps}) to the entry's last winning reconcile AND the
+   * instance wasn't just cold-woken from a snapshot (a restored instance may
+   * have missed broadcasts, §9, so it always reloads). The single place the
+   * skip rule lives — the warm-reuse branch of {@link mountInstance} and the
+   * `url` control message (HTTP + WS) all funnel through it, so the multi-tab
+   * storm (a second tab re-mounting a slot-bearing page) re-guards without
+   * re-running every slot's `load`. `entry.lastProps` advances only on a run
+   * that actually reconciled; a guard deny (`throw redirect`) propagates to the
+   * caller exactly as an un-deduped reconcile would, and a superseded/failed
+   * run leaves the key untouched so the next attempt reloads.
+   */
+  async function reconcileEntry(
+    entry: InstanceEntry,
+    def: RouteRegistration["def"],
+    props: Record<string, unknown>,
+  ): Promise<void> {
+    const canonical = canonicalProps(props);
+    const skipLoad = canonical === entry.lastProps && !entry.instance.restoredFromSnapshot;
+    const reconciled = await reconcileUrl(def, entry.instance, props, skipLoad);
+    if (reconciled) entry.lastProps = canonical;
   }
 
   /**
@@ -662,11 +951,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     def: RouteRegistration["def"],
     params: Record<string, string>,
     session: unknown,
-    search: Record<string, string | undefined>,
+    props: Record<string, unknown>,
   ): Promise<void> {
     const guard = def.guard;
     if (!guard) return;
-    await guard({ params, search }, { params, session, signal: new AbortController().signal });
+    await guard({ params, props }, { params, session, signal: new AbortController().signal });
   }
 
   /**
@@ -675,15 +964,23 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
    * request allocates nothing; a throw from `load` after `setup` disposes the
    * half-built instance (without a snapshot) so it can't orphan the pubsub
    * subscriptions `setup` wired. Redirects and errors propagate to the caller.
+   *
+   * `storageKey` is the pattern-qualified session key ({@link keyFor}), so the
+   * snapshot row can't collide with a different-pattern instance sharing the same
+   * concrete pathname (review R1 finding 1). Returns `loadedClean`: whether the
+   * initial `load` reconciled **cleanly** (no data-throw) — a data-throw is
+   * swallowed into userland state but must NOT seed the warm-mount dedup key, or a
+   * failed initial load would stick its empty state across tabs (review R1 finding
+   * 2). `true` when there is no loader (nothing to reconcile).
    */
   async function buildInstance(
     sid: string,
-    pathname: string,
+    storageKey: string,
     sessionData: unknown,
     route: RouteRegistration,
     match: { path: string; params: Record<string, string> },
-    search: Record<string, string | undefined>,
-  ): Promise<InstanceEntry["instance"]> {
+    search: Record<string, unknown>,
+  ): Promise<{ instance: InstanceEntry["instance"]; loadedClean: boolean }> {
     if (route.def.guard) {
       await runGuard(route.def, match.params, sessionData, search); // deny → throw, nothing built
     }
@@ -693,15 +990,19 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       params: match.params,
       session: (sessionData as Record<string, unknown>) ?? {},
       storage,
-      storageKey: `${sid}:${pathname}`,
+      storageKey: `${sid}:${storageKey}`,
       defaultRateLimit: opts.defaultRateLimit,
       maxBatchCalls: opts.maxBatchCalls,
       warnQueueDepth: opts.warnQueueDepth,
       maxBroadcastBacklog: opts.maxBroadcastBacklog,
       emit,
     });
+    let loadedClean = true;
     try {
-      if (route.def.load) await instance.loadForRender(search);
+      // `loadForRender` returns false on a won-but-threw (data-throw) run — the
+      // throw is swallowed as state, not propagated — so capture it rather than
+      // trusting a non-throw to mean a clean load (review R1 finding 2).
+      if (route.def.load) loadedClean = await instance.loadForRender(search);
     } catch (e) {
       // Load bailed out (e.g. a loader redirect) → tear down so we don't orphan
       // the subscriptions `setup` wired. `dispose(false)` skips the final
@@ -710,17 +1011,130 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       await instance.dispose(false);
       throw e;
     }
-    return instance;
+    return { instance, loadedClean };
+  }
+
+  /**
+   * Resolve a page GET's `?query` string into the props record the loader sees
+   * (ADR 0002 §3). Takes the already-resolved page {@link RouteMatch} (the GET
+   * handler matches `opts.routes` once and threads it here AND into
+   * {@link mountInstance} — one match per GET, not three). When the matched route
+   * declares a props schema, the query is decoded (per-value try-`JSON.parse`,
+   * {@link decodeProps}) and validated against it — `?limit=20` becomes the
+   * number `20` — **before** any mount, so untrusted input never reaches
+   * `guard`/`load` unvalidated and an invalid value throws {@link ValidationError}
+   * (mapped to 422) with nothing built. A schema-less route keeps the raw string
+   * record, byte-identical to pre-ADR behavior (last value wins on a repeated
+   * key, matching `mountInstance`).
+   */
+  async function resolveGetProps(
+    match: RouteMatch,
+    query: URLSearchParams,
+  ): Promise<Record<string, unknown>> {
+    const schema = opts.routes.find((r) => r.path === match.path)?.props;
+    if (!schema) {
+      const raw: Record<string, string> = {};
+      query.forEach((v, k) => {
+        raw[k] = v;
+      });
+      return raw;
+    }
+    // Validated output flows onward as props; a violation throws before mount.
+    // A props schema is a record schema, so its output is a props record.
+    return (await validateInput(schema, decodeProps(query), `props ${match.path}`)) as Record<
+      string,
+      unknown
+    >;
+  }
+
+  /**
+   * Resolve a control-plane `mount`'s `props` into the record `guard`+`load`
+   * see (ADR 0002 item 6). Unlike a page GET, control-plane props are already a
+   * JSON value model (values arrive typed off the wire — no {@link decodeProps}),
+   * so when the matched registration declares a props schema this only validates
+   * `raw` against it — **before** any mount, so untrusted input never reaches
+   * `guard`/`load` and an invalid value throws {@link ValidationError} (mapped to
+   * 422 over HTTP control, an error envelope over WS) with nothing built. A
+   * schema-less registration passes `raw` through verbatim (back-compat).
+   * `registrations` is the mount union so a slot's schema is found too.
+   */
+  async function resolveMountProps(
+    pathname: string,
+    raw: Record<string, unknown>,
+    registrations: RouteRegistration[],
+  ): Promise<Record<string, unknown>> {
+    const match = matchRoute(
+      registrations.map((r) => r.path),
+      pathname,
+    );
+    const schema = match ? registrations.find((r) => r.path === match.path)?.props : undefined;
+    if (!schema) return raw;
+    return (await validateInput(schema, raw, `props ${match?.path ?? pathname}`)) as Record<
+      string,
+      unknown
+    >;
+  }
+
+  /**
+   * Validate a `url` props patch (ADR 0002 item 7) against the live instance's
+   * registration props schema **before** the reconcile, so untrusted input never
+   * reaches `guard`/`load`. Unlike {@link resolveMountProps}, the registration is
+   * already resolved — a `url` patch names a bound instance whose `entry.path` is
+   * the exact pattern ({@link registrationFor}), so no `matchRoute` is needed.
+   * Like `mount`, the patch payload is a JSON value model (no {@link decodeProps}
+   * — the values arrive typed off the control plane). A schema-less registration
+   * passes `raw` through verbatim (byte-identical to pre-ADR `nav.patch`). An
+   * invalid value throws {@link ValidationError} (mapped to 422 over HTTP, an
+   * instance-scoped error envelope over WS) — nothing reconciles.
+   */
+  async function resolveUrlProps(
+    route: RouteRegistration,
+    raw: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!route.props) return raw;
+    return (await validateInput(route.props, raw, `props ${route.path}`)) as Record<
+      string,
+      unknown
+    >;
   }
 
   async function mountInstance(
     sid: string,
     sessionData: unknown,
     pathname: string,
-    search: Record<string, string | undefined>,
+    search: Record<string, unknown>,
+    // The registrations to match `pathname` against (ADR 0002 item 6): GET/SSR
+    // passes `opts.routes` (pages only, so a slot pattern 404s as a page); the
+    // control plane passes {@link mountable} (routes ∪ slots). Everything else —
+    // warm reuse, session cap, raced-twin dispose, eviction — is identical, so
+    // the two address spaces share one lifecycle (Decision 2, stop-signal #1).
+    registrations: RouteRegistration[] = opts.routes,
+    // A pre-resolved match, when the caller already ran `matchRoute` over these
+    // SAME `registrations` for this `pathname` (the GET path matches once for its
+    // page-vs-slot 404 guard and its props schema, then threads it here — one
+    // match per GET). Omit it and the mount matches itself (the control plane).
+    preMatch?: RouteMatch,
   ): Promise<InstanceEntry> {
+    // Resolve the caller's matched pattern up front: the session key incorporates
+    // it ({@link keyFor}, review R1 finding 1) so a page `/$slug` at the concrete
+    // `/chat` and a slot `/chat` — distinct live objects that fill to the same
+    // pathname — get DISTINCT keys and never share/clobber one another. GET passes
+    // routes-only, the control plane the union, so `match.path` is always THIS
+    // caller's correct pattern. A hit under the qualified key is therefore
+    // guaranteed to be the SAME live object (never a foreign pattern), so warm
+    // reuse can reconcile it directly without re-checking the pattern.
+    const match =
+      preMatch ??
+      matchRoute(
+        registrations.map((r) => r.path),
+        pathname,
+      );
+    if (!match) throw new NotFoundError(pathname);
+    const route = registrations.find((r) => r.path === match.path) as RouteRegistration;
+    const key = keyFor(match.path, pathname);
+
     const entries = entriesFor(sid);
-    const existing = entries.get(pathname);
+    const existing = entries.get(key);
     if (existing) {
       const sameSession =
         JSON.stringify(existing.instance.session ?? {}) === JSON.stringify(sessionData ?? {});
@@ -732,9 +1146,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         // Warm reuse counts as recent use — bump it to most-recent in the LRU
         // (#61) so a live-but-un-adopted instance isn't shed before a colder one.
         if (unattached.delete(existing)) unattached.add(existing);
-        // Reconcile the warm instance to this load's URL (§7).
-        const route = opts.routes.find((r) => r.path === existing.path);
-        if (route) await reconcileUrl(route.def, existing.instance, search);
+        // Reconcile the warm instance to this load's URL (§7), with the item-8
+        // dedup: re-guard always, re-load only on a props change. The key pins the
+        // pattern, so `route` (the caller's match) is exactly this instance's def.
+        await reconcileEntry(existing, route.def, search);
         return existing;
       }
       // The authenticated session changed (login/logout, §10): the principal —
@@ -742,11 +1157,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       // the snapshot, and re-create fresh below rather than adopt the warm
       // instance (§12), which would render the old principal.
       if (existing.evictTimer) clearTimeout(existing.evictTimer);
-      entries.delete(pathname);
+      entries.delete(key);
       byInstanceId.delete(existing.instance.id);
       unattached.delete(existing);
       await existing.instance.dispose();
-      await storage.delete(`${sid}:${pathname}`);
+      await storage.delete(`${sid}:${key}`);
     }
 
     // Hard per-session ceiling (C): reserve a slot *before* building. Idle
@@ -758,39 +1173,84 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       if (m && m.size >= maxInstancesPerSession) {
         shedIdleInstances(m, maxInstancesPerSession);
         if (m.size >= maxInstancesPerSession) {
-          emitSecurity("cap-rejected", { sid, path: pathname });
+          // Doctrine-worded (ADR 0002 Decision 6, "Aggregates, not rows"): the
+          // cap isn't a memory limit to be raised, it's structure enforcement.
+          // A session at 32 live instances is almost always a page mapping rows
+          // to slots — the diagnostic names the doctrine so the fix is legible.
+          emitSecurity("cap-rejected", {
+            sid,
+            path: pathname,
+            cap: maxInstancesPerSession,
+            hint:
+              "a page mapping a list into slots should own the collection as one " +
+              "live object — see 'Aggregates, not rows'",
+          });
           throw new SessionCapError();
         }
       }
     }
 
-    const match = matchRoute(
-      opts.routes.map((r) => r.path),
-      pathname,
-    );
-    if (!match) throw new NotFoundError(pathname);
-    const route = opts.routes.find((r) => r.path === match.path) as RouteRegistration;
+    // Soft per-session state byte budget (ADR 0002 item 14, Decision 6): where
+    // the cap bounds instance *count*, this bounds their total *bytes*. Measured
+    // on the ALREADY-HELD instances (the new one isn't built yet), so it refuses
+    // once a session is over budget rather than pre-sizing an unbuilt mount —
+    // soft by design. Shed idle instances first (their bytes are reclaimable
+    // without dropping a live connection); if that can't get under budget, refuse
+    // the NEW mount — never a flush/rpc on an existing instance, never a
+    // subscribed one's eviction. Enforced at the mount gate only.
+    if (maxSessionStateBytes != null) {
+      const m = sessions.get(sid);
+      if (m && sessionStateBytes(m) >= maxSessionStateBytes) {
+        shedIdleForBudget(m, maxSessionStateBytes);
+        const bytes = sessionStateBytes(m);
+        if (bytes >= maxSessionStateBytes) {
+          emitSecurity("session-budget-exceeded", {
+            sid,
+            path: pathname,
+            bytes,
+            budget: maxSessionStateBytes,
+          });
+          throw new SessionBudgetError();
+        }
+      }
+    }
 
     // Guard → setup → load, with cleanup on throw (#8). A deny or loader redirect
-    // throws out before the instance is registered below.
-    const instance = await buildInstance(sid, pathname, sessionData, route, match, search);
+    // throws out before the instance is registered below. `loadedClean` is false
+    // when the initial load threw a data error (swallowed into state) — it must
+    // not seed the dedup key (review R1 finding 2). The pattern-qualified `key` is
+    // the storage/session key so a different-pattern twin can't collide (finding 1).
+    const { instance, loadedClean } = await buildInstance(
+      sid,
+      key,
+      sessionData,
+      route,
+      match,
+      search,
+    );
 
     // A concurrent mount for the same key can register while we awaited
     // `buildInstance` (both passed the warm-reuse check above). Two entries
     // under one key would let the loser's eviction delete the winner's slot
     // and snapshot row — dispose the just-built loser and adopt the winner.
-    const winner = entriesFor(sid).get(pathname);
+    const winner = entriesFor(sid).get(key);
     if (winner) {
-      await instance.dispose(false); // no snapshot — the winner owns `${sid}:${pathname}`
+      await instance.dispose(false); // no snapshot — the winner owns `${sid}:${key}`
       return winner;
     }
 
     const entry: InstanceEntry = {
       instance,
       sid,
-      key: pathname,
+      key,
       path: match.path,
       params: match.params,
+      // Seed the dedup key ONLY when the initial `buildInstance` load reconciled
+      // cleanly (ADR 0002 item 8): an immediate warm re-mount with identical props
+      // then re-guards without re-loading (the multi-tab storm). A data-throwing
+      // initial load leaves this UNSET, so the next warm re-mount re-runs `load`
+      // rather than sticking the failed/empty state (review R1 finding 2).
+      lastProps: loadedClean ? canonicalProps(search) : undefined,
       attach: { token: crypto.randomUUID(), expires: Date.now() + attachTtlMs },
       everAttached: false,
     };
@@ -798,7 +1258,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     // top: an eviction timer that fired during the awaits above may have pruned
     // an empty slice out of `sessions` (#61), orphaning the captured reference.
     // `entriesFor` re-attaches (or recreates) the canonical slice.
-    entriesFor(sid).set(pathname, entry);
+    entriesFor(sid).set(key, entry);
     byInstanceId.set(instance.id, entry);
     unattached.add(entry);
     enforceUnattachedCap(entry);
@@ -872,6 +1332,59 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   }
 
   /**
+   * Sum a session's held state bytes ({@link LiveInstance.stateBytes}, ADR 0002
+   * item 14). Computed on demand over the session's ≤ `maxInstancesPerSession`
+   * (32) entries — trivially cheap and drift-free (no per-flush bookkeeping to
+   * fall out of sync across eviction/re-mount churn) — and only ever called
+   * behind the `maxSessionStateBytes != null` guard, so a disabled budget never
+   * serializes any state.
+   */
+  function sessionStateBytes(m: Map<string, InstanceEntry>): number {
+    let total = 0;
+    for (const entry of m.values()) total += entry.instance.stateBytes;
+    return total;
+  }
+
+  /**
+   * Reclaim a session's byte budget by shedding its idle (unsubscribed)
+   * instances, oldest first, until the running sum drops under `budget` or no
+   * idle instance remains (ADR 0002 item 14). Mirrors {@link shedIdleInstances}'
+   * cap-side shedding: a subscribed instance is **never** dropped for budget —
+   * an idle instance's bytes are reclaimable without severing a live connection.
+   */
+  function shedIdleForBudget(m: Map<string, InstanceEntry>, budget: number): void {
+    for (const entry of [...m.values()]) {
+      if (sessionStateBytes(m) < budget) break;
+      if (entry.instance.subscriberCount > 0) continue; // never evict a subscribed instance
+      emitSecurity("cap-evicted", { reason: "budget", sid: entry.sid, path: entry.key });
+      evictEntry(entry);
+    }
+  }
+
+  /**
+   * Charge the per-session mount throttle `cost` tokens (ADR 0002 item 14): a
+   * single `mount` costs 1, a `mount-batch` costs one per entry so a batch can't
+   * bypass the limit. Returns `true` (proceed) when the throttle is disabled or a
+   * token was available, `false` (refuse) when the bucket is drained — consuming
+   * nothing on refusal, so an over-budget batch is rejected wholesale. The bucket
+   * map is bounded like {@link throttleBuckets} so a sid-rotating flood can't leak
+   * memory (a reset bucket starts full — lenient, never a bypass of an active limit).
+   */
+  function takeMountTokens(sid: string, cost: number): boolean {
+    if (mountRateLimit == null) return true;
+    let bucket = mountThrottleBuckets.get(sid);
+    if (!bucket) {
+      if (mountThrottleBuckets.size >= MAX_THROTTLE_KEYS) {
+        const oldest = mountThrottleBuckets.keys().next().value;
+        if (oldest !== undefined) mountThrottleBuckets.delete(oldest);
+      }
+      bucket = new TokenBucket(mountRateLimit);
+      mountThrottleBuckets.set(sid, bucket);
+    }
+    return bucket.takeN(cost);
+  }
+
+  /**
    * Cap instances held for one session (C): shed idle instances until within
    * {@link RpxdHandlerOptions.maxInstancesPerSession}. Backstops the pre-build
    * slot reservation in `mountInstance` when concurrent mounts race past it.
@@ -919,10 +1432,17 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     /** instanceId → this subscriber's unsub, so a single instance is joined once. */
     const unsubs = new Map<string, () => void>();
 
-    const subscribeInstance = (entry: InstanceEntry, initial = false) => {
+    // Returns whether this call FRESHLY joined the instance (true) or found it
+    // already on this stream (false) — the WS `mount`-frame branch needs the
+    // distinction to snapshot a late-registered store without double-sending on a
+    // fresh join (ADR 0002 items 8/9/11). SSE callers ignore the return.
+    const subscribeInstance = (entry: InstanceEntry, initial = false): boolean => {
       // Idempotent: a warm instance already on this stream must not double-join
-      // (tier-2 re-mount of a still-live path, §7).
-      if (unsubs.has(entry.instance.id)) return;
+      // (tier-2 re-mount of a still-live path, §7). A fresh join resyncs below;
+      // an already-joined one stays silent here (the SSE tier-2 re-mount contract:
+      // no double-send). The WS join-frame's late-store resync is handled by its
+      // caller, which keys off this `false` return.
+      if (unsubs.has(entry.instance.id)) return false;
       if (entry.evictTimer) {
         clearTimeout(entry.evictTimer);
         entry.evictTimer = undefined;
@@ -942,6 +1462,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       } else {
         entry.instance.resync();
       }
+      return true;
     };
 
     const releaseInstance = (instanceId: string) => {
@@ -1058,36 +1579,183 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     });
   }
 
-  // WIRE CONTRACT — the control-plane messages (mount/resync/url/release) and
-  // the `?attach&seq` adoption below are documented in
+  /**
+   * The outcome of mounting ONE control-plane entry (ADR 0002 items 6 + 11):
+   * `ok` (mounted + joined), `redirect` (a `setup`/`guard` deny), or `error`
+   * (a client-fault the caller maps to a status / positional `{ error }`). The
+   * single `mount` and every `mount-batch` entry both go through {@link mountOne},
+   * so the two share one lifecycle (stop-signal #1 — parameterize, don't fork).
+   */
+  type MountOutcome =
+    | { kind: "ok"; entry: InstanceEntry }
+    | { kind: "redirect"; location: string }
+    | {
+        kind: "error";
+        error: ValidationError | NotFoundError | SessionCapError | SessionBudgetError;
+      };
+
+  /**
+   * Mount one control-plane entry through the EXACT single-mount path (ADR 0002
+   * item 11): validate props against the matched registration's schema (before
+   * `guard`, so untrusted input never reaches it), build the instance, and — when
+   * a `stream` is named — join it to that open transport. Client-fault throws
+   * (props-invalid / not-found / cap) are captured as `{ kind: "error" }` and a
+   * deny as `{ kind: "redirect" }`, so a single caller can re-throw for its
+   * status while a batch caller records a positional result — **one entry's
+   * failure never poisons its siblings**. Only a genuinely unexpected throw
+   * escapes (a real 5xx / per-entry catch).
+   */
+  async function mountOne(
+    path: string,
+    rawProps: Record<string, unknown> | undefined,
+    sid: string,
+    sessionData: unknown,
+    stream: string | undefined,
+    registrations: RouteRegistration[],
+  ): Promise<MountOutcome> {
+    let entry: InstanceEntry;
+    try {
+      const props = await resolveMountProps(path, rawProps ?? {}, registrations);
+      entry = await mountInstance(sid, sessionData, path, props, registrations);
+    } catch (e) {
+      if (isRedirect(e)) return { kind: "redirect", location: e.location };
+      if (
+        e instanceof ValidationError ||
+        e instanceof NotFoundError ||
+        e instanceof SessionCapError ||
+        e instanceof SessionBudgetError
+      ) {
+        return { kind: "error", error: e };
+      }
+      throw e; // genuinely unexpected — propagate (single: 5xx; batch: per-entry catch)
+    }
+    // Tier-2 soft reload / batch join (§7): a `stream` id joins the fresh
+    // instance to that already-open transport so its snapshot flows at once.
+    if (stream) streamRegistry.get(sid)?.get(stream)?.subscribeInstance(entry);
+    return { kind: "ok", entry };
+  }
+
+  // WIRE CONTRACT — the control-plane messages (mount/mount-batch/resync/url/
+  // release) and the `?attach&seq` adoption below are documented in
   // docs-site/src/content/docs/concepts/wire-protocol.md and pinned by
   // packages/core/test/protocol-conformance.test.ts. Change all three together.
   async function handleControl(req: Request, sid: string, sessionData: unknown) {
-    const msg = (await readJsonCapped(req, maxBodyBytes)) as
-      | { type: "mount"; path: string; search?: Record<string, string>; stream?: string }
-      | { type: "resync"; instance: string }
-      | { type: "release"; instance: string; stream: string }
-      | { type: "url"; instance: string; search: Record<string, string> };
+    const msg = (await readJsonCapped(req, maxBodyBytes)) as ControlIngress;
 
     if (msg.type === "mount") {
-      let entry: InstanceEntry;
-      try {
-        entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
-      } catch (e) {
-        // `setup`/`guard` threw redirect() (§10): tell the client to navigate rather
-        // than instantiate. A GET load handles this as a 302 (see fetch catch).
-        if (isRedirect(e)) return Response.json({ redirect: e.location });
-        throw e;
+      // Per-session mount throttle (ADR 0002 item 14): a single mount costs one
+      // token. Drained → 429 → the client's slot falls back; existing instances
+      // are untouched (only new mounts are gated).
+      if (!takeMountTokens(sid, 1)) {
+        emitSecurity("mount-throttled", { sid, path: msg.path });
+        return new Response("mount rate limited", { status: 429 });
       }
-      // Tier-2 soft reload (§7): a `stream` id joins the fresh instance to that
-      // already-open SSE stream so its snapshot flows without a reconnect.
-      if (msg.stream) streamRegistry.get(sid)?.get(msg.stream)?.subscribeInstance(entry);
+      // The control plane mounts over the union (routes ∪ slots, ADR 0002 item 6).
+      const outcome = await mountOne(
+        msg.path,
+        msg.props,
+        sid,
+        sessionData,
+        msg.stream,
+        mountable(),
+      );
+      // `setup`/`guard` denied (§10): tell the client to navigate rather than
+      // instantiate. A GET load handles this as a 302 (see fetch catch).
+      if (outcome.kind === "redirect") return Response.json({ redirect: outcome.location });
+      // ValidationError / NotFoundError / SessionCapError / SessionBudgetError →
+      // `mapRequestError` (422 / 404 / 429 / 429) — nothing was built. Re-throw
+      // to preserve the status.
+      if (outcome.kind === "error") throw outcome.error;
+      const entry = outcome.entry;
       return Response.json({
         instance: entry.instance.id,
         seq: entry.instance.seq,
         path: entry.path,
         params: entry.params,
       });
+    }
+
+    if (msg.type === "mount-batch") {
+      // Batched slot mounts (ADR 0002 item 11): N same-tick `mountSlot` calls
+      // coalesced into ONE POST. Validate the frame shape (untrusted wire data),
+      // bound the length, then run the EXACT single-mount path per entry and
+      // answer POSITIONALLY — `results[i]` for `mounts[i]`, one entry's failure
+      // never poisoning its siblings.
+      const mounts = msg.mounts;
+      if (!Array.isArray(mounts)) {
+        return new Response("malformed mount-batch: `mounts` must be an array", { status: 400 });
+      }
+      // Sanity cap on top of the natural maxBodyBytes bound: an over-cap batch is
+      // rejected wholesale (413), nothing mounted — like an over-size body.
+      if (mounts.length > MAX_MOUNT_BATCH) {
+        return new Response(`mount-batch exceeds MAX_MOUNT_BATCH (${MAX_MOUNT_BATCH})`, {
+          status: 413,
+        });
+      }
+      // Per-session mount throttle (ADR 0002 item 14): a batch costs one token
+      // PER ENTRY, so it can't bypass the limit a single mount pays. Charged
+      // atomically — an over-budget batch is refused wholesale (429, nothing
+      // mounted), consuming no tokens (like the MAX_MOUNT_BATCH 413 above).
+      // Checked after the length cap so an over-cap batch still 413s.
+      if (!takeMountTokens(sid, mounts.length)) {
+        emitSecurity("mount-throttled", { sid, count: mounts.length });
+        return new Response("mount rate limited", { status: 429 });
+      }
+      // Fan-out doctrine diagnostic (Decision 6): a dev-only nudge toward
+      // "Aggregates, not rows" when a page mounts too many sibling slots at once
+      // (a list of slots = a missing aggregate). Gated on isDev() — NEVER in
+      // production (a real deployment's slot count is not an operator's concern).
+      if (isDev() && mounts.length > SLOT_FANOUT_ADVICE) {
+        emit({
+          category: "instance",
+          type: "slot-fanout-high",
+          level: "warn",
+          detail: { count: mounts.length },
+        });
+      }
+      const registrations = mountable();
+      const results = await Promise.all(
+        mounts.map(async (m): Promise<MountBatchResult> => {
+          // Per-entry shape guard (untrusted): a malformed entry is its own
+          // `{ error }` result, never a throw that poisons the whole batch.
+          if (!m || typeof m.path !== "string") {
+            return { error: { name: "ProtocolError", message: "invalid mount entry" } };
+          }
+          try {
+            const outcome = await mountOne(
+              m.path,
+              m.props,
+              sid,
+              sessionData,
+              msg.stream,
+              registrations,
+            );
+            if (outcome.kind === "redirect") return { redirect: outcome.location };
+            if (outcome.kind === "error") {
+              return { error: { name: outcome.error.name, message: outcome.error.message } };
+            }
+            return {
+              instance: outcome.entry.instance.id,
+              seq: outcome.entry.instance.seq,
+              path: outcome.entry.path,
+              params: outcome.entry.params,
+            };
+          } catch (e) {
+            // A genuinely unexpected per-entry throw: report it, but keep the
+            // batch total — this one entry answers `{ error }`, siblings resolve.
+            emit({
+              category: "request",
+              type: "mount-batch-entry-failed",
+              level: "error",
+              error: e,
+            });
+            return {
+              error: { name: "InternalError", message: safeErrorMessage(e, "mount failed") },
+            };
+          }
+        }),
+      );
+      return Response.json({ results });
     }
     if (msg.type === "release") {
       // Abandoned by a tier-2 forward nav (§7): drop it from that stream so it
@@ -1101,11 +1769,18 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       entry.instance.resync();
       return new Response(null, { status: 204 });
     }
-    // Runtime URL change (nav.patch, §7): reconcile guard+load. A guard deny
-    // → redirect JSON for the client to soft-nav (§10).
-    const route = opts.routes.find((r) => r.path === entry.path);
+    // Runtime URL change (nav.patch, §7): validate the props patch against the
+    // instance's registration schema (ADR 0002 item 7), then reconcile guard+load.
+    // An invalid record throws ValidationError → 422 via `mapRequestError` (the
+    // item-3 `props-invalid` surface), before any guard/load. A guard deny →
+    // redirect JSON for the client to soft-nav (§10). Look across the mount union
+    // so a slot instance finds its own def (ADR 0002 item 6).
+    const route = registrationFor(entry.path);
     try {
-      if (route) await reconcileUrl(route.def, entry.instance, msg.search);
+      if (route) {
+        const props = await resolveUrlProps(route, msg.props);
+        await reconcileEntry(entry, route.def, props); // item 8 dedup: re-guard always, re-load on change
+      }
     } catch (e) {
       if (isRedirect(e)) return Response.json({ redirect: e.location });
       throw e;
@@ -1292,13 +1967,30 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       }
     }
     if (req.method === "GET") {
+      // GET serves routed pages ONLY (ADR 0002 item 6): a mount-only slot
+      // pattern is not page-addressable. Match `opts.routes` (not the mount
+      // union) ONCE here — a miss 404s BEFORE `mountInstance`, so a slot already
+      // warmed via the control plane (keyed by this pathname) can't be adopted by
+      // warm-reuse and served as a page. The single match then threads into both
+      // props resolution and the mount (no repeat `matchRoute` for one GET).
+      const pageMatch = matchRoute(
+        opts.routes.map((r) => r.path),
+        url.pathname,
+      );
+      if (!pageMatch) throw new NotFoundError(url.pathname);
       // SSR (§12): setup+guard+load run during SSR; the connection adopts the warm
-      // instance via the attach token.
-      const search: Record<string, string> = {};
-      url.searchParams.forEach((v, k) => {
-        search[k] = v;
-      });
-      const entry = await mountInstance(sid, sessionData, url.pathname, search);
+      // instance via the attach token. Props codec (ADR 0002 §3): a schema'd
+      // route decodes + validates the query into typed props here, before the
+      // mount, so guard/load never see unvalidated input (a violation → 422).
+      const search = await resolveGetProps(pageMatch, url.searchParams);
+      const entry = await mountInstance(
+        sid,
+        sessionData,
+        url.pathname,
+        search,
+        opts.routes,
+        pageMatch,
+      );
       const renderCtx: RenderContext = {
         path: entry.path,
         params: entry.params,
@@ -1336,9 +2028,30 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         isNew,
       );
     }
+    // Invalid props on a page GET (ADR 0002 §3): the decoded `?query` failed the
+    // route's props schema. It's a well-formed request carrying unprocessable
+    // input — a 4xx client error, not a crash — so answer 422 (nothing was
+    // built; validation ran before guard/load). A `request`/`props-invalid`
+    // diagnostic records it; the body stays generic so the schema's issue
+    // messages never leak (#9), matching the auth-deny surface.
+    if (err instanceof ValidationError) {
+      emit({
+        category: "request",
+        type: "props-invalid",
+        level: "warn",
+        detail: { path: url.pathname },
+      });
+      return withSession(new Response("invalid props", { status: 422 }), sid, isNew);
+    }
     // The session is at its instance cap with every slot subscribed (C) —
     // shed load like the throttle does, on both the control and GET paths.
     if (err instanceof SessionCapError) {
+      return withSession(new Response(err.message, { status: 429 }), sid, isNew);
+    }
+    // The session is over its soft state byte budget and shedding idle instances
+    // couldn't free enough (ADR 0002 item 14) — refuse the new mount with 429,
+    // matching the cap surface. Existing instances were never touched.
+    if (err instanceof SessionBudgetError) {
       return withSession(new Response(err.message, { status: 429 }), sid, isNew);
     }
     if (err instanceof NotFoundError) {
@@ -1383,6 +2096,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       byInstanceId.clear();
       streamRegistry.clear();
       unattached.clear();
+      mountThrottleBuckets.clear();
       for (const entry of all) {
         if (entry.evictTimer) clearTimeout(entry.evictTimer);
       }
@@ -1408,16 +2122,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           // there's no rpcId to ack until it parses, and no legit client sends
           // an over-cap frame.
           if (raw.length > maxBodyBytes) return;
-          let msg:
-            | RpcBatch
-            | {
-                type: "resync" | "url" | "mount" | "release";
-                instance?: string;
-                path?: string;
-                search?: Record<string, string>;
-                /** Client correlation id for `mount` (#65) — echoed on the outcome envelope. */
-                mountId?: string;
-              };
+          let msg: RpcBatch | WsControlIngress;
           try {
             msg = JSON.parse(raw);
           } catch {
@@ -1441,17 +2146,64 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
             acceptBatch(msg, sid, send);
             return;
           }
-          if (msg.type === "mount" && msg.path) {
+          if (msg.type === "mount") {
+            // A mount frame with no `path` is a no-op (a malformed client) — drop
+            // it here so the mount member is fully consumed and the fall-through
+            // below narrows to the instance-bearing control messages.
+            if (!msg.path) return;
+            // Per-session mount throttle (ADR 0002 item 14): parity with HTTP
+            // control. Over WS there's no response slot, so answer a drained
+            // bucket with an unbound (`instance: ""`) error envelope the client
+            // correlates by `mountId` (#65) — mirroring the cap/not-found surface
+            // below. Existing instances are untouched.
+            if (!takeMountTokens(sid, 1)) {
+              emitSecurity("mount-throttled", { sid, path: msg.path });
+              send({
+                seq: 0,
+                instance: "",
+                error: { name: "MountThrottleError", message: "mount rate limited" },
+                ...(msg.mountId !== undefined && { mountId: msg.mountId }),
+              });
+              return;
+            }
             // The socket *is* the stream (§11): join the mount to it directly.
-            // `subscribeInstance` is idempotent, so a warm re-mount is a no-op.
+            // Mounts over WS match the same union as HTTP control (ADR 0002 item 6).
+            const registrations = mountable();
             try {
-              const entry = await mountInstance(sid, sessionData, msg.path, msg.search ?? {});
-              subscribeInstance(entry);
+              // Validate props against the matched registration's schema before
+              // the mount (untrusted) — a violation throws ValidationError,
+              // answered on the socket by the catch below (the WS surface).
+              const props = await resolveMountProps(msg.path, msg.props ?? {}, registrations);
+              const entry = await mountInstance(sid, sessionData, msg.path, props, registrations);
+              // A `mount` frame is the client registering a NEW store for this
+              // instance and asking for its snapshot (buildSlotHandle sends it right
+              // after the store registers). `subscribeInstance` snapshots a FRESH
+              // join, but a SECOND tab's socket already subscribed this warm
+              // instance at connect (subscribeSession's connect loop) — before the
+              // client held the store, so that resync was dropped client-side (an
+              // envelope for an instance it doesn't hold yet, connection.ts). The
+              // frame is the only point that late store can be snapshotted, so
+              // resync when the join was NOT fresh (ADR 0002 items 8/9/11 — the
+              // PR #129 second-tab starvation). Item 8's dedup already kept `load`
+              // from re-running on identical props, so this only re-sends state,
+              // never re-loads.
+              if (!subscribeInstance(entry)) entry.instance.resync();
             } catch (e) {
               // Answer denials on the socket (mirroring the `url` branch) —
               // thrown out, they'd otherwise die in the transport's generic
               // catch and the client waits forever.
-              const warm = sessions.get(sid)?.get(msg.path);
+              // A warm entry (for the redirect envelope's seq/instance) lives
+              // under the pattern-QUALIFIED key ({@link keyFor}), not the bare
+              // pathname (NEW-4): a parametric page's warm mount would otherwise
+              // be missed, degrading its redirect envelope to instance:""/seq:0.
+              // `registrations` is the same union `mountInstance` matched against.
+              const warmMatch = matchRoute(
+                registrations.map((r) => r.path),
+                msg.path,
+              );
+              const warm = warmMatch
+                ? sessions.get(sid)?.get(keyFor(warmMatch.path, msg.path))
+                : undefined;
               // A failed mount usually has no bound instance to address the
               // outcome to, so echo the frame's correlation id (#65) — the
               // client matches it against its in-flight mount.
@@ -1463,18 +2215,17 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                   redirect: e.location,
                   ...(mountId !== undefined && { mountId }),
                 });
-              } else if (e instanceof SessionCapError) {
-                send({
-                  seq: 0,
-                  instance: "",
-                  error: { name: e.name, message: e.message },
-                  ...(mountId !== undefined && { mountId }),
-                });
-              } else if (e instanceof NotFoundError) {
-                // #65 WS mount parity: mounting an unregistered path 404s over
-                // SSE/control (`handleControl` lets it propagate to the `fetch`
-                // catch); over WS it must answer the socket the same way rather
-                // than silently dying in the transport's generic catch.
+              } else if (
+                e instanceof SessionCapError ||
+                e instanceof SessionBudgetError ||
+                e instanceof NotFoundError ||
+                e instanceof ValidationError
+              ) {
+                // WS mount parity for the mount-time rejections that HTTP control
+                // answers as a status (429 / 429 / 404 / 422). Over WS there is no
+                // response slot, so answer the socket with an unbound
+                // (`instance: ""`) error envelope the client correlates by
+                // `mountId` (#65) — invalid props included (ADR 0002 item 6).
                 send({
                   seq: 0,
                   instance: "",
@@ -1497,18 +2248,38 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
           const entry = ownedInstance(msg.instance, sid);
           if (!entry) return;
           if (msg.type === "resync") entry.instance.resync();
-          if (msg.type === "url" && msg.search) {
-            // Runtime URL change over WS (§7): reconcile guard+load; a guard deny
-            // → a redirect envelope for the client to soft-nav (§10).
-            const route = opts.routes.find((r) => r.path === entry.path);
+          if (msg.type === "url" && msg.props) {
+            // Runtime URL change over WS (§7): validate the props patch against
+            // the instance's registration schema (ADR 0002 item 7), then reconcile
+            // guard+load. A guard deny → a redirect envelope for the client to
+            // soft-nav (§10). Look across the mount union so a slot instance finds
+            // its own def (item 6).
+            const route = registrationFor(entry.path);
             try {
-              if (route) await reconcileUrl(route.def, entry.instance, msg.search);
+              if (route) {
+                const props = await resolveUrlProps(route, msg.props);
+                await reconcileEntry(entry, route.def, props); // item 8 dedup: re-guard always, re-load on change
+              }
             } catch (e) {
               if (isRedirect(e)) {
                 send({
                   seq: entry.instance.seq,
                   instance: entry.instance.id,
                   redirect: e.location,
+                });
+              } else if (e instanceof ValidationError) {
+                // WS parity for the 422 the HTTP control path returns on an
+                // invalid props patch. Unlike a denied `mount` — which has no
+                // bound instance and correlates by `mountId` (#65) — a `url`
+                // patch names an already-bound instance, so answer with an
+                // instance-scoped error envelope (mirroring the redirect surface
+                // just above): the client filters it by the bound instance id,
+                // no correlation id needed. No reconcile ran (guard/load never saw
+                // the invalid record).
+                send({
+                  seq: entry.instance.seq,
+                  instance: entry.instance.id,
+                  error: { name: e.name, message: e.message },
                 });
               } else throw e;
             }
@@ -1593,6 +2364,19 @@ class SessionCapError extends Error {
   constructor() {
     super("session instance cap exceeded");
     this.name = "SessionCapError";
+  }
+}
+
+/**
+ * A fresh mount would leave the session over its soft `maxSessionStateBytes`
+ * budget and no idle instance could be shed to make room (ADR 0002 item 14) —
+ * mapped to `429` on HTTP, an error envelope on WS. Existing instances' flushes
+ * and rpcs are never rejected; only the new mount is refused.
+ */
+class SessionBudgetError extends Error {
+  constructor() {
+    super("session state byte budget exceeded");
+    this.name = "SessionBudgetError";
   }
 }
 

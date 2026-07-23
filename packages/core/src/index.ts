@@ -34,18 +34,19 @@ export {
   live,
   type Mutator,
   type PathParams,
+  type PropsRecord,
   type RpcChain,
   type RpcChainBuilt,
   type RpcChainWithInput,
   type RpcCtx,
   type RpcDef,
   type RpcLongForm,
-  type SearchParams,
   type SetupCtx,
   type Url,
 } from "./live.ts";
 export { matchHttpPath, matchHttpRoute, matchPath, matchRoute, type RouteMatch } from "./match.ts";
 export { runPipeline, type Stage, type StageResult } from "./pipeline.ts";
+export { canonicalProps, decodeProps, encodeProps } from "./props-codec.ts";
 export { isRedirect, RedirectError, redirect } from "./redirect.ts";
 export {
   isRoute,
@@ -82,12 +83,20 @@ export { isSuperseded, SupersededError } from "./supersede.ts";
 // biome-ignore lint/suspicious/noEmptyInterface: interface-merge target for generated code
 export interface Register {}
 export {
+  type Control,
   type Envelope,
   type EnvelopeError,
+  type MountBatchControl,
+  type MountBatchResponse,
+  type MountBatchResult,
+  type MountControl,
   type Patch,
   PROTOCOL_VERSION,
+  type ReleaseControl,
+  type ResyncControl,
   type RpcBatch,
   type RpcCall,
+  type UrlControl,
 } from "./protocol.ts";
 export { SerialQueue } from "./queue.ts";
 export { type RateLimit, RateLimitError, TokenBucket } from "./rate-limit.ts";

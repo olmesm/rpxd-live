@@ -4,7 +4,7 @@
  * runtime — with SSR, hashed assets, and the live wire fully working.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp, type StartedApp, startApp } from "../src/index.ts";
@@ -35,6 +35,20 @@ describe("rpxd build", () => {
     expect(typeof mod.renderRoute).toBe("function");
     expect(typeof mod.makeShellRenderers).toBe("function");
   });
+
+  it("strips server-only slot code from the client bundle (ADR 0002 items 5 + 16)", () => {
+    // The chat slot's `load` body carries a canary string; the client-build strip
+    // transform stubs that handler, so the canary must appear in zero client
+    // assets. This is the dashboard-slot instance of item 5's exposure fix — a
+    // <LiveSlot of={ChatPanel}> statically pulls the slot module into the client.
+    const assetsDir = join(distDir, "client/assets");
+    const assets = readdirSync(assetsDir).filter((f) => f.endsWith(".js"));
+    expect(assets.length).toBeGreaterThan(0);
+    const withCanary = assets.filter((f) =>
+      readFileSync(join(assetsDir, f), "utf8").includes("CHAT_SLOT_SERVER_ONLY_a17c93"),
+    );
+    expect(withCanary).toEqual([]);
+  });
 });
 
 describe("rpxd start (pure Bun, no Vite)", () => {
@@ -46,6 +60,10 @@ describe("rpxd start (pure Bun, no Vite)", () => {
     const html = await res.text();
     expect(html).toContain("Try rpxd");
     expect(html).toContain('id="__rpxd"');
+    // The persistent region (ADR 0002 item 13): SSR composes Root(Layout(page)),
+    // so __layout.tsx's wrapper wraps the page inside the __root shell.
+    expect(html).toContain('data-shell="app-layout"');
+    expect(html).toMatch(/data-shell="todos-root"[\s\S]*data-shell="app-layout"/);
     // hashed asset from the client build, not the dev virtual entry
     const src = /<script type="module" src="(\/assets\/[^"]+\.js)"><\/script>/.exec(html)?.[1];
     expect(src).toBeTruthy();

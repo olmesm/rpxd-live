@@ -141,8 +141,9 @@ query params (below).
 ```ts
 type Control =
   | { type: "resync"; instance: string }                                        // gap recovery / late attach
-  | { type: "mount"; path: string; search: Record<string, string>; stream?: string; mountId?: string } // cold / same-route mount
-  | { type: "url"; instance: string; search: Record<string, string> }           // nav.patch → guard + load
+  | { type: "mount"; path: string; props: Record<string, unknown>; stream?: string; mountId?: string } // cold / same-route / slot mount
+  | { type: "mount-batch"; stream?: string; mounts: { path: string; props: Record<string, unknown> }[] } // N same-tick slot mounts, one POST
+  | { type: "url"; instance: string; props: Record<string, unknown> }           // nav.patch → guard + load
   | { type: "release"; instance: string; stream: string };                      // same-route nav abandons an instance
 ```
 
@@ -153,18 +154,57 @@ type Control =
   has moved on) falls through to an unconditional `full`.
 - `resync` → the server pushes a `full` at the current `seq`. It carries no seq
   and requests no comparison: the server always answers with a full snapshot.
-- `mount` returns `{ instance, seq, path, params }` (or `{ redirect }` on a
-  `setup`/`guard` deny). Its optional `stream` id and the `release` message drive
-  a **soft reload**: a same-route path change joins a fresh instance to the
-  open stream and releases the old one, so the transport survives.
+- `mount` matches `path` against the **union** of routed pages and mount-only
+  slots (ADR 0002 item 6) and returns `{ instance, seq, path, params }` (or
+  `{ redirect }` on a `setup`/`guard` deny). Its `props` payload is a JSON value
+  model (values arrive already typed, not as raw query strings) validated against
+  the matched registration's props schema **before** `guard` — an invalid record
+  is a `422` (SSE control response) or an `error` envelope (WS) and nothing is
+  built. Its optional `stream` id and the `release` message drive a **soft
+  reload**: a same-route path change joins a fresh instance to the open stream
+  and releases the old one, so the transport survives. Mounting a routed page's
+  own pattern **shares** the session's existing instance for that pattern (the
+  two-tabs semantics) rather than building a second one. A pattern registered as
+  a mount-only slot is **not** served over a browser GET — that is a `404`.
 - Over WS, `mount` has no response slot — the outcome arrives as envelopes on
   the socket. A mount that denies or fails before binding an instance answers
   with `instance: ""`, which the client's bound-instance filter can never
   match. The frame's optional `mountId` closes that gap: the server echoes it
   on the resulting `redirect`/`error` envelope, and the client correlates the
   outcome to its in-flight mount by id.
+- `mount-batch` coalesces N same-tick slot mounts into **one** control POST
+  (ADR 0002 item 11): a page rendering several sibling `<LiveSlot>`s sends one
+  request, not N. `mounts[]` carries the per-entry `{ path, props }` pairs; the
+  optional `stream` joins every success to the open transport, exactly as
+  `mount.stream` does. The server runs the **identical** single-mount path per
+  entry (props validated before `guard`, mounted, joined) and answers with a
+  **positional** response — `results[i]` answers `mounts[i]`, in order:
+
+  ```ts
+  type MountBatchResponse = {
+    results: (
+      | { instance: string; seq: number; path?: string; params?: Record<string, string> } // mounted
+      | { redirect: string }                                                               // setup/guard deny
+      | { error: { name: string; message: string } }                                       // props-invalid / not-found / cap
+    )[];
+  };
+  ```
+
+  **One entry's failure never poisons the batch**: a props-invalid entry comes
+  back as `{ error }` while its valid siblings still mount and join. A single
+  same-tick mount is **not** batched — it stays a plain `mount` (the unbatched
+  shape is preserved). The batch length is bounded by `maxBodyBytes` and an
+  explicit sanity cap (64) — an over-cap batch is rejected `4xx` with nothing
+  mounted. Over WS the expensive control POST is still batched over HTTP; the
+  cheap per-slot socket `mount` frames that warm-join each instance stay as-is.
 - `url` reconciles the instance to a new URL — `guard` then `load` (§7); a deny
   comes back as `{ redirect }` (SSE control response) or a `redirect` envelope (WS).
+  Its `props` payload is a JSON value model (like `mount`, values arrive already
+  typed, not as raw query strings) validated against the instance's registration
+  props schema **before** `guard`+`load` (ADR 0002 item 7) — an invalid record is
+  a `422` (SSE control response) or an `error` envelope (WS) and no reconcile
+  runs. Unlike a denied `mount`, the instance addressed by `url` is already bound,
+  so the WS `error`/`redirect` envelope carries that instance's id (no `mountId`).
 
 ## Connection lifecycle (§11)
 

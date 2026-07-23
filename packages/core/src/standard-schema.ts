@@ -23,12 +23,14 @@ export type StandardSchemaResult<Output> =
 export type InferOutput<S> = S extends StandardSchemaV1<unknown, infer O> ? O : never;
 
 /**
- * Thrown when an rpc payload fails its `input` schema.
+ * Thrown when a validated input fails its Standard Schema. Used for both rpc
+ * payloads and route props, so the message is driven by a caller-supplied
+ * `label` (e.g. `rpc "add"` or `props /report/$id`) rather than assuming rpc.
  *
  * @example
  * ```ts
  * try {
- *   await validateInput(schema, payload, "add");
+ *   await validateInput(schema, payload, 'rpc "add"');
  * } catch (e) {
  *   if (e instanceof ValidationError) console.log(e.issues);
  * }
@@ -39,26 +41,29 @@ export class ValidationError extends Error {
   // Plain field (not a parameter property) so the source stays erasable —
   // Node runs it under default, unflagged TypeScript stripping.
   readonly issues: ReadonlyArray<{ readonly message: string }>;
-  constructor(issues: ReadonlyArray<{ readonly message: string }>, rpc: string) {
-    super(`Invalid payload for rpc "${rpc}": ${issues.map((i) => i.message).join("; ")}`);
+  constructor(issues: ReadonlyArray<{ readonly message: string }>, label: string) {
+    super(`Invalid input for ${label}: ${issues.map((i) => i.message).join("; ")}`);
     this.issues = issues;
   }
 }
 
 /**
- * Validate `value` against a Standard Schema, throwing {@link ValidationError} on failure.
+ * Validate `value` against a Standard Schema, throwing {@link ValidationError} on
+ * failure. `label` names what is being validated (an rpc, a route's props) and
+ * flows into the error message — callers pass a self-describing label so the
+ * wording stays honest for non-rpc inputs.
  *
  * @example
  * ```ts
- * const payload = await validateInput(z.object({ text: z.string() }), raw, "add");
+ * const payload = await validateInput(z.object({ text: z.string() }), raw, 'rpc "add"');
  * ```
  */
 export async function validateInput<S extends StandardSchemaV1>(
   schema: S,
   value: unknown,
-  rpc: string,
+  label: string,
 ): Promise<InferOutput<S>> {
   const result = await schema["~standard"].validate(value);
-  if (result.issues) throw new ValidationError(result.issues, rpc);
+  if (result.issues) throw new ValidationError(result.issues, label);
   return result.value as InferOutput<S>;
 }

@@ -21,13 +21,21 @@ import {
   type RouteRegistration,
   wsTransport,
 } from "@rpxd/server-bun";
-import { fileToRoute, rpxd as rpxdVitePlugin, runCodegen, scanRoutes } from "@rpxd/vite-plugin";
+import {
+  assertLiveModule,
+  fileToRoute,
+  rpxd as rpxdVitePlugin,
+  runCodegen,
+  scanLiveModules,
+  scanRoutes,
+} from "@rpxd/vite-plugin";
 import rscFlightPlugin from "@vitejs/plugin-rsc";
 import { createServerModuleRunner, createServer as createViteServer } from "vite";
 import { WebSocketServer } from "ws";
 import {
   applyConfigOverrides,
   type ConfigOverrides,
+  configSlotRegistrations,
   instanceHandlerOptions,
   propagateSessionSecretEnv,
   type RpxdConfig,
@@ -209,10 +217,12 @@ export async function createDevServer(
     config.rsc && vite.environments.rsc
       ? createServerModuleRunner(vite.environments.rsc)
       : undefined;
-  const loadDefModule = (file: string): Promise<{ default: { def: unknown } }> =>
+  const loadDefModule = (file: string): Promise<{ default: { def: unknown; props?: unknown } }> =>
     rscRunner
       ? rscRunner.import(`/routes/${file}`)
-      : (vite.ssrLoadModule(`/routes/${file}`) as Promise<{ default: { def: unknown } }>);
+      : (vite.ssrLoadModule(`/routes/${file}`) as Promise<{
+          default: { def: unknown; props?: unknown };
+        }>);
 
   // Register live routes with the runtime (defs loaded via the server graph
   // so reducer edits flow through Vite's module invalidation).
@@ -225,7 +235,13 @@ export async function createDevServer(
     if (entry.kind === "page" && entry.path !== null) {
       routeFiles.set(entry.path, entry.file);
       const mod = await loadDefModule(entry.file);
-      routes.push({ path: entry.path, def: mod.default.def } as RouteRegistration);
+      // Carry the props schema (ADR 0002) so dev SSR decodes+validates `?query`
+      // props before guard/load, matching production `start.ts`.
+      routes.push({
+        path: entry.path,
+        def: mod.default.def,
+        props: mod.default.props,
+      } as RouteRegistration);
       continue;
     }
     if (entry.kind === "http" && entry.path !== null) {
@@ -234,18 +250,38 @@ export async function createDevServer(
       httpRoutes.push({ path: entry.path, def: (mod.default as { def: RouteDefinition }).def });
       continue;
     }
-    // Shell files (§14): __root / __404 / __error
+    // Shell files (§14): __root / __404 / __error / __layout (ADR 0002 item 13)
     const mod = await vite.ssrLoadModule(`/routes/${entry.file}`);
     if (entry.kind === "root") shell.Root = mod.default;
+    if (entry.kind === "layout") shell.Layout = mod.default; // persistent region (ADR 0002 item 13)
     if (entry.kind === "notFound") shell.NotFound = mod.default;
     if (entry.kind === "error") shell.ErrorPage = mod.default;
   }
 
   const routesDir = join(root, "routes");
+
+  // Mount-only slots (ADR 0002 item 6): every exported live() object outside
+  // the routes dir, discovered by the same syntactic scan that writes
+  // `.rpxd/live.gen.ts`, loaded through the SSR graph so their real handlers run
+  // server-side (and reducer edits flow through Vite invalidation). The config
+  // `slots` escape hatch adds library objects the scan can't see. Both feed the
+  // control-plane mount union; the handler asserts pattern uniqueness across it.
+  const slots: RouteRegistration[] = [];
+  for (const entry of scanLiveModules(root, { routesDir, outDir: join(root, ".rpxd") })) {
+    const mod = assertLiveModule(await vite.ssrLoadModule(`/${entry.file}`), entry.path);
+    slots.push({
+      path: mod.path,
+      def: mod.def as RouteRegistration["def"],
+      props: mod.props as RouteRegistration["props"],
+    });
+  }
+  slots.push(...configSlotRegistrations(config));
+
   // The SSR runtime renders in-graph (§12) — same graph the routes load in.
   const ssrRuntime = await loadSsrRuntime(vite);
   const handler = createRpxdHandler({
     routes,
+    slots,
     httpRoutes,
     storage: config.storage,
     authenticate: config.session?.authenticate,

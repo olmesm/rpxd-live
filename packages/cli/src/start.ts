@@ -19,10 +19,12 @@ import {
   type ServerAdapter,
   wsTransport,
 } from "@rpxd/server-bun";
+import { assertLiveModule } from "@rpxd/vite-plugin";
 import type { FunctionComponent } from "react";
 import {
   applyConfigOverrides,
   type ConfigOverrides,
+  configSlotRegistrations,
   instanceHandlerOptions,
   propagateSessionSecretEnv,
   type RpxdConfig,
@@ -120,9 +122,15 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     rootModule?: () => Promise<{ default: ShellComponents["Root"] }>;
     notFoundModule?: () => Promise<{ default: ShellComponents["NotFound"] }>;
     errorModule?: () => Promise<{ default: ShellComponents["ErrorPage"] }>;
+    layoutModule?: () => Promise<{ default: ShellComponents["Layout"] }>;
   };
   const shell: ShellComponents = {
     Root: serverEntryModule.rootModule ? (await serverEntryModule.rootModule()).default : undefined,
+    // The persistent region (ADR 0002 item 13): SSR composes Root(Layout(page))
+    // so the streamed markup matches the client's hydrated tree.
+    Layout: serverEntryModule.layoutModule
+      ? (await serverEntryModule.layoutModule()).default
+      : undefined,
     NotFound: serverEntryModule.notFoundModule
       ? (await serverEntryModule.notFoundModule()).default
       : undefined,
@@ -156,7 +164,10 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
   for (const [path, load] of Object.entries(routeModules)) {
     const defLoad = defModules[path] ?? load;
     const route = (await load()).default;
-    routes.push({ path, def: (await defLoad()).default.def });
+    // Carry the props schema (ADR 0002) from the built LiveRoute onto the
+    // registration so the handler can decode+validate `?query` props before
+    // guard/load. `undefined` for schema-less routes (raw-string back-compat).
+    routes.push({ path, def: (await defLoad()).default.def, props: route.props });
     components.set(path, route);
   }
 
@@ -169,6 +180,27 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
   for (const [path, load] of Object.entries(routeHandlers ?? {})) {
     httpRoutes.push({ path, def: (await load()).default.def });
   }
+
+  // Mount-only slots (ADR 0002 item 6): the server bundle re-exports the
+  // scan's `.rpxd/live.gen.ts` importers. `assertLiveModule` fails a scan
+  // false-positive at boot (not first mount); the config `slots` escape hatch
+  // adds library-shipped objects the scan can't see. Both feed the same
+  // control-plane mount union — the handler asserts pattern uniqueness across it.
+  // (Slots aren't SSR-served, so their defs load from the ssr bundle even under
+  // rsc; render-driven SSR discovery for slots is a documented follow-up.)
+  const { liveModules } = serverEntryModule as unknown as {
+    liveModules?: Record<string, () => Promise<unknown>>;
+  };
+  const slots: RouteRegistration[] = [];
+  for (const [pattern, load] of Object.entries(liveModules ?? {})) {
+    const mod = assertLiveModule(await load(), pattern);
+    slots.push({
+      path: mod.path,
+      def: mod.def as RouteRegistration["def"],
+      props: mod.props as RouteRegistration["props"],
+    });
+  }
+  slots.push(...configSlotRegistrations(config));
 
   // Hashed entry + css from the client manifest.
   const manifest = JSON.parse(
@@ -183,6 +215,7 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
 
   const handler = createRpxdHandler({
     routes,
+    slots,
     httpRoutes,
     storage: config.storage,
     authenticate: config.session?.authenticate,
@@ -196,7 +229,13 @@ export async function startApp(rootDir: string, opts: StartOptions = {}): Promis
     render: async (ctx) => {
       const route = components.get(ctx.path);
       if (!route) return new Response("not found", { status: 404 });
-      const html = await serverEntryModule.renderRoute(route, ctx, assets, { rsc: config.rsc });
+      // Pass `shell` so prod SSR composes Root(Layout(page)) — matching the
+      // client entry, which wraps the app in `rootModule`/`layoutModule` at
+      // hydration (ADR 0002 item 13). Dev already does this via `makeDevRender`.
+      const html = await serverEntryModule.renderRoute(route, ctx, assets, {
+        rsc: config.rsc,
+        shell,
+      });
       return new Response(html, {
         headers: { "content-type": "text/html; charset=utf-8" },
       });

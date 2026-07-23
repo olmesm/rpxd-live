@@ -1,5 +1,6 @@
 /** SSR attach + optimistic updates (§4, §12) against examples/kitchen-sink. */
 import { expect, test } from "@playwright/test";
+import { awaitSynced, gotoHydrated } from "./helpers";
 
 test("SSR renders live state and hydrates cleanly", async ({ page }) => {
   const errors: string[] = [];
@@ -8,19 +9,22 @@ test("SSR renders live state and hydrates cleanly", async ({ page }) => {
   });
   page.on("pageerror", (err) => errors.push(String(err)));
 
-  await page.goto("/");
+  // Wait for hydration (mismatches surface during `hydrateRoot`), then for the
+  // connection to reach live+settled — deterministic in place of a 300ms guess.
+  await gotoHydrated(page, "/");
   await expect(page.getByTestId("todos").locator("li")).toHaveCount(1);
   await expect(page.getByTestId("todos")).toContainText("Try rpxd");
 
-  // give hydration a beat, then assert no hydration mismatches surfaced
-  await page.waitForTimeout(300);
+  await awaitSynced(page);
   expect(errors.filter((e) => /hydrat/i.test(e))).toEqual([]);
 });
 
 test("optimistic add: instant render, server id lands without remount (keyOf)", async ({
   page,
 }) => {
-  await page.goto("/");
+  // Gate the submit on hydration — a pre-hydration click falls through to a
+  // native form submit and the add never happens (the shared flake class).
+  await gotoHydrated(page, "/");
   await page.fill('input[name="text"]', "optimistic todo");
   await page.click('button[type="submit"]');
 
@@ -42,15 +46,17 @@ test("optimistic add: instant render, server id lands without remount (keyOf)", 
 });
 
 test("optimistic toggle survives a reload via the warm instance (§11)", async ({ page }) => {
-  await page.goto("/");
+  // A pre-hydration checkbox click has no handler attached — gate on hydration.
+  await gotoHydrated(page, "/");
   const checkbox = page.getByTestId("todos").locator("li").first().locator("input");
   await checkbox.click();
   await expect(checkbox).toBeChecked();
 
-  // wait for the ack to reach confirmed state, then reload — SSR must
-  // render from the same warm per-session instance (generous settle: the
-  // real DB write is slower than the old in-memory store under parallel load)
-  await page.waitForTimeout(1200);
+  // Wait for the toggle's ack to land (the marker restamps once no rpc is in
+  // flight — the handler ran, patched, and persisted to the warm instance),
+  // then reload: SSR must render from that same warm per-session instance.
+  // Replaces a 1200ms guess that raced variable ack/persistence latency.
+  await awaitSynced(page);
   await page.reload();
   await expect(page.getByTestId("todos").locator("li").first().locator("input")).toBeChecked();
 });
@@ -58,7 +64,8 @@ test("optimistic toggle survives a reload via the warm instance (§11)", async (
 test("filtering via the load loader is URL-driven (§7): nav.patch reruns the query", async ({
   page,
 }) => {
-  await page.goto("/");
+  // Filter clicks are `nav.patch` handlers — gate on hydration before clicking.
+  await gotoHydrated(page, "/");
   const list = page.getByTestId("todos");
   await expect(list.locator("li")).toHaveCount(1); // seeded "Try rpxd" (not done)
 

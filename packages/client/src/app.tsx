@@ -1,16 +1,24 @@
 /**
- * SPA navigation runtime (§7): renders the current route and swaps route +
- * connection on location changes — soft navigation, no page load. Path params
- * are identity; a path change is a soft reload. When the new path matches the
- * *same* route pattern (tier 2), the connection is reused — a fresh instance is
- * mounted over the live stream and the store rebinds to it; the SSE transport
- * and app shell survive. A *different* pattern (tier 3) swaps the connection and
- * component. The previous page stays interactive until the next state arrives.
+ * SPA navigation runtime (§7, ADR 0002 item 9): renders the current route and
+ * swaps the route + component on location changes — soft navigation, no page
+ * load. Path params are identity; a path change is a soft reload. Every tier
+ * remounts a fresh page instance over ONE app-lifetime connection and rebinds
+ * the primary store to it (tier 3 = tier 2 + component swap); the transport and
+ * app shell — including any layout slots multiplexed on the same stream —
+ * survive. The previous page stays interactive until the next state arrives.
  */
-import { createElement, type ReactElement, useEffect, useRef, useState } from "react";
+import {
+  createElement,
+  type FunctionComponent,
+  type ReactElement,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useLocation } from "wouter";
 import { navigate } from "wouter/use-browser-location";
-import { LiveConnection } from "./connection.ts";
+import type { LiveConnection } from "./connection.ts";
 import {
   type AnyConnection,
   type AnyRoute,
@@ -31,19 +39,30 @@ export interface LiveAppProps {
   connection: LiveConnection<any, any>;
   /** Lazy route-module table from `.rpxd/routes.gen.ts`. */
   routeModules: Record<string, () => Promise<{ default: AnyRoute }>>;
-  /** Transport for post-navigation mounts (§11). */
-  transport?: "sse" | "ws";
   /** Optional state transform before render (RSC field hydration, §16). */
   transformState?: (state: unknown) => unknown;
+  /**
+   * The persistent region (ADR 0002 item 13) — `__layout.tsx`'s default export,
+   * threaded through by the generated client entry. Rendered inside
+   * {@link RpxdProvider} but **outside** `key={pathname}`, so it mounts once per
+   * app session and survives every navigation (tier 1/2/3): its React state and
+   * any `<LiveSlot>` it hosts (an agent chat panel, Decision 5) keep painting
+   * across page swaps. It receives the current page as `children`. Reaches the
+   * connection and `useNav` via the provider it lives inside. `undefined` (the
+   * default) renders the page directly — byte-identical to a layout-less app.
+   */
+  layout?: FunctionComponent<{ children?: ReactNode }>;
 }
 
 /**
- * The framework's client shell (§7): one live page at a time, soft-swapped
- * on navigation. `Link`/`nav.navigate` push history; this component matches
- * the new pathname against the route table, mounts the live object over the
- * control channel, waits for its snapshot, then swaps route + connection
- * and closes the old one. Unmatched paths fall back to a full page load so
- * the server's 404/error pages stay authoritative.
+ * The framework's client shell (§7, ADR 0002 item 9): one live page at a time,
+ * soft-swapped on navigation over ONE app-lifetime connection. `Link`/
+ * `nav.navigate` push history; this component matches the new pathname against
+ * the route table, remounts the new page instance over the existing live stream
+ * (tier 3 = tier 2 + component swap), waits for its snapshot, then swaps route +
+ * pathname — the connection is never closed on navigation, so a layout slot's
+ * stream survives every page change. Unmatched paths fall back to a full page
+ * load so the server's 404/error pages stay authoritative.
  *
  * @example
  * ```tsx
@@ -66,6 +85,27 @@ export function LiveApp(props: LiveAppProps): ReactElement {
     current.conn.setRedirectSink((loc) => navigate(loc));
   }, [current.conn]);
 
+  // The settle marker (`data-rpxd-synced`, deflake FIX 1). Stamped on <html> iff
+  // every store multiplexed on the connection is settled (live, no pending rpc),
+  // removed while any is in flight — so it flickers OFF during an rpc and back ON
+  // at ack. It lives here, not beside the one-shot `data-rpxd-hydrated` stamp in
+  // the client entry, because it must track CONTINUOUSLY over the app-lifetime
+  // connection's changing store set (slots mount/release, the primary swaps on
+  // tier-2/3 nav) — and only LiveApp holds that connection with a React-managed
+  // lifecycle to subscribe/unsubscribe. SSR-safe: effects never run on the
+  // server, so `document` is only touched in the browser.
+  useEffect(() => {
+    const conn = current.conn;
+    const el = document.documentElement;
+    const sync = () => el.toggleAttribute("data-rpxd-synced", conn.synced);
+    sync();
+    const unsub = conn.subscribeSync(sync);
+    return () => {
+      unsub();
+      el.removeAttribute("data-rpxd-synced");
+    };
+  }, [current.conn]);
+
   // Popstate between two search-variants of one path is invisible to wouter
   // (its location is pathname-only), so the navigation effect below never
   // runs: reconcile guard/load over the live connection (tier 1, §7) here.
@@ -75,8 +115,9 @@ export function LiveApp(props: LiveAppProps): ReactElement {
         window.location.pathname,
         window.location.search,
         current.pathname,
+        current.conn.hasPropsSchema,
       );
-      if (patch) current.conn.patchSearch(patch);
+      if (patch) current.conn.patchProps(patch);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -95,37 +136,30 @@ export function LiveApp(props: LiveAppProps): ReactElement {
       search,
       my,
       ticket,
-      currentRoutePath: current.route.path,
+      // One app-lifetime connection (ADR 0002 item 9): every navigation remounts
+      // over it — tier 3 no longer builds (or closes) a connection.
       conn: current.conn,
       routeModules: props.routeModules,
-      transport: props.transport,
-      mount: (p, s, o) => LiveConnection.mount(p, s, o),
-      commit: (page, closePrevious) =>
-        setCurrent((prev) => {
-          if (closePrevious) prev.conn.close();
-          return page;
-        }),
+      commit: (page) => setCurrent(page),
       softNavigate: navigate,
       hardLoad: (url) => window.location.assign(url),
     });
-  }, [
-    location,
-    current.pathname,
-    current.conn,
-    current.route.path,
-    props.routeModules,
-    props.transport,
-  ]);
+  }, [location, current.pathname, current.conn, props.routeModules]);
 
+  // The page is keyed by pathname so every navigation remounts it; the layout
+  // (ADR 0002 item 13) wraps it OUTSIDE that key, so React preserves the layout
+  // instance across page swaps while the page below it remounts.
+  const page = (
+    <LivePage
+      key={current.pathname}
+      route={current.route}
+      conn={current.conn}
+      transformState={props.transformState}
+    />
+  );
+  const Layout = props.layout;
   return (
-    <RpxdProvider connection={current.conn}>
-      <LivePage
-        key={current.pathname}
-        route={current.route}
-        conn={current.conn}
-        transformState={props.transformState}
-      />
-    </RpxdProvider>
+    <RpxdProvider connection={current.conn}>{Layout ? <Layout>{page}</Layout> : page}</RpxdProvider>
   );
 }
 

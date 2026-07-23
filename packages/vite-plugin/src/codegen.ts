@@ -4,6 +4,7 @@
  */
 import { readdirSync } from "node:fs";
 import { fileToRoute, pathToPattern, type RouteEntry, sortRoutes } from "./routes.ts";
+import { findPatternLiteral, type LiveModuleEntry } from "./scan.ts";
 
 /**
  * Scan a routes directory (flat, §7) into route entries.
@@ -124,6 +125,14 @@ ${shellEntry("root", "rootModule")}
 ${shellEntry("notFound", "notFoundModule")}
 ${shellEntry("error", "errorModule")}
 
+/**
+ * The persistent region (ADR 0002 item 13): \`__layout.tsx\`, rendered inside
+ * \`RpxdProvider\` but outside \`key={pathname}\`. Mounted once per app session,
+ * it survives every navigation and may host \`<LiveSlot>\`s. \`undefined\` when
+ * the app has no \`__layout.tsx\` (layout-less parity).
+ */
+${shellEntry("layout", "layoutModule")}
+
 /** All registered page paths. */
 export type RegisteredPath = keyof typeof routeTree;
 
@@ -139,23 +148,36 @@ declare module "@rpxd/core" {
 `;
 }
 
-const PATH_CALL = /(\b(?:live|route)\s*\(\s*)(["'])((?:[^"'\\]|\\.)*)\2(\s*\))/;
-
 /**
- * Characters that cannot be spliced raw between the existing quote characters
- * of a `live()`/`route()` literal: a quote or backslash would corrupt (or, for
- * a crafted filename, inject code into) the *user's* source file, and `${`
- * would interpolate if the file ever uses a template literal. Paths come from
- * filenames on disk, so they are as untrusted as {@link lit}'s inputs.
+ * Escape `value` so it can be spliced between the given quote character as a
+ * valid literal. Paths derive from filenames on disk, so they are untrusted:
+ * a stray quote, backslash, or `${` (in a template literal) must not corrupt —
+ * or inject code into — the user's source. AST spans make every path
+ * splice-able (retiring the old `UNSPLICEABLE` bail-out): the string is
+ * re-encoded for its quote kind rather than assumed safe.
  */
-const UNSPLICEABLE = /["'`\\]|\$\{/;
+function escapeForQuote(value: string, quote: string): string {
+  if (quote === "`") {
+    return value
+      .replace(/\\/g, "\\\\")
+      .replace(/`/g, "\\`")
+      .replace(/\$\{/g, "\\${")
+      .replace(/\r/g, "\\r");
+  }
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(new RegExp(quote, "g"), `\\${quote}`)
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r");
+}
 
 /**
  * Maintain the in-file path literal (§7): the filename is truth, the
- * `live("...")` / `route("...")` literal is its typed mirror. Returns the
- * corrected source when the literal is missing/incorrect, or `null` when
- * nothing changed — including when `expectedPath` contains characters that
- * can't be spliced into a quoted literal (see {@link UNSPLICEABLE}).
+ * `live("...")` / `route("...")` literal is its typed mirror. Locates the
+ * literal by AST span ({@link findPatternLiteral}) and splices in a correctly
+ * escaped `expectedPath`, preserving the original quote style. Returns the
+ * corrected source, or `null` when there is nothing to change (no
+ * `live()`/`route()` call, or the literal already matches).
  *
  * @example
  * ```ts
@@ -166,14 +188,37 @@ const UNSPLICEABLE = /["'`\\]|\$\{/;
  * ```
  */
 export function ensurePathLiteral(source: string, expectedPath: string): string | null {
-  if (UNSPLICEABLE.test(expectedPath)) return null; // unspliceable path — leave the file alone
-  const match = PATH_CALL.exec(source);
-  if (!match) return null; // not a live/route file — nothing to maintain
-  if (match[3] === expectedPath) return null;
-  // Function replacer: `expectedPath` may contain `$` (catch-all/`$param`),
-  // which a string replacement would mis-read as a backreference.
-  return source.replace(
-    PATH_CALL,
-    (_m, pre, quote, _old, post) => `${pre}${quote}${expectedPath}${quote}${post}`,
-  );
+  const lit = findPatternLiteral(source);
+  if (!lit) return null; // not a live/route file — nothing to maintain
+  if (lit.value === expectedPath) return null;
+  const replacement = `${lit.quote}${escapeForQuote(expectedPath, lit.quote)}${lit.quote}`;
+  return source.slice(0, lit.start) + replacement + source.slice(lit.end);
+}
+
+/**
+ * Render the server-only `live.gen.ts` module: lazy importers keyed by
+ * `live(pattern)` for every exported `live()` object discovered outside the
+ * routes dir (ADR 0002 item 4). Mirrors {@link generateHandlersModule} — a
+ * separate file the client entry never imports. Server consumers assert
+ * `$live: true` on each default export at boot, so a scan false-positive fails
+ * at startup rather than at first mount.
+ *
+ * @example
+ * ```ts
+ * generateLiveModule([{ file: "src/slots/chat.tsx", path: "/chat" }]);
+ * // export const liveModules = { "/chat": () => import("../src/slots/chat.tsx") } as const;
+ * ```
+ */
+export function generateLiveModule(entries: LiveModuleEntry[], importPrefix = ".."): string {
+  const liveEntries = entries
+    .map((e) => `  ${lit(e.path)}: () => import(${lit(`${importPrefix}/${e.file}`)}),`)
+    .join("\n");
+  return `/**
+ * Auto-generated live-object mount map — do not edit; maintained by \`rpxd dev\`.
+ * Lazy importers keyed by \`live(pattern)\` for the control-plane mount union
+ * (ADR 0002). Never imported by the client entry (keeps server-only chain deps
+ * off the client). Consumers assert \`$live: true\` on each default export at boot.
+ */
+export const liveModules = ${mapBlock(liveEntries)} as const;
+`;
 }

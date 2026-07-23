@@ -27,7 +27,7 @@ const clientEntrySource = (rsc: boolean, transport: "sse" | "ws") => `
 import { createElement } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { LiveApp, LiveConnection, rpcMetaFromDef } from "@rpxd/client";
-import { routeModules, rootModule } from "/.rpxd/routes.gen.ts";
+import { routeModules, rootModule, layoutModule } from "/.rpxd/routes.gen.ts";
 ${
   rsc
     ? `import { configureRscRuntime, flightStream, hydrateRscFields } from "@rpxd/rsc/client";
@@ -48,14 +48,24 @@ const route = (await load()).default;
 const conn = new LiveConnection({
   instance: boot.instance,
   bootstrap: boot,
-  meta: rpcMetaFromDef(route.def),${transport === "ws" ? '\n  transport: "ws",' : ""}
+  meta: rpcMetaFromDef(route.def),
+  // Seed the tier-1 codec gate (ADR 0002 §3): decode URL props only when the
+  // primary route declares a props schema. A tier-2/3 remount refreshes it.
+  hasPropsSchema: route.props !== undefined,${transport === "ws" ? '\n  transport: "ws",' : ""}
 });
 conn.connect();
+
+// The persistent region (ADR 0002 item 13): load __layout.tsx BEFORE the first
+// paint (like rootModule below) so the layout is present in the hydrated tree —
+// a late-loaded layout would flash a layout-less frame and mismatch the SSR'd
+// Root(Layout(page)) markup.
+const layout = layoutModule ? (await layoutModule()).default : undefined;
 
 const app = createElement(LiveApp, {
   route,
   connection: conn,
-  routeModules,${transport === "ws" ? '\n  transport: "ws",' : ""}${rsc ? "\n  transformState: hydrateRscFields," : ""}
+  routeModules,
+  layout,${rsc ? "\n  transformState: hydrateRscFields," : ""}
 });
 
 const Root = rootModule ? (await rootModule()).default : null;

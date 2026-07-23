@@ -18,8 +18,8 @@ const asFilter = (v: string | undefined): TodoFilter =>
 // paint instead, await the data before the first patch (see routes/doc.tsx).
 export default live("/")
   .setup(() => ({ todos: [] as TodoRow[], filter: "all" as TodoFilter, loading: true }))
-  .load(async ({ search }, ctx) => {
-    const next = asFilter(search.filter);
+  .load(async ({ props }, ctx) => {
+    const next = asFilter(props.filter);
     // Synchronous projection: the tab flips instantly and the previous
     // window stays visible (keepPreviousData) while the query runs.
     ctx.patchState((s) => {

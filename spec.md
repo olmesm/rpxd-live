@@ -3,7 +3,7 @@
 ## 1. Live Objects (Core Model)
 Server-side stateful objects with reducers; client is plain React receiving state.
 
-- One live object per page; everything below is ordinary React fed via props
+- One live object per page; everything below is ordinary React fed via props. A page may **compose** further live objects as slots (`<LiveSlot>`) and share a persistent layout — see ADR 0002; the base model is unchanged
 - Instances are **per-session**; multiplayer via pubsub (no shared instances, no `key`/`scope`)
 - **Lifecycle by cadence** (§7): `setup` (sync) runs on identity — a **path-param** change — and returns the state skeleton + wires subscriptions; `guard` (async, optional) and `load` (async) run on **every URL change** (path *or* search); `load` is the single place URL-dependent data loads. `guard` is auth (deny → `redirect`); `load` streams data via `ctx.patchState`
 - Handlers run server-side as plain async fns; state writes go through `ctx.patchState(mut)` — sync Immer mutators, exact patches; `ctx.state` is a live read-only view (always current, even after awaits)
@@ -21,9 +21,9 @@ export default live("/org/$orgId/board")
   .guard(async ({ params }, ctx) => {                   // auth, every URL change (§10)
     if (!(await canView(ctx.session, params.orgId))) throw redirect("/403");
   })
-  .load(async ({ params, search }, ctx) => {            // the loader (§7): every URL change
-    ctx.patchState((s) => { s.filter = search.filter ?? "all"; s.loading = true; });
-    const projects = await db.project.findMany({ where: { orgId: params.orgId, ...where(search.filter) } });
+  .load(async ({ params, props }, ctx) => {             // the loader (§7): every URL change
+    ctx.patchState((s) => { s.filter = props.filter ?? "all"; s.loading = true; });
+    const projects = await db.project.findMany({ where: { orgId: params.orgId, ...where(props.filter) } });
     ctx.patchState((s) => { s.projects = projects; s.loading = false; });
   })
   .rpc("create", (r) =>
@@ -133,11 +133,11 @@ File-based with codegen; wouter under the hood; URL is identity.
 - `.rpxd/routes.gen.ts` generated + committed; `Register` interface merge → typed `<Link to params>` and `nav.navigate`
 - **Three lifecycle hooks, keyed by cadence:**
   - **`setup((ctx) => S)`** — **sync**. Runs on identity (a **path-param** change). Wires subscriptions (§8), returns the state skeleton (locks type `S`). No IO — being sync makes "all data loads in `load`" a structural guarantee, and keeps a path step's skeleton instant. May `throw redirect` for a coarse fail-fast, but auth's home is `guard`.
-  - **`guard(({ params, search }, ctx) => void)`** — async, optional. Runs before `load` on **every URL change** (path *or* search). Auth: `throw redirect` to deny. It runs on search changes too, so a spoofed/edited `?cursor=…` or `?userId=…` is re-checked (§10).
-  - **`load(({ params, search }, ctx) => void)`** — async. The single place URL-dependent data loads. Runs after `setup` and on **every URL change**. First arg is the whole URL (`params` = path, `search` = query); writes **page state** via `ctx.patchState`; `ctx.session` is read-only. Loading/errors are ordinary state — no ack. **Latest-wins**: a newer invocation aborts the prior's `ctx.signal` and drops its late flushes. Pass `ctx.signal` to `fetch`. `throw redirect` to deny. The URL is the query key → filtering/pagination are shareable, bookmarkable, back-button-correct, reproducible on cold wake.
-- **Navigation — three tiers, two verbs.** `nav.patch(search)` changes search only (tier 1): reruns `guard`+`load`, no `setup`, **state preserved** (keepPreviousData + optimistic survive). `nav.navigate(...)` changes the path: **same route pattern** (tier 2) reruns `setup`+`guard`+`load` over the **reused connection** (soft reload — new instance, fresh state/subscriptions, but the SSE + app shell survive; the page component is keyed by path id so its local state resets); **different route** (tier 3) swaps the component. The framework picks tier 2 vs 3 by matched pattern; userland only calls `patch`/`navigate`.
-- **Path vs search is a continuity knob**: search change (tier 1) preserves state (keepPreviousData); path change (tier 2/3) resets to skeleton and swaps subscriptions. Model a continuity stepper as `?id=`, a clean switch as `/…/$id`.
-- Search params untyped in v1 (`Record<string, string | undefined>`)
+  - **`guard(({ params, props }, ctx) => void)`** — async, optional. Runs before `load` on **every URL change** (path *or* props). Auth: `throw redirect` to deny. It runs on props changes too, so a spoofed/edited `?cursor=…` or `?userId=…` is re-checked (§10).
+  - **`load(({ params, props }, ctx) => void)`** — async. The single place URL-dependent data loads. Runs after `setup` and on **every URL change**. First arg is the whole URL (`params` = path, `props` = the URL query record — a page's query string is its props); writes **page state** via `ctx.patchState`; `ctx.session` is read-only. Loading/errors are ordinary state — no ack. **Latest-wins**: a newer invocation aborts the prior's `ctx.signal` and drops its late flushes. Pass `ctx.signal` to `fetch`. `throw redirect` to deny. The URL is the query key → filtering/pagination are shareable, bookmarkable, back-button-correct, reproducible on cold wake.
+- **Navigation — three tiers, two verbs.** `nav.patch(props)` changes props (the URL query) only (tier 1): reruns `guard`+`load`, no `setup`, **state preserved** (keepPreviousData + optimistic survive). `nav.navigate(...)` changes the path: **same route pattern** (tier 2) mounts the target identity over the **reused connection** (soft reload — the SSE + app shell survive; the page component is keyed by path id so its local state resets); **different route** (tier 3) swaps the component over the same app-lifetime connection. The framework picks tier 2 vs 3 by matched pattern; userland only calls `patch`/`navigate`.
+- **Path vs search is a continuity knob**: search change (tier 1) preserves state (keepPreviousData); path change (tier 2/3) resets the page's *local React* state and swaps which instance is rendered. A **never-seen identity** runs `setup`+`guard`+`load` fresh (skeleton); a **warm identity** (still in this session's warm TTL — e.g. a return navigation) is reused with its instance state intact: `guard` reruns, `load` reruns only if props changed (ADR 0002, warm-mount dedup). Instance state lives with the session, not with the DOM. Model a continuity stepper as `?id=`, a clean switch as `/…/$id`.
+- **Props typing** — untyped by default (`Record<string, string | undefined>`, the raw query record). Declare a schema with `live(pattern, propsSchema?)` (ADR 0002) and `guard`/`load` receive **validated, decoded** props: the URL codec is per-value try-`JSON.parse`, else raw string, so `?limit=20` arrives as the number `20` while `?filter=done` stays `"done"` — the ambiguous cases (`"20"`, `"true"`) round-trip because the writer quotes them. Decode + validate happen on the page GET **before** `guard`, so untrusted input never reaches userland unvalidated (a schema violation → 422); the codec is applied **only** when a schema is declared (schema-less routes keep raw strings)
 - Wouter unexported; public surface = `Link`, `nav`
 
 ## 8. Pubsub (Multiplayer)
@@ -189,8 +189,7 @@ Connections are disposable; state is not. SSE default, WS opt-in.
 ## 13. Out of Scope
 Deliberately not covered by this spec; the seams below keep each addable later without a rewrite.
 
-- Nested/sibling live objects + layouts (requires nested live semantics)
-- Typed search params (per-route schema into `Register`, `nav.patch`, `Link`)
+- ~~Nested/sibling live objects + layouts (requires nested live semantics)~~ — **shipped** in ADR 0002 (live slots + `__layout.tsx`); the deferral was overpriced, the control plane was multi-instance from day one. Still deferred there: SSR for slots, cross-instance optimism, runtime-federated microfrontends
 - Transparent id aliasing (wire rewriting) if `keyOf` proves insufficient
 - Devtools time-travel (patch log makes it cheap)
 - Presence recipe (userland, ~20 lines)

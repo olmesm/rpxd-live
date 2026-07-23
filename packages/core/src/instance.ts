@@ -15,6 +15,7 @@ import {
   type LiveDefinition,
   type Mutator,
   type PathParams,
+  type PropsRecord,
   type RpcCtx,
   type RpcDef,
   type RpcLongForm,
@@ -41,6 +42,10 @@ setAutoFreeze(false);
 
 /** Path prefix that routes a patch to the session slice instead of page state (§2). */
 export const SESSION_PREFIX = "$session";
+
+/** Shared encoder for {@link LiveInstance.stateBytes} — module-level so the
+ * mount-gate byte measurement doesn't allocate one per read. */
+const STATE_BYTE_ENCODER = new TextEncoder();
 
 /** Reserved abort-group name for the URL loader (§7) — drives latest-wins. */
 const LOAD_KEY = "$load";
@@ -196,11 +201,26 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   #renderGate: { gate: Deferred<void>; runId: number } | undefined;
   /** Whether the current load run's loader has produced a patch — gates the render open (§12). */
   #loadWrote = false;
+  /**
+   * Whether the current load run's loader threw a DATA error (non-redirect,
+   * non-supersede) — swallowed into userland state by {@link #runLoad}, but a
+   * won-but-threw run for {@link loadForRender}'s dedup contract (ADR 0002 item 8
+   * / review R1 finding 2): a data-throw did NOT reconcile cleanly, so the caller
+   * must not advance its props dedup key onto a failed load. Reset per run.
+   */
+  #loadThrew = false;
   /** Abort controller for the in-flight `authorize` guard — newer call cancels it (§10). */
   #authController: AbortController | undefined;
   /** rpcId → ack envelope, for at-least-once dedupe (§11). */
   readonly #acks = new Map<string, Envelope>();
   #disposed = false;
+  /**
+   * Whether this in-memory instance was born by restoring a snapshot (cold
+   * wake), rather than being continuously live (ADR 0002 item 8). Set once at
+   * {@link create} and never cleared — a restored instance may have missed
+   * broadcasts while evicted (§9), so warm-mount dedup never skips its `load`.
+   */
+  #restoredFromSnapshot = false;
 
   private constructor(opts: CreateInstanceOptions<S, Path, Session>) {
     this.id = opts.id;
@@ -241,6 +261,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     if (snap && snap.version === inst.#version) {
       inst.#session = (snap.session as Session) ?? opts.session;
       inst.#seq = snap.seq;
+      inst.#restoredFromSnapshot = true; // cold wake — reconcile fully (§9, ADR 0002 item 8)
     }
     inst.#state = opts.def.setup({
       params: opts.params,
@@ -267,6 +288,40 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   /** Number of attached envelope listeners — drives warm-TTL eviction (§11). */
   get subscriberCount(): number {
     return this.#listeners.size;
+  }
+
+  /**
+   * Serialized byte size of this instance's current page state — the measurement
+   * the server's per-session byte budget sums (ADR 0002 item 14, Decision 6;
+   * `maxSessionStateBytes` in server-bun). Computed on read as the UTF-8 byte
+   * length of `JSON.stringify(state)`, the same serialized form the write-through
+   * snapshot persists. Deriving it here — not caching a per-flush field — keeps
+   * the hot path free: the write-through hands storage a live object (only
+   * serializing adapters stringify, and the default `memory()` never does), so a
+   * cached size would demand a per-flush `JSON.stringify` even for the common
+   * budget-disabled case. Instead the handler reads this only at the mount gate,
+   * and only when a budget is set, so an app that doesn't opt in pays nothing.
+   * Returns `0` if the state isn't JSON-serializable — a soft budget must never
+   * make a mount throw. Session bytes are excluded: they ride the snapshot for
+   * continuity, but the budget caps page state, the part slots multiply.
+   */
+  get stateBytes(): number {
+    try {
+      return STATE_BYTE_ENCODER.encode(JSON.stringify(this.#state) ?? "").byteLength;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Whether this instance was restored from a snapshot at {@link create} (a cold
+   * wake) rather than being continuously live (ADR 0002 item 8). The warm-mount
+   * dedup reads it to force a full `load` on a restored instance — its state may
+   * be stale from broadcasts missed while it was evicted (§9). `false` for a
+   * freshly-built instance; never flips back once set.
+   */
+  get restoredFromSnapshot(): boolean {
+    return this.#restoredFromSnapshot;
   }
 
   /** Attach an envelope listener (a connection). Returns detach. */
@@ -395,7 +450,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
-   * Run the auth guard for a set of search params (§10). **Awaitable** and kept
+   * Run the auth guard for a props record (§10). **Awaitable** and kept
    * separate from `load` so the server can 302 *before* streaming/serving a
    * guarded page. A deny (`throw redirect`) — or any throw — propagates to the
    * caller. No-op when no `guard` is declared. A newer call aborts the prior
@@ -405,7 +460,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * would proceed to load the denied URL), so supersession is explicit: callers
    * catch it and bail quietly — the winning run owns the outcome.
    */
-  async authorize(search: Record<string, string | undefined>): Promise<void> {
+  async authorize(props: Record<string, unknown>): Promise<void> {
     const guard = this.#def.guard;
     if (!guard || this.#disposed) return;
     this.#authController?.abort();
@@ -413,7 +468,11 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     this.#authController = controller;
     try {
       await guard(
-        { params: this.#params, search },
+        // The mounter validates props against the def's schema before handing
+        // them here (ADR 0002 §3), so the runtime is props-type-agnostic — the
+        // record already matches the guard's declared `Props`. `PropsRecord` is
+        // just the generic-erased default the instance carries.
+        { params: this.#params, props: props as PropsRecord },
         { params: this.#params, session: this.#session, signal: controller.signal },
       );
     } catch (e) {
@@ -430,10 +489,10 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
   }
 
   /**
-   * Run the URL loader for a set of search params (§7) — the loader only;
+   * Run the URL loader for a props record (§7) — the loader only;
    * `authorize` runs `guard` separately (the server awaits it first so a deny
    * 302s before streaming). Fires after `setup`+`authorize` and on every URL
-   * change. The loader gets `{ params, search }`, writes page state through
+   * change. The loader gets `{ params, props }`, writes page state through
    * `ctx.patchState`; loading/errors are userland state, no ack. **Latest-wins**:
    * a newer call aborts the prior run's `ctx.signal` and drops its late flushes.
    * A `redirect` thrown by the loader (§10) is re-thrown — only for the current
@@ -443,8 +502,8 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * determinism). SSR/reconcile uses {@link loadForRender}, which returns at the
    * first patch and streams the rest.
    */
-  async load(search: Record<string, string | undefined>): Promise<void> {
-    await this.#runLoad(search);
+  async load(props: Record<string, unknown>): Promise<void> {
+    await this.#runLoad(props);
   }
 
   /**
@@ -457,9 +516,27 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
    * data-complete). A `redirect` thrown before the first patch propagates (302 /
    * soft-nav); one thrown after is mid-stream — ignored, with a server-side log
    * (redirect before the first patch to navigate; per-URL denies belong in `guard`).
+   *
+   * Resolves `true` only on a **won-and-clean** run — one still current at settle
+   * time (not superseded by a newer URL) AND whose loader did not throw a data
+   * error. It resolves `false` on the two runs that must NOT become the warm-mount
+   * dedup baseline (ADR 0002 item 8, so the dedup only advances its props key on a
+   * clean reconcile): **superseded** (a newer run claimed the tag mid-flight, its
+   * flushes dropped) and **won-but-threw** (the loader threw a data error, which
+   * `#runLoad` swallows into userland state — the error semantics are unchanged,
+   * but a failed load left no complete state, so re-loading it later is correct
+   * rather than sticking an empty/failed state across tabs — review R1 finding 2).
+   * `true` too when the def has no `load` (nothing to reconcile). A redirect still
+   * propagates as a throw before either value is returned.
+   *
+   * The data-throw is observed deterministically for the finding's case (a loader
+   * that throws before its first patch): `#runLoad`'s catch sets the flag before
+   * the finally opens the gate this awaits. A throw *after* the first patch is
+   * inherently past the return point (the gate already opened on that patch) and
+   * counts as clean — that run produced state, so it isn't the empty-state bug.
    */
-  async loadForRender(search: Record<string, string | undefined>): Promise<void> {
-    if (!this.#def.load || this.#disposed) return;
+  async loadForRender(props: Record<string, unknown>): Promise<boolean> {
+    if (!this.#def.load || this.#disposed) return true;
     const gate = makeDeferred<void>();
     const runId = this.#loadRunId + 1; // #runLoad claims exactly this tag
     // A newer render reconcile supersedes any pending one: resolve the outgoing
@@ -471,7 +548,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     // rejects the gate with a pre-first-patch redirect (delivered to the await
     // below); the only rejection left here is a redirect thrown *after* the
     // first patch — no awaiter can map it, so log the drop instead of hiding it.
-    void this.#runLoad(search).catch((e: unknown) => {
+    void this.#runLoad(props).catch((e: unknown) => {
       if (isRedirect(e) && !gate.rejected) {
         this.#emitDiagnostic({
           category: "instance",
@@ -483,9 +560,14 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
       }
     });
     await gate.promise;
+    // Won-and-clean iff no newer run bumped the tag while this one was in flight
+    // (§7 latest-wins) AND this run's loader didn't throw a data error. A
+    // superseded run's flushes were dropped; a thrown run left no complete state —
+    // neither may become the new dedup baseline (ADR 0002 item 8 / R1 finding 2).
+    return this.#loadRunId === runId && !this.#loadThrew;
   }
 
-  async #runLoad(search: Record<string, string | undefined>): Promise<void> {
+  async #runLoad(props: Record<string, unknown>): Promise<void> {
     const loader = this.#def.load;
     if (!loader || this.#disposed) return;
 
@@ -496,6 +578,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     // (e.g. a plain load() over an in-flight loadForRender): settle the orphan.
     this.#supersedeRenderGate(runId);
     this.#loadWrote = false;
+    this.#loadThrew = false;
     const controller = this.#trackAbort(LOAD_KEY);
 
     const idMap: Record<string, string> = {};
@@ -510,7 +593,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
     };
 
     try {
-      await loader({ params: this.#params, search }, ctx);
+      await loader({ params: this.#params, props: props as PropsRecord }, ctx);
       if (runId === this.#loadRunId) await this.#flushChunk();
     } catch (e) {
       // Only the current run reacts — a superseded run (newer URL claimed the
@@ -522,6 +605,12 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
         this.#settleRenderGate(runId, e);
         throw e;
       }
+      // A data throw (swallowed into userland state): mark this run won-but-threw
+      // so `loadForRender` reports it as NOT clean and the warm-mount dedup never
+      // advances onto a failed load (ADR 0002 item 8 / review R1 finding 2). Set
+      // before the `finally` opens the render gate, so the pre-first-patch case is
+      // observed deterministically by the awaiter.
+      this.#loadThrew = true;
       if (!controller.signal.aborted)
         this.#emitDiagnostic({
           category: "instance",
@@ -824,7 +913,7 @@ export class LiveInstance<S, Path extends string = string, Session = Record<stri
 
     let payload = call.payload;
     if (isLongForm(def) && def.input) {
-      payload = await validateInput(def.input, payload, call.rpc);
+      payload = await validateInput(def.input, payload, `rpc "${call.rpc}"`);
     }
     return {
       handler: isLongForm(def) ? def.handler : def,

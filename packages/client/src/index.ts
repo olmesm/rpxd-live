@@ -14,11 +14,13 @@ export {
   type ConnectionOptions,
   type EventSourceLike,
   LiveConnection,
+  type SlotHandle,
   type WebSocketLike,
 } from "./connection.ts";
 export { findTempIdLocations, matchIdMap, type TempIdLocation } from "./id-map.ts";
 export {
   buildHref,
+  fillPattern,
   Link,
   type Nav,
   type Register,
@@ -26,6 +28,7 @@ export {
   RpxdProvider,
   useNav,
 } from "./router.tsx";
+export { LiveSlot, type LiveSlotProps } from "./slot.tsx";
 export {
   type ConnectionStatus,
   LiveStore,

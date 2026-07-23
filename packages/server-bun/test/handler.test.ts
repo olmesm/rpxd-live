@@ -19,9 +19,9 @@ interface BoardState {
 
 const boardDef: LiveDefinition<BoardState, "/org/$orgId/board", Record<string, unknown>> = {
   setup: (ctx) => ({ items: ["first"], orgId: ctx.params.orgId }),
-  load: async ({ search }, ctx) => {
+  load: async ({ props }, ctx) => {
     ctx.patchState((s) => {
-      s.filter = search.filter ?? "all";
+      s.filter = props.filter ?? "all";
     });
   },
   rpc: {
@@ -409,7 +409,7 @@ describe("stream + rpc + control (§11)", () => {
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
         headers: COOKIE,
-        body: JSON.stringify({ type: "url", instance, search: { filter: "done" } }),
+        body: JSON.stringify({ type: "url", instance, props: { filter: "done" } }),
       }),
     );
     const env = await sse.next();
@@ -1006,9 +1006,13 @@ describe("un-attached instance cleanup — no residual growth (#61 follow-up)", 
     await handler.fetch(
       new Request(`${base}/org/7/board`, { headers: { cookie: "rpxd_sid=leak-x" } }),
     );
-    expect(await storage.get("leak-x:/org/7/board")).toBeDefined(); // warm → persisted
+    // The storage key is pattern-qualified for a parametric route (review R1
+    // finding 1: `${sid}:${pattern}\n${pathname}`), so a page `/$slug` at `/chat`
+    // can't collide with a `/chat` slot's snapshot row.
+    const key = "leak-x:/org/$orgId/board\n/org/7/board";
+    expect(await storage.get(key)).toBeDefined(); // warm → persisted
     await new Promise((r) => setTimeout(r, 80));
-    expect(await storage.get("leak-x:/org/7/board")).toBeUndefined(); // never adopted → row dropped
+    expect(await storage.get(key)).toBeUndefined(); // never adopted → row dropped
     await handler.dispose();
   });
 
@@ -1072,7 +1076,8 @@ describe("un-attached instance cleanup — no residual growth (#61 follow-up)", 
     abort.abort();
     await new Promise((r) => setTimeout(r, 80)); // past warmTtlMs
     expect(handler.instanceCount).toBe(0);
-    expect(await storage.get("keep-x:/org/2/board")).toBeDefined(); // adopted → snapshot kept
+    // Pattern-qualified key for the parametric route (review R1 finding 1).
+    expect(await storage.get("keep-x:/org/$orgId/board\n/org/2/board")).toBeDefined(); // adopted → snapshot kept
     await handler.dispose();
   });
 });

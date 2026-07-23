@@ -52,12 +52,13 @@ export type RpcFacade<R> = Pretty<{
 }>;
 
 /**
- * Navigation (§7): search params are view state — `patch` reruns `guard`+`load`
+ * Navigation (§7): props are view state — `patch` reruns `guard`+`load`
  * with no `setup` (tier 1, state preserved); `navigate` changes the path, which
  * reruns `setup`+`guard`+`load` (a soft reload over the live connection for the
  * same route pattern, a component swap for a different one). `navigate`
  * autocompletes registered routes via the generated `Register` merge — the same
- * typing `Link`/`useNav` get in `@rpxd/client`.
+ * typing `Link`/`useNav` get in `@rpxd/client`. `navigate`'s `search` opt is the
+ * URL query encoding of the target's props.
  */
 export interface NavProp {
   /** Change the path (§7): reruns `setup`+`guard`+`load`. Tiers 2/3 by matched pattern. */
@@ -65,8 +66,25 @@ export interface NavProp {
     to: P,
     opts?: { params?: PathParams<P>; search?: Record<string, string> },
   ): void;
-  /** Change search params only (§7): reruns `guard`+`load`, no `setup`, state preserved. */
-  patch(search: Record<string, string>): void;
+  /**
+   * Change props only (§7): reruns `guard`+`load`, no `setup`, state preserved.
+   *
+   * `props` is the caller's JSON-value record — `{ limit: 20 }` the number, not
+   * `{ limit: "20" }`. `patch` always writes it into the URL with the props
+   * codec's URL encoding (`encodeProps`), so the URL round-trips coherently.
+   *
+   * The **wire** record is schema-gated (ADR 0002 §3 — the codec applies only
+   * when a schema is declared):
+   * - **Schema'd route** — the `url` body is validated against the props schema
+   *   WITHOUT decoding (item 7), so the JSON-value record rides the wire verbatim
+   *   (the number stays a number, passing a `z.number()`).
+   * - **Schema-less route** — the values are stringified into the record the URL
+   *   just round-tripped to (`Object.fromEntries(encodeProps(props))`), i.e.
+   *   exactly what a schema-less GET of the resulting URL would deliver. This
+   *   keeps the wire and a later GET/`popstate` in agreement: a schema-less page
+   *   never sees the number `2` on a patch but the string `"2"` on reload.
+   */
+  patch(props: Record<string, unknown>): void;
 }
 
 /**
@@ -98,6 +116,6 @@ export interface RenderProps<S, Session = Record<string, unknown>, R = Record<st
   status: ConnectionStatus;
   /** Stable keys across tempId→realId transitions (§4). */
   keyOf: (id: string | number) => string;
-  /** navigate (remount) + patch (search params, no remount) (§7). */
+  /** navigate (remount) + patch (props, no remount) (§7). */
   nav: NavProp;
 }

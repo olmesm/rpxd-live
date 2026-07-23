@@ -16,13 +16,13 @@ const setupGated: LiveDefinition<Record<string, unknown>, "/gated", { user?: str
   },
 };
 
-// Auth in `guard` — runs on every URL change (path + search), so a spoofed
+// Auth in `guard` — runs on every URL change (path + props), so a spoofed
 // `?admin=` is re-checked even without a remount.
 const guardGated: LiveDefinition<{ ok: boolean }, "/g", { user?: string }> = {
   setup: () => ({ ok: true }),
-  guard: async ({ search }, ctx) => {
+  guard: async ({ props }, ctx) => {
     if (!ctx.session.user) throw redirect("/login");
-    if (search.admin && ctx.session.user !== "root") throw redirect("/403");
+    if (props.admin && ctx.session.user !== "root") throw redirect("/403");
   },
   load: async () => {},
 };
@@ -98,7 +98,7 @@ describe("redirect() from guard (§10)", () => {
       new Request("http://x/__rpxd/control", {
         method: "POST",
         headers: { "content-type": "application/json", cookie, "x-user": "alice" },
-        body: JSON.stringify({ type: "url", instance, search: { admin: "1" } }),
+        body: JSON.stringify({ type: "url", instance, props: { admin: "1" } }),
       }),
     );
     expect(await patchRes.json()).toEqual({ redirect: "/403" });

@@ -32,16 +32,16 @@ describe("racing URL reconciles with a slow guard deny (§10)", () => {
     const loaded: string[] = [];
     const def: LiveDefinition<UserState, "/u", Record<string, unknown>> = {
       setup: () => ({ rows: [] }),
-      guard: async ({ search }) => {
-        if (search.userId && search.userId !== "me") {
+      guard: async ({ props }) => {
+        if (props.userId && props.userId !== "me") {
           await new Promise<void>((r) => {
             releaseDeny = r;
           });
           throw redirect("/403"); // slow deny — superseded mid-flight
         }
       },
-      load: async ({ search }, ctx) => {
-        const key = search.userId ?? search.q ?? "none";
+      load: async ({ props }, ctx) => {
+        const key = props.userId ?? props.q ?? "none";
         loaded.push(key);
         ctx.patchState((s) => {
           s.who = key;
@@ -51,14 +51,14 @@ describe("racing URL reconciles with a slow guard deny (§10)", () => {
     };
     const handler = createRpxdHandler({ routes: [{ path: "/u", def }], cookie: { sign: false } }); // fixed literal cookie above needs a stable, unsigned sid
 
-    const mountRes = await control(handler, { type: "mount", path: "/u", search: {} });
+    const mountRes = await control(handler, { type: "mount", path: "/u", props: {} });
     const { instance } = (await mountRes.json()) as { instance: string };
 
     // Request A: the denied URL — its guard parks mid-deny.
-    const denied = control(handler, { type: "url", instance, search: { userId: "other" } });
+    const denied = control(handler, { type: "url", instance, props: { userId: "other" } });
     await tick(); // A's guard is now awaiting inside the deny branch
     // Request B: an allowed URL — supersedes A's guard run.
-    const allowed = await control(handler, { type: "url", instance, search: { q: "x" } });
+    const allowed = await control(handler, { type: "url", instance, props: { q: "x" } });
     expect(allowed.status).toBe(204);
 
     releaseDeny(); // A's guard now throws its deny — into a superseded run

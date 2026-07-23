@@ -8,8 +8,8 @@ import type { RateLimit } from "./rate-limit.ts";
 import type { EventName, EventPayload } from "./register.ts";
 import type { StandardSchemaV1 } from "./standard-schema.ts";
 
-/** Search params are untyped view state in v1 (§7). */
-export type SearchParams = Record<string, string | undefined>;
+/** Props are an untyped view-state record in v1 (§7) — a page's URL query is its props. */
+export type PropsRecord = Record<string, string | undefined>;
 
 type Segments<P extends string> = P extends `${infer Head}/${infer Rest}`
   ? Head | Segments<Rest>
@@ -43,14 +43,19 @@ export interface SetupCtx<Params, Session> {
 }
 
 /**
- * The whole URL handed to `load` (§7): typed path params plus untyped search.
- * `params` is the route literal's path params; `search` is the query string.
+ * The whole URL handed to `load` (§7): typed path params plus props.
+ * `params` is the route literal's path params; `props` is the patchable view-state
+ * record (a page's URL query string is its props — one value model, two encodings).
+ *
+ * `Props` defaults to the raw {@link PropsRecord}. When `live()` is given a props
+ * schema, `Props` is that schema's validated output — so `?limit=20` reaches
+ * `load` typed and decoded (ADR 0002).
  */
-export interface Url<Params> {
+export interface Url<Params, Props = PropsRecord> {
   /** Typed path params from the route literal (`/org/$orgId` → `{ orgId }`). */
   params: Params;
-  /** Untyped search/query params — view state in v1 (`?filter=…`). */
-  search: SearchParams;
+  /** Props record — the raw `?filter=…` query in v1, or the schema output when a props schema is declared. */
+  props: Props;
 }
 
 /** Context available to every rpc handler and `on:` handler. */
@@ -154,9 +159,9 @@ export type Handler<S, Payload, Params, Session> = (
 /**
  * The URL-keyed loader (§7) — the single place URL-dependent data is loaded.
  * A plain async fn keyed to the whole URL: runs once after `setup` and again on
- * every URL change (path or search). The first argument is `{ params, search }`
- * (typed path params + untyped query); writes go through `ctx.patchState` (page
- * state); `ctx.session` is a live read-only view. Loading and errors are
+ * every URL change (path or props). The first argument is `{ params, props }`
+ * (typed path params + untyped props record); writes go through `ctx.patchState`
+ * (page state); `ctx.session` is a live read-only view. Loading and errors are
  * ordinary state the loader writes — there is no ack. `throw redirect(...)` to
  * deny (§10).
  *
@@ -167,13 +172,13 @@ export type Handler<S, Payload, Params, Session> = (
  *
  * @example
  * ```ts
- * .load(async ({ params, search }, ctx) => {
- *   ctx.patchState((s) => { s.filter = search.filter ?? "all"; s.loading = true; });
+ * .load(async ({ params, props }, ctx) => {
+ *   ctx.patchState((s) => { s.filter = props.filter ?? "all"; s.loading = true; });
  *   const page = await listTodos(scopeFrom(ctx.session), {
- *     filter: search.filter, cursor: search.cursor ?? null, limit: 20, signal: ctx.signal,
+ *     filter: props.filter, cursor: props.cursor ?? null, limit: 20, signal: ctx.signal,
  *   });
  *   ctx.patchState((s) => {
- *     s.todos = search.cursor ? [...s.todos, ...page.items] : page.items;
+ *     s.todos = props.cursor ? [...s.todos, ...page.items] : page.items;
  *     s.cursor = page.nextCursor;
  *     s.hasMore = page.nextCursor != null;
  *     s.loading = false;
@@ -181,8 +186,8 @@ export type Handler<S, Payload, Params, Session> = (
  * })
  * ```
  */
-export type Loader<S, Params, Session> = (
-  url: Url<Params>,
+export type Loader<S, Params, Session, Props = PropsRecord> = (
+  url: Url<Params, Props>,
   ctx: HandlerCtx<S, Params, Session>,
 ) => void | Promise<void>;
 
@@ -198,7 +203,7 @@ export interface GuardCtx<Params, Session> {
 
 /**
  * The auth guard (§7, §10) — runs before `load` on **every** URL change (path
- * or search). `throw redirect(...)` to deny. Because it runs on search changes
+ * or props). `throw redirect(...)` to deny. Because it runs on props changes
  * too, a spoofed/edited `?cursor=…`/`?userId=…` is re-checked. It's a gate, not
  * a loader: no `patchState`. Pass `ctx.signal` to async auth lookups.
  *
@@ -210,8 +215,8 @@ export interface GuardCtx<Params, Session> {
  * })
  * ```
  */
-export type Guard<Params, Session> = (
-  url: Url<Params>,
+export type Guard<Params, Session, Props = PropsRecord> = (
+  url: Url<Params, Props>,
   ctx: GuardCtx<Params, Session>,
 ) => void | Promise<void>;
 
@@ -274,7 +279,7 @@ export type EventHandler<S, Payload, Params, Session> = (
  * The runtime shape a fluent chain builds (§1) — what `LiveInstance` and the
  * server handler consume via `route.def`.
  */
-export interface LiveDefinition<S, Path extends string, Session> {
+export interface LiveDefinition<S, Path extends string, Session, Props = PropsRecord> {
   /**
    * Runs on identity — a path-param change (SSR included, §12). **Sync**: wires
    * subscriptions and returns the state skeleton (locks type `S`). No IO —
@@ -283,12 +288,12 @@ export interface LiveDefinition<S, Path extends string, Session> {
    */
   setup: (ctx: SetupCtx<PathParams<Path>, Session>) => S;
   /** Auth (§10): runs before `load` on every URL change, `throw redirect` to deny. See {@link Guard}. */
-  guard?: Guard<PathParams<Path>, Session>;
+  guard?: Guard<PathParams<Path>, Session, Props>;
   /**
    * URL-keyed loader (§7): runs after `setup`+`guard` and on every URL change,
    * writes page state, latest-wins. See {@link Loader}.
    */
-  load?: Loader<S, PathParams<Path>, Session>;
+  load?: Loader<S, PathParams<Path>, Session, Props>;
   rpc?: Record<string, RpcDef<S, PathParams<Path>, Session>>;
   // biome-ignore lint/suspicious/noExplicitAny: the runtime record is keyed by arbitrary event name, so payloads are heterogeneous here
   on?: Record<string, EventHandler<S, any, PathParams<Path>, Session>>;
@@ -297,11 +302,20 @@ export interface LiveDefinition<S, Path extends string, Session> {
 }
 
 /** The object a fluent chain evaluates to — consumed by the router. */
-export interface LiveRoute<S, Path extends string, Session, Component> {
+export interface LiveRoute<S, Path extends string, Session, Component, Props = PropsRecord> {
   readonly $live: true;
   readonly path: Path;
-  readonly def: LiveDefinition<S, Path, Session>;
+  readonly def: LiveDefinition<S, Path, Session, Props>;
   readonly component: Component;
+  /**
+   * The props schema passed to `live(pattern, propsSchema?)`, or `undefined`
+   * when none was declared (ADR 0002). It rides the built object so the mounter
+   * can validate/decode props before `guard`+`load`; the object carries **no**
+   * addressability flag — a routed page and a slot share the same shape
+   * (Decision 2). `LiveInstance` never reads this — validation is the mounter's
+   * job.
+   */
+  readonly props?: StandardSchemaV1<unknown, Props>;
 }
 
 // ---- fluent builder (§1, §5) ------------------------------------------------
@@ -345,14 +359,14 @@ export interface RpcChainBuilt<S, In, Params, Session> {
  * `.rpc(name, ...)` extends the typed rpc record `R`, which `.render()`
  * hands to the component as an exact-keyed, payload-typed `rpc` facade.
  */
-export interface LiveBuilder<S, Path extends string, Session, R> {
+export interface LiveBuilder<S, Path extends string, Session, R, Props = PropsRecord> {
   /** Declare an rpc (§5): `r.input(schema).optimistic(fn).handler(fn).onError(fn)`. */
   rpc<Name extends string, In>(
     name: Name,
     build: (
       r: RpcChain<S, PathParams<Path>, Session>,
     ) => RpcChainBuilt<S, In, PathParams<Path>, Session>,
-  ): LiveBuilder<S, Path, Session, R & Record<Name, In>>;
+  ): LiveBuilder<S, Path, Session, R & Record<Name, In>, Props>;
   /**
    * Broadcast handler (§8): a sync mutator run in response to a topic event.
    * `payload` is typed from the same `Register["events"]` map that types
@@ -369,37 +383,46 @@ export interface LiveBuilder<S, Path extends string, Session, R> {
   on<const K extends EventName>(
     event: K,
     handler: EventHandler<S, EventPayload<K>, PathParams<Path>, Session>,
-  ): LiveBuilder<S, Path, Session, R>;
+  ): LiveBuilder<S, Path, Session, R, Props>;
   /**
    * Auth guard (§10): runs before `load` on every URL change; `throw redirect`
-   * to deny. First arg is `{ params, search }`; no state writes. See {@link Guard}.
+   * to deny. First arg is `{ params, props }` — `props` is typed from the props
+   * schema when one is declared. No state writes. See {@link Guard}.
    */
-  guard(guard: Guard<PathParams<Path>, Session>): LiveBuilder<S, Path, Session, R>;
+  guard(guard: Guard<PathParams<Path>, Session, Props>): LiveBuilder<S, Path, Session, R, Props>;
   /**
    * URL-keyed loader (§7): runs after `setup`+`guard` and on every URL change,
    * writes page state via `ctx.patchState`, latest-wins. First arg is
-   * `{ params, search }`. See {@link Loader}. SSR renders state through the
-   * loader's first patch, then streams (§12) — `await` the data before the
-   * first `patchState` for a crawlable, data-complete first paint.
+   * `{ params, props }` — `props` is typed from the props schema when one is
+   * declared. See {@link Loader}. SSR renders state through the loader's first
+   * patch, then streams (§12) — `await` the data before the first `patchState`
+   * for a crawlable, data-complete first paint.
    */
-  load(loader: Loader<S, PathParams<Path>, Session>): LiveBuilder<S, Path, Session, R>;
+  load(
+    loader: Loader<S, PathParams<Path>, Session, Props>,
+  ): LiveBuilder<S, Path, Session, R, Props>;
   /** Snapshot version tag (§9): mismatch → discard snapshot, re-setup. */
-  version(tag: string): LiveBuilder<S, Path, Session, R>;
+  version(tag: string): LiveBuilder<S, Path, Session, R, Props>;
   /** Bind the component (§1) — receives fully typed {@link RenderProps}. */
   render<Component extends (props: RenderProps<S, Session, Pretty<R>>) => unknown>(
     component: Component,
-  ): LiveRoute<S, Path, Session, Component>;
+  ): LiveRoute<S, Path, Session, Component, Props>;
 }
 
-/** First (and only) step after `live(path)`: lock state via `setup`. */
-export interface LiveStart<Path extends string> {
+/**
+ * First (and only) step after `live(pattern, propsSchema?)`: lock state via
+ * `setup`. `Props` is the props-schema output (or the raw {@link PropsRecord}
+ * with no schema) and threads on to `guard`/`load`, never to `setup` — the
+ * identity/props split (ADR 0002).
+ */
+export interface LiveStart<Path extends string, Props = PropsRecord> {
   /**
    * Wire subscriptions and return the state skeleton (§1). **Sync** — locks
    * type `S` from the return; URL-dependent data loads in `.load()` (§7).
    */
   setup<S, Session = Record<string, unknown>>(
     fn: (ctx: SetupCtx<PathParams<Path>, Session>) => S,
-  ): LiveBuilder<S, Path, Session, Record<never, never>>;
+  ): LiveBuilder<S, Path, Session, Record<never, never>, Props>;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: runtime chain is shaped by the public interfaces above
@@ -416,17 +439,26 @@ function rpcChain(partial: Record<string, any>): any {
   };
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: runtime builder is shaped by LiveBuilder above
-function liveBuilder(path: string, def: Record<string, any>): any {
+function liveBuilder(
+  path: string,
+  // biome-ignore lint/suspicious/noExplicitAny: runtime builder is shaped by LiveBuilder above
+  def: Record<string, any>,
+  propsSchema: unknown,
+  // biome-ignore lint/suspicious/noExplicitAny: runtime builder is shaped by LiveBuilder above
+): any {
   return {
     rpc: (name: string, build: (r: unknown) => { def: unknown }) =>
-      liveBuilder(path, { ...def, rpc: { ...def.rpc, [name]: build(rpcChain({})).def } }),
+      liveBuilder(
+        path,
+        { ...def, rpc: { ...def.rpc, [name]: build(rpcChain({})).def } },
+        propsSchema,
+      ),
     on: (event: string, handler: unknown) =>
-      liveBuilder(path, { ...def, on: { ...def.on, [event]: handler } }),
-    guard: (guard: unknown) => liveBuilder(path, { ...def, guard }),
-    load: (loader: unknown) => liveBuilder(path, { ...def, load: loader }),
-    version: (tag: string) => liveBuilder(path, { ...def, version: tag }),
-    render: (component: unknown) => ({ $live: true, path, def, component }),
+      liveBuilder(path, { ...def, on: { ...def.on, [event]: handler } }, propsSchema),
+    guard: (guard: unknown) => liveBuilder(path, { ...def, guard }, propsSchema),
+    load: (loader: unknown) => liveBuilder(path, { ...def, load: loader }, propsSchema),
+    version: (tag: string) => liveBuilder(path, { ...def, version: tag }, propsSchema),
+    render: (component: unknown) => ({ $live: true, path, def, component, props: propsSchema }),
   };
 }
 
@@ -436,9 +468,19 @@ function liveBuilder(path: string, def: Record<string, any>): any {
  * chain with the same `LiveRoute` object the runtime consumes.
  *
  * The path literal is scaffolded and maintained by the dev watcher — the
- * filename is truth, the literal is its typed mirror (§7).
+ * filename is truth, the literal is its typed mirror (§7). It **must** start
+ * with `/` (a programming error otherwise — asserted in every environment).
  *
- * @example
+ * The optional second argument is a Standard Schema (Zod / Valibot / ArkType)
+ * typing the props record (ADR 0002). With a schema, `guard`/`load` receive
+ * `props` as its validated output — `?limit=20` arrives as `20`, not `"20"` —
+ * while `setup` still sees `params` only (identity vs props). Without one,
+ * `props` stays the raw {@link PropsRecord}. The schema rides the built object
+ * as `route.props`; validation is the mounter's job, not `LiveInstance`'s.
+ * The pattern-filled string is the instance key — the same object is routed as
+ * a page or mounted as a slot with **no** addressability flag (Decision 2).
+ *
+ * @example Schema-less — `props` is the raw query record
  * ```tsx
  * export default live("/org/$orgId/board")
  *   .setup((ctx) => {
@@ -461,11 +503,29 @@ function liveBuilder(path: string, def: Record<string, any>): any {
  *   })
  *   .render(({ state, rpc, keyOf }) => <Board projects={state.projects} />);
  * ```
+ *
+ * @example With a props schema — `props` is typed and decoded
+ * ```tsx
+ * export default live("/card/$productId", z.object({ variant: z.enum(["compact", "full"]) }))
+ *   .setup(() => ({ product: null as Product | null }))
+ *   .load(async ({ params, props }, ctx) => {
+ *     // props.variant is "compact" | "full", not a raw string
+ *     const product = await db.product.find(params.productId, { variant: props.variant });
+ *     ctx.patchState((s) => { s.product = product; });
+ *   })
+ *   .render(({ state }) => <Card product={state.product} />);
+ * ```
  */
-export function live<Path extends string>(path: Path): LiveStart<Path> {
+export function live<Path extends string, Props = PropsRecord>(
+  path: Path,
+  propsSchema?: StandardSchemaV1<unknown, Props>,
+): LiveStart<Path, Props> {
+  if (!path.startsWith("/")) {
+    throw new Error(`live(): pattern must start with "/" — got "${path}"`);
+  }
   return {
-    setup: (fn) => liveBuilder(path, { setup: fn }),
-  } as LiveStart<Path>;
+    setup: (fn) => liveBuilder(path, { setup: fn }, propsSchema),
+  } as LiveStart<Path, Props>;
 }
 
 /**

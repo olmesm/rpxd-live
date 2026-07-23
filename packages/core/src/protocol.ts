@@ -89,3 +89,122 @@ export interface RpcBatch {
   rpcId: string;
   calls: RpcCall[];
 }
+
+// WIRE CONTRACT — the control messages below reconcile a connection to
+// navigation and gap recovery (docs-site/.../wire-protocol.md "Control
+// messages"). None carry `v`. The `url` message's payload record is `props`
+// (ADR 0002 item 1): a page's URL query IS its props record.
+
+/** Gap recovery / late attach (§2): the server answers with a `full` at the current seq. */
+export interface ResyncControl {
+  type: "resync";
+  instance: string;
+}
+
+/**
+ * Cold / same-route / slot mount (§7, ADR 0002 item 6): match `path` against the
+ * union of routed pages and mount-only slots, run guard→setup→load. An optional
+ * `stream` id joins the fresh instance to an already-open transport (tier-2 soft
+ * reload); `mountId` correlates a WS mount that denies before binding (#65).
+ *
+ * A page's URL query IS its props record, so the mounted payload is `props`
+ * (ADR 0002 item 6, unifying the vocabulary with the {@link UrlControl} message).
+ * Unlike the URL query codec, control-plane `props` is already a JSON value model
+ * — the values arrive typed, not as raw strings — and is validated against the
+ * matched registration's props schema (when declared) **before** `guard`.
+ */
+export interface MountControl {
+  type: "mount";
+  path: string;
+  props: Record<string, unknown>;
+  stream?: string;
+  mountId?: string;
+}
+
+/**
+ * Props patch (§7): reconcile a live instance to a new URL — `guard` then `load`,
+ * no `setup`, state preserved. A page's URL query is its props record, so the
+ * patched payload is `props` (ADR 0002 item 1); a deny comes back as a
+ * `{ redirect }` control response (SSE) or a `redirect` envelope (WS).
+ *
+ * Like {@link MountControl}, `props` is a JSON value model — the values arrive
+ * already typed off the control plane, not as raw query strings (ADR 0002 item
+ * 7) — and is validated against the instance's registration props schema (when
+ * declared) **before** `guard`+`load`. An invalid record is a `422` (SSE control
+ * response) or an instance-scoped `error` envelope (WS), and no reconcile runs.
+ */
+export interface UrlControl {
+  type: "url";
+  instance: string;
+  props: Record<string, unknown>;
+}
+
+/** Same-route forward nav (§7): abandon an instance so it evicts off its stream. */
+export interface ReleaseControl {
+  type: "release";
+  instance: string;
+  stream: string;
+}
+
+/**
+ * Batched mount (ADR 0002 item 11): coalesce N same-tick slot mounts into ONE
+ * control POST. Each `mounts[i]` is one {@link MountControl}'s `{ path, props }`
+ * pair; the optional `stream` id joins every successful mount to that already-open
+ * transport, exactly as {@link MountControl.stream} does for a single mount. The
+ * server runs the identical single-mount path per entry (validate props → mount
+ * → join) and answers with a **positional** {@link MountBatchResponse} — one
+ * result per entry, in order. One entry's failure never poisons its siblings.
+ *
+ * A single same-tick `mountSlot` stays an unbatched {@link MountControl} (a
+ * one-entry batch is never emitted); this shape appears only for 2+ coalesced
+ * mounts.
+ *
+ * @example
+ * ```ts
+ * const frame: MountBatchControl = {
+ *   type: "mount-batch",
+ *   stream: "s-1",
+ *   mounts: [
+ *     { path: "/card/1", props: {} },
+ *     { path: "/card/2", props: {} },
+ *   ],
+ * };
+ * ```
+ */
+export interface MountBatchControl {
+  type: "mount-batch";
+  stream?: string;
+  mounts: { path: string; props: Record<string, unknown> }[];
+}
+
+/**
+ * One positional result of a {@link MountBatchControl} — it answers the entry at
+ * the same index. Exactly one of: `{ instance, seq }` (mounted; the same fields a
+ * single `mount` returns), `{ redirect }` (a `setup`/`guard` deny — the caller
+ * throws `redirect()`), or `{ error }` (props validation / not-found / cap /
+ * unexpected — the caller rejects). A failure here is scoped to this entry: its
+ * siblings still resolve.
+ */
+export type MountBatchResult =
+  | { instance: string; seq: number; path?: string; params?: Record<string, string> }
+  | { redirect: string }
+  | { error: EnvelopeError };
+
+/**
+ * Response to a {@link MountBatchControl}: `results[i]` answers `mounts[i]`,
+ * positionally (ADR 0002 item 11).
+ */
+export interface MountBatchResponse {
+  results: MountBatchResult[];
+}
+
+/**
+ * The upstream control-message union (the wire protocol guide, "Control
+ * messages"). Reconciles a connection to navigation and gap recovery.
+ */
+export type Control =
+  | ResyncControl
+  | MountControl
+  | MountBatchControl
+  | UrlControl
+  | ReleaseControl;

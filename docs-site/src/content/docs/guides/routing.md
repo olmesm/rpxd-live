@@ -54,8 +54,8 @@ This distinction drives the whole navigation model:
   state, and the page component (keyed by path) resets. On a same-route
   navigation the connection is reused: the SSE transport and app shell survive.
   A route change gets a new connection. Either way there's no full page load.
-- **Search params are view state.** They drive the `.load()` **loader** via
-  `nav.patch(search)`. `setup` does not rerun, and state is preserved
+- **Search params are view state (a page's props).** They drive the `.load()`
+  **loader** via `nav.patch(props)`. `setup` does not rerun, and state is preserved
   (keepPreviousData). The loader is an async function that writes page state.
   It runs after `setup` and on every change, latest-wins, and is the single
   place URL-dependent data (filters, pages) loads. Because the URL holds those

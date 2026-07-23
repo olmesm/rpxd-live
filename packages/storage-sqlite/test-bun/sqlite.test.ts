@@ -33,9 +33,9 @@ describe("sqlite storage adapter", () => {
     // what sqlite carries across for continuity.
     const def: LiveDefinition<{ n: number }, "/", { userId?: string }> = {
       setup: () => ({ n: 0 }),
-      load: async ({ search }, ctx) => {
+      load: async ({ props }, ctx) => {
         ctx.patchState((s) => {
-          s.n = search.filter === "done" ? 1 : 0;
+          s.n = props.filter === "done" ? 1 : 0;
         });
       },
     };

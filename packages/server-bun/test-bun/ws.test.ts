@@ -14,9 +14,9 @@ interface S {
 }
 const def: LiveDefinition<S, "/", { filter?: string }> = {
   setup: () => ({ items: ["first"] }),
-  load: async ({ search }, ctx) => {
+  load: async ({ props }, ctx) => {
     ctx.patchState((s) => {
-      s.filter = search.filter ?? "all";
+      s.filter = props.filter ?? "all";
     });
   },
   rpc: {
@@ -165,7 +165,7 @@ describe("ws transport (§11)", () => {
 
     // control messages ride the socket too — the `load` loader writes page
     // state (§7), so the patch lands on the page, not the $session slice
-    socket.send(JSON.stringify({ type: "url", instance, search: { filter: "done" } }));
+    socket.send(JSON.stringify({ type: "url", instance, props: { filter: "done" } }));
     const paramsEnv = await next();
     expect(paramsEnv.patches?.[0]?.path).toEqual(["filter"]);
     expect(paramsEnv.patches?.[0]?.value).toBe("done");

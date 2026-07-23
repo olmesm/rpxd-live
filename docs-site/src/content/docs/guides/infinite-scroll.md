@@ -14,14 +14,14 @@ view.
 ```tsx
 export default live("/feed")
   .setup(() => ({ items: [] as Post[], cursor: null as string | null, hasMore: false, loading: true }))
-  .load(async ({ search }, ctx) => {
-    const append = search.cursor != null;
+  .load(async ({ props }, ctx) => {
+    const append = props.cursor != null;
     // Subsequent pages flip the spinner synchronously (instant feedback, then
     // streamed). The first page has no synchronous patch, so SSR waits for the
     // awaited data — the initial feed is crawlable.
     if (append) ctx.patchState((s) => { s.loading = true; });
     const { items, nextCursor } = await listPosts(scopeFrom(ctx.session), {
-      cursor: search.cursor ?? null, limit: 20, signal: ctx.signal,
+      cursor: props.cursor ?? null, limit: 20, signal: ctx.signal,
     });
     ctx.patchState((s) => {
       s.items = append ? [...s.items, ...items] : items;   // append vs replace

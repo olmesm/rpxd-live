@@ -3,7 +3,13 @@
  * unexported. Path params are identity (navigate = soft reload via `setup`);
  * search params are view state (`nav.patch` reruns `guard`+`load`, no `setup`).
  */
-import type { NavProp, PathParams, RegisteredPath } from "@rpxd/core";
+import {
+  decodeProps,
+  encodeProps,
+  type NavProp,
+  type PathParams,
+  type RegisteredPath,
+} from "@rpxd/core";
 import { createContext, type MouseEvent, type ReactNode, useContext } from "react";
 import { navigate } from "wouter/use-browser-location";
 import type { LiveConnection } from "./connection.ts";
@@ -11,6 +17,32 @@ import type { LiveConnection } from "./connection.ts";
 // The registration merge point lives in core (§7) so the `nav` render prop
 // is typed there too; re-exported here for app-side imports.
 export type { Register, RegisteredPath } from "@rpxd/core";
+
+/**
+ * Fill a route pattern's `$param` segments from a params record — the shared
+ * segment-fill core behind {@link buildHref} and, in ADR 0002, a live object's
+ * instance identity (`<LiveSlot>`'s mount key). Values are `encodeURIComponent`'d
+ * per segment; a missing param throws. Makes no leading-slash assumption, so it
+ * fills both page paths (`/org/$id`) and any pattern a slot addresses.
+ *
+ * @example
+ * ```ts
+ * fillPattern("/org/$orgId/board", { orgId: "a/c me" }); // "/org/a%2Fc%20me/board"
+ * fillPattern("/chat/$room", { room: "main" });          // "/chat/main"
+ * ```
+ */
+export function fillPattern(pattern: string, params?: Record<string, string>): string {
+  return pattern
+    .split("/")
+    .map((seg) => {
+      if (!seg.startsWith("$")) return seg;
+      const value = params?.[seg.slice(1)];
+      if (value === undefined)
+        throw new Error(`Missing path param "${seg.slice(1)}" for ${pattern}`);
+      return encodeURIComponent(value);
+    })
+    .join("/");
+}
 
 /**
  * Build a concrete href from a route path literal + params + search.
@@ -26,43 +58,52 @@ export function buildHref(
   params?: Record<string, string>,
   search?: Record<string, string>,
 ): string {
-  const path = to
-    .split("/")
-    .map((seg) => {
-      if (!seg.startsWith("$")) return seg;
-      const value = params?.[seg.slice(1)];
-      if (value === undefined) throw new Error(`Missing path param "${seg.slice(1)}" for ${to}`);
-      return encodeURIComponent(value);
-    })
-    .join("/");
+  const path = fillPattern(to, params);
   const query = search ? new URLSearchParams(search).toString() : "";
   return query ? `${path}?${query}` : path;
 }
 
-const ConnectionContext = createContext<LiveConnection<unknown, Record<string, unknown>> | null>(
-  null,
-);
+/**
+ * Active-connection context (ADR 0002 item 9): the app shell installs the
+ * app-lifetime {@link LiveConnection} here via {@link RpxdProvider}. `useNav`
+ * and `<LiveSlot>` read it — the latter to `mountSlot` over the same stream.
+ * Internal seam; not part of the public export surface.
+ */
+export const ConnectionContext = createContext<LiveConnection<
+  unknown,
+  Record<string, unknown>
+> | null>(null);
 
 /**
  * Detect a search-only navigation (§7). Wouter's location is pathname-only,
  * so a navigation that changes just the query string moves the URL bar but
  * never reruns the app shell's effect — `guard`/`load` would silently not
- * rerun. Returns the target's full search record (to reconcile via
- * `patchSearch`, tier 1) when `href` points at `currentPathname` with a
- * different query; `null` when the pathname changes (the app shell owns
- * those) or nothing changed at all.
+ * rerun. Returns the target's full props record to reconcile via `patchProps`
+ * (tier 1) when `href` points at `currentPathname` with a different query;
+ * `null` when the pathname changes (the app shell owns those) or nothing
+ * changed at all.
+ *
+ * **Schema-gated (ADR 0002 §3)**: the URL codec applies *only when a schema is
+ * declared*. WITH a schema (`hasSchema`), the query is **decoded** into the
+ * JSON-value model — `?limit=20` reaches a `z.number()` props schema as the
+ * number `20`, since the server validates the `url` body WITHOUT decoding (item
+ * 7). WITHOUT one, the raw string record is kept — the ADR's back-compat pledge,
+ * so a schema-less page sees the same `"2"` on tier-1 that a GET would deliver
+ * (no typeof heisenbug). Callers read the presence from the active connection
+ * ({@link LiveConnection.hasPropsSchema}).
  *
  * @example
  * ```ts
- * const patch = searchOnlyChange("/board?filter=done", "/board", "?filter=all");
- * if (patch) connection.patchSearch(patch); // { filter: "done" }
+ * const patch = searchOnlyChange("/board?limit=20", "/board", "?limit=10", true);
+ * if (patch) connection.patchProps(patch); // { limit: 20 }  (a number, schema'd)
  * ```
  */
 export function searchOnlyChange(
   href: string,
   currentPathname: string,
   currentSearch: string,
-): Record<string, string> | null {
+  hasSchema: boolean,
+): Record<string, unknown> | null {
   const [pathname = href, query = ""] = href.split("?");
   if (pathname !== currentPathname) return null;
   const target = new URLSearchParams(query);
@@ -70,7 +111,9 @@ export function searchOnlyChange(
   target.sort();
   current.sort();
   if (target.toString() === current.toString()) return null;
-  return Object.fromEntries(target) as Record<string, string>;
+  // Schema-gated: decode into props' JSON-value model with a schema; keep raw
+  // strings without one (the codec applies only when a schema is declared).
+  return hasSchema ? decodeProps(target) : Object.fromEntries(target);
 }
 
 /**
@@ -121,10 +164,16 @@ export function Link<P extends RegisteredPath>(props: {
     event.preventDefault();
     // A same-path search change is invisible to wouter (pathname-only
     // location): push the history entry, then reconcile guard/load over the
-    // live connection (tier 1, §7) since the app shell's effect won't run.
-    const patch = searchOnlyChange(href, window.location.pathname, window.location.search);
+    // live connection (tier 1, §7) since the app shell's effect won't run. The
+    // codec is schema-gated on the current primary route (ADR 0002 §3).
+    const patch = searchOnlyChange(
+      href,
+      window.location.pathname,
+      window.location.search,
+      connection?.hasPropsSchema ?? false,
+    );
     navigate(href);
-    if (patch) connection?.patchSearch(patch);
+    if (patch) connection?.patchProps(patch);
   };
   return <a href={href} onClick={onClick} {...rest} />;
 }
@@ -147,21 +196,40 @@ export function useNav(): Nav {
     navigate: (to, opts) => {
       const href = buildHref(to, opts?.params as Record<string, string> | undefined, opts?.search);
       // Same dead zone as `Link` (§7): a search-only target never reruns the
-      // app shell's effect, so reconcile it over the live connection.
+      // app shell's effect, so reconcile it over the live connection. The codec
+      // is schema-gated on the current primary route (ADR 0002 §3).
       const patch =
         typeof window !== "undefined"
-          ? searchOnlyChange(href, window.location.pathname, window.location.search)
+          ? searchOnlyChange(
+              href,
+              window.location.pathname,
+              window.location.search,
+              connection?.hasPropsSchema ?? false,
+            )
           : null;
       navigate(href);
-      if (patch) connection?.patchSearch(patch);
+      if (patch) connection?.patchProps(patch);
     },
-    patch: (search) => {
+    patch: (props) => {
+      // `props` is the caller's JSON-value record. Write it into the URL with the
+      // codec's URL encoding (`encodeProps` — a number stays bare, an ambiguous
+      // string is quoted) — the same URL both a schema'd and schema-less route
+      // produces, so a later full GET / popstate round-trips coherently.
+      const encoded = encodeProps(props);
       if (typeof window !== "undefined") {
         const url = new URL(window.location.href);
-        for (const [k, v] of Object.entries(search)) url.searchParams.set(k, v);
+        for (const [k, v] of encoded) url.searchParams.set(k, v);
         window.history.replaceState(null, "", url);
       }
-      connection?.patchSearch(search);
+      // Schema-gated wire record (ADR 0002 §3): a schema'd route validates the
+      // `url` body WITHOUT decoding, so it must receive the JSON-value record
+      // verbatim (the number stays a number). A schema-less route keeps raw
+      // strings, so send the STRING form the URL just round-tripped to
+      // (`Object.fromEntries(encodeProps(...))`) — exactly what a schema-less GET
+      // of that URL would deliver — keeping wire and GET in agreement (no typeof
+      // heisenbug where a number diverges from the "2" a reload would yield).
+      const wire = connection?.hasPropsSchema ? props : Object.fromEntries(encoded);
+      connection?.patchProps(wire);
     },
   };
 }

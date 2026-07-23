@@ -4,7 +4,7 @@
  * state machine are unit-testable without a DOM. {@link LiveApp} wires the
  * browser io: wouter for soft navigation, `window.location` for hard loads.
  */
-import { isRedirect, type LiveRoute, matchRoute } from "@rpxd/core";
+import { decodeProps, isRedirect, type LiveRoute, matchRoute } from "@rpxd/core";
 import type { FunctionComponent } from "react";
 import type { LiveConnection } from "./connection.ts";
 import { rpcMetaFromDef } from "./store.ts";
@@ -51,23 +51,34 @@ export function claimNavigationTicket(
  * Decide what a popstate event means for search reconciliation (§7). Wouter's
  * location is pathname-only, so popstate between two search-variants of one
  * path never reruns the app shell's effect — `guard`/`load` would not see the
- * restored query. Returns the full search record to reconcile via
- * `patchSearch` (tier 1) when the pathname is unchanged; `null` on a pathname
- * change, which the location effect owns.
+ * restored query. Returns the full props record to reconcile via `patchProps`
+ * (tier 1) when the pathname is unchanged; `null` on a pathname change, which
+ * the location effect owns.
+ *
+ * **Schema-gated (ADR 0002 §3)**: the URL codec applies *only when a schema is
+ * declared*. When `hasSchema`, the query is **decoded** into the JSON-value
+ * model — `?limit=20` reaches a `z.number()` props schema as the number `20`
+ * (the server validates the wire body without decoding, item 7). When schema-
+ * less, the raw string record is kept, matching what a GET delivers — the
+ * ADR's back-compat pledge (a schema-less page must never see `2` on tier-1 but
+ * `"2"` on GET). The caller passes the current primary route's schema presence
+ * ({@link LiveConnection.hasPropsSchema}).
  *
  * @example
  * ```ts
- * const patch = popstateSearchPatch(location.pathname, location.search, current.pathname);
- * if (patch) conn.patchSearch(patch);
+ * const patch = popstateSearchPatch(location.pathname, location.search, current.pathname, true);
+ * if (patch) conn.patchProps(patch); // { limit: 20 } for ?limit=20 (schema'd)
  * ```
  */
 export function popstateSearchPatch(
   pathname: string,
   search: string,
   currentPathname: string,
-): Record<string, string> | null {
+  hasSchema: boolean,
+): Record<string, unknown> | null {
   if (pathname !== currentPathname) return null;
-  return Object.fromEntries(new URLSearchParams(search)) as Record<string, string>;
+  const qs = new URLSearchParams(search);
+  return hasSchema ? decodeProps(qs) : Object.fromEntries(qs);
 }
 
 /**
@@ -83,26 +94,12 @@ export interface NavigationIo {
   my: number;
   /** Shared ticket counter — compared against `my` before every commit. */
   ticket: { current: number };
-  /** The mounted page's route pattern — tier 2 (same pattern) vs 3 (§7). */
-  currentRoutePath: string;
-  /** The mounted page's connection — reused by a tier-2 remount. */
+  /** The app-lifetime connection — every navigation remounts over it (ADR item 9). */
   conn: AnyConnection;
   /** Lazy route-module table from `.rpxd/routes.gen.ts`. */
   routeModules: Record<string, () => Promise<{ default: AnyRoute }>>;
-  /** Transport for tier-3 mounts (§11). */
-  transport?: "sse" | "ws";
-  /** Mount a fresh connection (tier 3) — `LiveConnection.mount` in production. */
-  mount: (
-    pathname: string,
-    search: Record<string, string>,
-    opts: {
-      meta: ReturnType<typeof rpcMetaFromDef>;
-      transport?: "sse" | "ws";
-      onRedirect: (location: string) => void;
-    },
-  ) => Promise<AnyConnection>;
-  /** Commit the new page; `closePrevious` closes the outgoing connection (tier 3). */
-  commit: (page: CurrentPage, closePrevious: boolean) => void;
+  /** Commit the new page (route + pathname). The connection is app-lifetime — never closed here. */
+  commit: (page: CurrentPage) => void;
   /** Soft-navigate via the router (redirects, §10). */
   softNavigate: (location: string) => void;
   /** Full page load — unmatched routes and failed navigations. */
@@ -123,16 +120,17 @@ function stateReady(conn: AnyConnection): Promise<void> {
 }
 
 /**
- * Run one navigation (§7): match the pathname against the route table, mount
- * the live object (tier-2 remount over the live stream, or a tier-3 fresh
- * connection), wait for its snapshot, then commit — unless a newer navigation
- * claimed the ticket in the meantime. Unmatched paths and non-redirect
- * failures fall back to a hard load so the server's 404/error pages stay
- * authoritative.
+ * Run one navigation (§7, ADR 0002 item 9). The two tier branches collapse:
+ * **every** pathname change remounts the new page instance over the same
+ * app-lifetime connection (tier 3 = tier 2 + a component swap), refreshing the
+ * primary store's rpc meta for the arriving route, waits for its snapshot, then
+ * commits — unless a newer navigation claimed the ticket meanwhile. Unmatched
+ * paths and non-redirect failures fall back to a hard load so the server's
+ * 404/error pages stay authoritative.
  *
  * @example
  * ```ts
- * void performNavigation({ pathname, search, my, ticket, ...io });
+ * void performNavigation({ pathname, search, my, ticket, conn, routeModules, ...io });
  * ```
  */
 export async function performNavigation(io: NavigationIo): Promise<void> {
@@ -148,30 +146,27 @@ export async function performNavigation(io: NavigationIo): Promise<void> {
   }
   try {
     const mod = await load();
-    // Tier 2 vs 3 (§7): same route pattern reuses the connection (soft
-    // reload over the live stream); a different pattern swaps it.
-    if (match.path === io.currentRoutePath) {
-      const conn = io.conn;
-      await conn.remount(io.pathname, io.search);
-      await stateReady(conn);
-      if (io.ticket.current !== io.my) return; // superseded — the next remount wins
-      io.commit({ pathname: io.pathname, route: mod.default, conn }, false);
-    } else {
-      const conn = await io.mount(io.pathname, io.search, {
-        meta: rpcMetaFromDef(mod.default.def),
-        transport: io.transport,
-        onRedirect: (loc) => io.softNavigate(loc),
-      });
-      await stateReady(conn);
-      if (io.ticket.current !== io.my) {
-        conn.close(); // superseded by a later navigation
-        return;
-      }
-      io.commit({ pathname: io.pathname, route: mod.default, conn }, true);
-    }
+    // One path for every tier (ADR item 9): remount the new page instance over
+    // the existing stream, swapping the primary store to the arriving route's
+    // rpc meta. `remount`'s own run tag self-releases a superseded instance; the
+    // navigation ticket below gates the React commit.
+    const conn = io.conn;
+    // Schema-gated URL decode (ADR 0002 §3), tier-2/3 half (residual A + B). The
+    // stripped route module keeps its props schema, so `mod.default.props`
+    // exposes schema presence client-side. WITH a schema, decode the URL-derived
+    // search into the JSON-value model before the wire — else the server's props
+    // schema 422s the raw strings and this navigation degrades to a permanent
+    // full-page-reload fallback. WITHOUT one, keep raw strings (the ADR pledge);
+    // `remount` also learns the presence so subsequent tier-1 patches gate too.
+    const hasSchema = mod.default.props !== undefined;
+    const props = hasSchema ? decodeProps(new URLSearchParams(io.search)) : io.search;
+    await conn.remount(io.pathname, props, rpcMetaFromDef(mod.default.def), hasSchema);
+    await stateReady(conn);
+    if (io.ticket.current !== io.my) return; // superseded — the winner commits
+    io.commit({ pathname: io.pathname, route: mod.default, conn });
   } catch (e) {
-    // `mount`/`remount` threw redirect() (§10) — soft-navigate to the target
-    // instead of hard-loading the original path.
+    // `remount` threw redirect() (§10) — soft-navigate to the target instead of
+    // hard-loading the original path.
     if (isRedirect(e)) {
       if (io.ticket.current === io.my) io.softNavigate(e.location);
       return;
