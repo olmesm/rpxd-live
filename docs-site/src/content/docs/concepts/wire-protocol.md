@@ -87,14 +87,18 @@ Rules:
 type RpcBatch = {
   v: 1;                       // PROTOCOL_VERSION — checked per batch
   instance: string;
-  rpcId: string;              // client-unique `c${counter}`; server dedupes on it
+  rpcId: string;              // globally unique per batch; server dedupes on it
   calls: { rpc: string; payload: unknown }[];
 };
 ```
 
 - The client coalesces same-tick calls (`queueMicrotask` flush) into one batch →
-  one ack. `rpcId` is a client-local counter (`c1`, `c2`, …), unique within a
-  connection — not a uuid; the server only needs it to dedupe resends.
+  one ack. `rpcId` must be unique across **every client of the instance**, not
+  just within one connection: the server's dedupe cache is keyed by rpcId alone
+  and lives on the (possibly shared) instance, so two tabs mounted on the same
+  instance would otherwise swallow each other's batches as "resends". The
+  client's format is a realm-random tag plus a counter
+  (`c<random>-1`, `c<random>-2`, …); the server treats it as opaque.
 - tempIds are **client-local**: the store hands them to optimistic reducers and
   reconciles them on ack. They do not travel in the batch — the server learns of
   a tempId only if a handler calls `ctx.resolveId` (which comes back as `idMap`).
