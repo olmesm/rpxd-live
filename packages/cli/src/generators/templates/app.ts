@@ -257,6 +257,24 @@ export default defineConfig({
 });
 `;
 
+/**
+ * The generated diagnostic sink (the logging guide): YOUR logging policy as
+ * plain code. Forwards EVERY diagnostic by level — filter noise OUT (the CI
+ * info-gate) rather than allowlisting kinds IN: installing a sink replaces the
+ * console default, so an allowlist would silently eat \`security/*\` warnings.
+ * The sink must not throw and must stay sync-fast (it runs on hot paths).
+ */
+const onDiagnosticBlock = `  // Server-wide logging (the logging & observability guide): every framework
+  // diagnostic — request failures, security warnings, instance errors — flows
+  // through this one sink. Forward EVERYTHING by level; filter noise out (the
+  // CI gate below), never allowlist kinds in, or you'll silently drop
+  // security warnings. Swap the console call for your logger in one line,
+  // e.g. pino: logger[d.level]({ ...d.detail, err: d.error }, \`\${d.category}/\${d.type}\`)
+  onDiagnostic(d) {
+    if (process.env.CI && (d.level === "info" || d.level === "debug")) return; // quiet CI, never swallow warn/error
+    console[d.level](\`[\${d.category}/\${d.type}]\`, d.detail ?? "", d.error ?? "");
+  },`;
+
 const rpxdConfig = (auth: boolean): string =>
   auth
     ? `import { defineConfig } from "@rpxd/cli";
@@ -278,6 +296,7 @@ export default defineConfig({
     // \`bun run dev\` (so LAN/HTTP dev still gets a session) — the CLI picks per
     // command. Override here if you need to, e.g. \`cookie: { secure: false }\`.
   },
+${onDiagnosticBlock}
 });
 `
     : `import { defineConfig } from "@rpxd/cli";
@@ -290,6 +309,7 @@ export default defineConfig({
   //   key: (req) => req.headers.get("x-forwarded-for"),
   //   limit: { capacity: 60, refillPerSec: 1 },
   // },
+${onDiagnosticBlock}
 });
 `;
 

@@ -1,4 +1,5 @@
 import { ensurePathLiteral, fileToRoute } from "@rpxd/vite-plugin";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { planAuth } from "../src/generators/auth.ts";
 import { planInit } from "../src/generators/init.ts";
@@ -8,6 +9,20 @@ import type { GeneratorPlan } from "../src/generators/types.ts";
 const paths = (plan: GeneratorPlan) => plan.files.map((f) => f.path);
 const file = (plan: GeneratorPlan, path: string) =>
   plan.files.find((f) => f.path === path)?.contents ?? "";
+
+/**
+ * Assert generated TS parses cleanly — templates are strings, so an escaping
+ * slip (a stray `\`` or unterminated literal) ships syntax errors to every new
+ * app. Transpile-only: no type resolution, just the parse.
+ */
+const expectParses = (source: string, path: string) => {
+  const out = ts.transpileModule(source, {
+    compilerOptions: { jsx: ts.JsxEmit.Preserve },
+    reportDiagnostics: true,
+    fileName: path,
+  });
+  expect(out.diagnostics ?? []).toEqual([]);
+};
 
 describe("planInit", () => {
   it("scaffolds the full auth+db tree by default", () => {
@@ -30,6 +45,11 @@ describe("planInit", () => {
       ]),
     );
     expect(file(plan, "rpxd.config.ts")).toContain("authenticate");
+    // The generated config ships a working diagnostic sink (#136): forwards
+    // EVERY diagnostic by level (an allowlist would silently eat security
+    // warnings), with a CI info-gate.
+    expect(file(plan, "rpxd.config.ts")).toContain("onDiagnostic");
+    expectParses(file(plan, "rpxd.config.ts"), "rpxd.config.ts");
     expect(file(plan, "package.json")).toContain("better-auth");
     expect(file(plan, "prisma/schema.prisma")).toContain("model User");
     expect(plan.commands).toContain("bun run setup");
@@ -42,6 +62,8 @@ describe("planInit", () => {
     expect(p).not.toContain("adapters/auth.ts");
     expect(p).not.toContain("routes/login.tsx");
     expect(file(plan, "rpxd.config.ts")).not.toContain("authenticate");
+    expect(file(plan, "rpxd.config.ts")).toContain("onDiagnostic"); // sink ships in both variants
+    expectParses(file(plan, "rpxd.config.ts"), "rpxd.config.ts");
     expect(file(plan, "package.json")).not.toContain("better-auth");
     expect(file(plan, "prisma/schema.prisma")).not.toContain("model User");
   });
