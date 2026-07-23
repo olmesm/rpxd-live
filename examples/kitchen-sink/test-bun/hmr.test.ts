@@ -59,7 +59,9 @@ describe("reducer HMR (§15)", () => {
     const res = await fetch(`${base()}/__rpxd/control`, {
       method: "POST",
       headers: { cookie: COOKIE },
-      body: JSON.stringify({ type: "mount", path: "/hmr-probe" }),
+      // Instances are stream-scoped (ADR 0003): name the tab's stream so the
+      // SSE reader below (same stream id) subscribes this exact instance.
+      body: JSON.stringify({ type: "mount", path: "/hmr-probe", stream: "hmr-s1" }),
     });
     return (await res.json()).instance;
   }
@@ -72,13 +74,39 @@ describe("reducer HMR (§15)", () => {
     });
   }
 
-  async function stateOf(_instance: string): Promise<{ n: number }> {
-    // second mount for the same session returns the same warm instance;
-    // read state via SSR of the page
-    const res = await fetch(`${base()}/hmr-probe`, { headers: { cookie: COOKIE } });
-    const html = await res.text();
-    const n = /data-n="(\d+)"/.exec(html)?.[1];
-    return { n: Number(n) };
+  async function stateOf(instance: string): Promise<{ n: number }> {
+    // Read the live instance's state over its own stream (ADR 0003: a page GET
+    // would build a FRESH instance now, not warm-reuse this one): open the
+    // mount's stream, which resyncs its instances on connect, and take the
+    // full snapshot for this instance.
+    const ctrl = new AbortController();
+    const res = await fetch(`${base()}/__rpxd/stream?stream=hmr-s1`, {
+      headers: { cookie: COOKIE },
+      signal: ctrl.signal,
+    });
+    try {
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value);
+        for (const chunk of buf.split("\n\n")) {
+          const data = chunk.split("\n").find((l) => l.startsWith("data: "));
+          if (!data) continue;
+          const env = JSON.parse(data.slice(6)) as {
+            instance?: string;
+            full?: { state: { n: number } };
+          };
+          if (env.instance === instance && env.full) return { n: env.full.state.n };
+        }
+      }
+      throw new Error("no full snapshot for the probe instance");
+    } finally {
+      ctrl.abort();
+    }
   }
 
   it("swaps reducers on file edit while preserving runtime state", async () => {

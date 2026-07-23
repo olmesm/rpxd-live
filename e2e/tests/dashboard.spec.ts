@@ -107,9 +107,14 @@ test("multiplayer: two contexts on the same channel see each other's messages", 
   await Promise.all(contexts.map((c) => c.close()));
 });
 
-test("slotted page shares its instance with a routed copy", async ({ browser }) => {
-  // One context (one session): a dashboard tab embeds /item/1 as a slot; a second
-  // tab routes to the real /item/1. Same session + same pattern = one instance.
+test("a routed copy in another tab is its OWN instance (per-stream isolation)", async ({
+  browser,
+}) => {
+  // One context (one session), two tabs: a dashboard tab embeds /item/1 as a
+  // slot; a second tab routes to the real /item/1. Instances are stream-scoped
+  // (ADR 0003), so the tabs hold SEPARATE instances of the same identity — a
+  // mutation in one tab must NOT bleed into the other (cross-tab sync is the
+  // bus's job, and the item route doesn't broadcast).
   const context = await browser.newContext();
   const dash = await context.newPage();
   const routed = await context.newPage();
@@ -120,22 +125,22 @@ test("slotted page shares its instance with a routed copy", async ({ browser }) 
   await expect(embedded.getByTestId("item-label")).toHaveText("Item 1");
   await expect(routed.getByTestId("item-label")).toHaveText("Item 1");
 
-  // Mutate through the embedded slot; the routed tab sees the confirmed change
-  // live because both subscribe to the same instance's stream.
+  // Mutate through the embedded slot: only THIS tab's instance changes.
   await embedded.getByTestId("bump").click();
-  await expect(routed.getByTestId("item-label")).toHaveText("Item 1!");
+  await expect(embedded.getByTestId("item-label")).toHaveText("Item 1!");
+  await expect(routed.getByTestId("item-label")).toHaveText("Item 1");
 
   await context.close();
 });
 
-test("zero redundant loads: a second tab reuses the warm instance", async ({ browser }) => {
+test("each tab loads its own instance (per-stream, Phoenix-style)", async ({ browser }) => {
   const context = await browser.newContext();
   const tab1 = await context.newPage();
   await gotoHydrated(tab1, "/dashboard");
   await expect(tab1.getByTestId("chat-loads")).toHaveText("loads: 1");
 
-  // Second tab, same session: the chat instance is warm-reused, so `load` is
-  // skipped (item 8) — the counter stays 1 for both tabs, not 2.
+  // Second tab, same session: its OWN chat instance (ADR 0003), so its loader
+  // runs once for it — and tab 1's instance is untouched.
   const tab2 = await context.newPage();
   await gotoHydrated(tab2, "/dashboard");
   await expect(tab2.getByTestId("chat-loads")).toHaveText("loads: 1");

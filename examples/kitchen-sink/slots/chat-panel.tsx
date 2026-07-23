@@ -32,8 +32,9 @@ export default live("/chat-panel/$channel")
       // NEGATIVE CASE (doctrine): the message list is plain state on this ONE
       // live object. Do NOT reach for a <LiveSlot> per row.
       messages: [] as ChatMessage[],
-      // Load probe (item 8): warm reuse across a second tab skips `load`, so this
-      // stays 1 — the zero-redundant-loads acceptance test reads it.
+      // Load probe (item 8 / ADR 0003): each tab's instance loads once — a
+      // same-tab warm remount with identical props skips `load`, so this stays
+      // 1 per instance. The per-stream e2e acceptance test reads it.
       loads: 0,
       // Streaming "agent reply" target — grows via append patches (see `agent`).
       agentReply: "",

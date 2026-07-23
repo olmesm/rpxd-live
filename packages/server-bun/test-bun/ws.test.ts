@@ -58,10 +58,13 @@ afterAll(async () => {
 
 function openSocket(
   cookie: string = COOKIE,
+  // The tab's stream id (ADR 0003): instances are stream-scoped, so the socket
+  // names the same stream its control mounts used.
+  stream = "s1",
   port: number = handle.port,
 ): Promise<{ socket: WebSocket; next(timeoutMs?: number): Promise<Envelope> }> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://localhost:${port}/__rpxd/ws`, {
+    const socket = new WebSocket(`ws://localhost:${port}/__rpxd/ws?stream=${stream}`, {
       // Bun extension: pass the session cookie on the upgrade request
       headers: { cookie },
     } as unknown as string[]);
@@ -142,7 +145,7 @@ describe("ws transport (§11)", () => {
     const mountRes = await fetch(`http://localhost:${handle.port}/__rpxd/control`, {
       method: "POST",
       headers: { cookie: COOKIE },
-      body: JSON.stringify({ type: "mount", path: "/" }),
+      body: JSON.stringify({ type: "mount", path: "/", stream: "s1" }),
     });
     const { instance } = await mountRes.json();
 
@@ -185,7 +188,7 @@ describe("guarded batch-dispatch boundary (channel pipeline increment 2, #110/#6
     const mountRes = await fetch(`http://localhost:${handle.port}/__rpxd/control`, {
       method: "POST",
       headers: { cookie },
-      body: JSON.stringify({ type: "mount", path: "/" }),
+      body: JSON.stringify({ type: "mount", path: "/", stream: "s1" }),
     });
     const { instance } = await mountRes.json();
 
@@ -240,11 +243,11 @@ describe("guarded batch-dispatch boundary (channel pipeline increment 2, #110/#6
       const mountRes = await fetch(`http://localhost:${local.port}/__rpxd/control`, {
         method: "POST",
         headers: { cookie },
-        body: JSON.stringify({ type: "mount", path: "/" }),
+        body: JSON.stringify({ type: "mount", path: "/", stream: "s1" }),
       });
       const { instance } = await mountRes.json();
 
-      const { socket, next } = await openSocket(cookie, local.port);
+      const { socket, next } = await openSocket(cookie, "s1", local.port);
       await next(); // full snapshot from the mount above
 
       socket.send("{"); // unparseable JSON frame

@@ -407,13 +407,24 @@ describe("nodeAdapter", () => {
     await handle.ready;
 
     // Mount an instance under a fixed session so the socket, opened with the
-    // same sid cookie, has something to sync on open.
+    // same sid cookie, has something to sync on open. Instances are
+    // stream-scoped (ADR 0003): the socket presents the SSR bootstrap's attach
+    // token to claim the GET-born instance — with a deliberately stale seq so
+    // the claim falls back to a full snapshot (an initial envelope to observe)
+    // instead of the silent seq-matched adoption.
     const cookie = "rpxd_sid=node-ws-session";
-    await fetch(`http://localhost:${handle.port}/`, { headers: { cookie } });
+    const html = await (
+      await fetch(`http://localhost:${handle.port}/`, { headers: { cookie } })
+    ).text();
+    const bootJson = /<script id="__rpxd" type="application\/json">(.*?)<\/script>/s.exec(
+      html,
+    )?.[1];
+    const boot = JSON.parse(bootJson as string) as { attachToken: string };
 
-    const socket = new WebSocket(`ws://localhost:${handle.port}/__rpxd/ws`, {
-      headers: { cookie },
-    });
+    const socket = new WebSocket(
+      `ws://localhost:${handle.port}/__rpxd/ws?attach=${boot.attachToken}&seq=-1`,
+      { headers: { cookie } },
+    );
     const firstMessage = await new Promise<string>((resolvePromise, rejectPromise) => {
       const timer = setTimeout(() => rejectPromise(new Error("no ws message")), 2000);
       socket.on("message", (raw) => {

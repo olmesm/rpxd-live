@@ -266,13 +266,13 @@ describe("stream + rpc + control (§11)", () => {
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
         headers: COOKIE,
-        body: JSON.stringify({ type: "mount", path: "/org/9/board" }),
+        body: JSON.stringify({ type: "mount", path: "/org/9/board", stream: "s1" }),
       }),
     );
     const { instance } = await mountRes.json();
 
     const streamRes = await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+      new Request(`${base}/__rpxd/stream?stream=s1`, { headers: COOKIE }),
     );
     const sse = new SseReader(streamRes);
     const full = await sse.next();
@@ -395,12 +395,12 @@ describe("stream + rpc + control (§11)", () => {
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
         headers: COOKIE,
-        body: JSON.stringify({ type: "mount", path: "/org/9/board" }),
+        body: JSON.stringify({ type: "mount", path: "/org/9/board", stream: "s1" }),
       }),
     );
     const { instance } = await mountRes.json();
     const streamRes = await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+      new Request(`${base}/__rpxd/stream?stream=s1`, { headers: COOKIE }),
     );
     const sse = new SseReader(streamRes);
     await sse.next(); // full
@@ -438,7 +438,8 @@ describe("guarded batch-dispatch boundary (channel pipeline increment 2, #110/#6
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
         headers: COOKIE,
-        body: JSON.stringify({ type: "mount", path }),
+        // Instances are stream-scoped (ADR 0003): mounts name the tab's stream.
+        body: JSON.stringify({ type: "mount", path, stream: "s1" }),
       }),
     );
     const { instance } = await res.json();
@@ -449,7 +450,7 @@ describe("guarded batch-dispatch boundary (channel pipeline increment 2, #110/#6
     const handler = makeHandler();
     const instance = await mount(handler);
     const streamRes = await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+      new Request(`${base}/__rpxd/stream?stream=s1`, { headers: COOKIE }),
     );
     const sse = new SseReader(streamRes);
     await sse.next(); // full snapshot
@@ -610,7 +611,8 @@ describe("ingress limits (§11 DoS guard)", () => {
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
         headers: COOKIE,
-        body: JSON.stringify({ type: "mount", path }),
+        // Instances are stream-scoped (ADR 0003): mounts name the tab's stream.
+        body: JSON.stringify({ type: "mount", path, stream: "s1" }),
       }),
     );
     const { instance } = await res.json();
@@ -673,7 +675,7 @@ describe("ingress limits (§11 DoS guard)", () => {
     const handler = makeHandler({ maxBatchCalls: 2 });
     const instance = await mount(handler);
     const streamRes = await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+      new Request(`${base}/__rpxd/stream?stream=s1`, { headers: COOKIE }),
     );
     const sse = new SseReader(streamRes);
     await sse.next(); // full snapshot
@@ -701,7 +703,7 @@ describe("ingress limits (§11 DoS guard)", () => {
     const handler = makeHandler({ maxBatchCalls: 8 });
     const instance = await mount(handler);
     const streamRes = await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+      new Request(`${base}/__rpxd/stream?stream=s1`, { headers: COOKIE }),
     );
     const sse = new SseReader(streamRes);
     await sse.next(); // full snapshot
@@ -810,11 +812,15 @@ describe("SSR attach adoption (§12)", () => {
     await handler.dispose();
   });
 
-  it("falls back to a full snapshot when the token is wrong (still within TTL)", async () => {
-    // A mismatched token — not merely stale — must not adopt either: the
-    // constant-time compare (#61) is a drop-in replacement for `===`, so
-    // functional behavior (resync, no adoption) is unchanged.
-    const handler = makeHandler();
+  it("subscribes NOTHING when the token is wrong (still within TTL)", async () => {
+    // A mismatched token proves nothing (ADR 0003): instances are stream-scoped
+    // and the token is the ownership proof, so a wrong token claims — and
+    // receives — nothing. (Pre-ADR-0003 this fell back to a full snapshot via
+    // the session-wide subscribe; that fan-out is exactly what the pivot
+    // removed.) The constant-time compare (#61) still guards the equality.
+    // unattachedTtlMs outlives the null-observation window below — the
+    // unclaimed instance's GC is not what this test is about.
+    const handler = makeHandler({ unattachedTtlMs: 500 });
     const boot = await ssrBoot(handler);
     expect(handler.instanceCount).toBe(1);
 
@@ -825,9 +831,8 @@ describe("SSR attach adoption (§12)", () => {
       }),
     );
     const sse = new SseReader(streamRes);
-    const first = await sse.next();
-    expect(first?.full).toBeDefined(); // not adopted → full snapshot
-    expect(handler.instanceCount).toBe(1); // same instance, just not adopted
+    expect(await sse.next(150)).toBeNull(); // not the owner → nothing to hear
+    expect(handler.instanceCount).toBe(1); // the instance itself is untouched
     await handler.dispose();
   });
 });
@@ -854,12 +859,12 @@ describe("eviction (§11)", () => {
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
         headers: COOKIE,
-        body: JSON.stringify({ type: "mount", path: "/org/3/board" }),
+        body: JSON.stringify({ type: "mount", path: "/org/3/board", stream: "s1" }),
       }),
     );
     const abort = new AbortController();
     const streamRes = await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, { headers: COOKIE, signal: abort.signal }),
+      new Request(`${base}/__rpxd/stream?stream=s1`, { headers: COOKIE, signal: abort.signal }),
     );
     const sse = new SseReader(streamRes);
     await sse.next(); // subscribed
@@ -879,7 +884,9 @@ describe("un-attached instance bounds — cookieless GET flood (#61)", () => {
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
         headers: { cookie: `rpxd_sid=${sid}` },
-        body: JSON.stringify({ type: "mount", path }),
+        // Stream-scoped (ADR 0003): name a per-sid stream so a re-mount of the
+        // same sid+path warm-reuses (the LRU bump below) instead of twinning.
+        body: JSON.stringify({ type: "mount", path, stream: `tab-${sid}` }),
       }),
     );
   /** Read-only liveness probe: 202 = instance still owned/live, 404 = evicted. */
@@ -914,7 +921,7 @@ describe("un-attached instance bounds — cookieless GET flood (#61)", () => {
     const abort = new AbortController();
     await mount(handler, "ttl-real", "/org/3/board");
     const streamRes = await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, {
+      new Request(`${base}/__rpxd/stream?stream=tab-ttl-real`, {
         headers: { cookie: "rpxd_sid=ttl-real" },
         signal: abort.signal,
       }),
@@ -1064,12 +1071,12 @@ describe("un-attached instance cleanup — no residual growth (#61 follow-up)", 
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
         headers: cookie,
-        body: JSON.stringify({ type: "mount", path: "/org/2/board" }),
+        body: JSON.stringify({ type: "mount", path: "/org/2/board", stream: "s1" }),
       }),
     );
     const abort = new AbortController();
     const streamRes = await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, { headers: cookie, signal: abort.signal }),
+      new Request(`${base}/__rpxd/stream?stream=s1`, { headers: cookie, signal: abort.signal }),
     );
     const sse = new SseReader(streamRes);
     await sse.next(); // subscribed → attached

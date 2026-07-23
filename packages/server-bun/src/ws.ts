@@ -18,6 +18,8 @@ interface WsData {
   sid: string;
   sessionData: unknown;
   attach: { token: string | null; seq: number };
+  /** The client's stream id (ADR 0003, `?stream` on the upgrade URL) — scopes the socket's instances. */
+  stream: string;
   session: SocketSession | null;
 }
 
@@ -68,6 +70,7 @@ export function wsTransport(
           }
         },
         data.attach,
+        data.stream,
       );
     },
     message(socket: SocketLike, message: string) {
@@ -122,6 +125,9 @@ export function wsTransport(
         token: url.searchParams.get("attach"),
         seq: Number(url.searchParams.get("seq") ?? "-1"),
       },
+      // Absent for legacy clients — a random id keeps the socket functional
+      // (its own mounts still scope to it); only SSR adoption needs the token.
+      stream: url.searchParams.get("stream") ?? crypto.randomUUID(),
       session: null,
     };
     return data;

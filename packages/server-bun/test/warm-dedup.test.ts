@@ -96,7 +96,11 @@ async function control(handler: Handler, body: unknown): Promise<Response> {
 }
 
 async function mount(handler: Handler, props: Record<string, unknown>): Promise<string> {
-  const res = await control(handler, { type: "mount", path: "/dash", props });
+  // Instances are stream-scoped (ADR 0003): warm reuse — the dedup under test —
+  // is a SAME-STREAM property now (a tab re-mounting its own identity: a slot
+  // remount, a nav-away-and-back within the warm TTL). Cross-tab mounts build
+  // fresh instances and never reach this dedup.
+  const res = await control(handler, { type: "mount", path: "/dash", props, stream: "s1" });
   const { instance } = (await res.json()) as { instance: string };
   return instance;
 }
@@ -108,7 +112,8 @@ describe("warm-mount dedup: re-guard always, re-load on change (ADR 0002 item 8)
     expect(guardSpy).toHaveLength(1);
     expect(loadSpy).toHaveLength(1);
 
-    // Second tab, same key + session + props → warm reuse. Re-guard, skip load.
+    // Same stream re-mounts the same key + session + props → warm reuse.
+    // Re-guard, skip load.
     await mount(handler, { limit: 10 });
     expect(guardSpy).toHaveLength(2); // re-guarded (authorization freshness)
     expect(loadSpy).toHaveLength(1); // load SKIPPED — props unchanged
@@ -258,7 +263,7 @@ describe("warm-mount dedup: re-guard always, re-load on change (ADR 0002 item 8)
     await tick(10);
     expect(loadSpy).toHaveLength(1); // initial load ran (and threw)
 
-    // A second tab warm-remounts the same key + identical props. Because the
+    // The same stream warm-remounts the same key + identical props. Because the
     // failed initial load left no baseline, load must RUN again (not skip).
     loadThrow = null;
     await mount(handler, { limit: 10 });

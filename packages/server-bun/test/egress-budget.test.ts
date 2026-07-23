@@ -46,7 +46,7 @@ async function mount(handler: ReturnType<typeof makeHandler>, path = "/board") {
     new Request(`${base}/__rpxd/control`, {
       method: "POST",
       headers: COOKIE,
-      body: JSON.stringify({ type: "mount", path }),
+      body: JSON.stringify({ type: "mount", path, stream: "s1" }),
     }),
   );
   const { instance } = await res.json();
@@ -113,7 +113,7 @@ describe("SSE egress byte budget — slow-consumer kill (§11)", () => {
     const instance = await mount(handler);
     // Open the stream but never read from it — a stalled client.
     const streamRes = await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+      new Request(`${base}/__rpxd/stream?stream=s1`, { headers: COOKIE }),
     );
     expect((await rpc(handler, instance, "y".repeat(2000))).status).toBe(202);
     await sleep(30); // let the ack flush land on the (unread) stream
@@ -133,7 +133,7 @@ describe("SSE egress byte budget — slow-consumer kill (§11)", () => {
       attachTtlMs: 10,
     });
     const instance = await mount(handler);
-    await handler.fetch(new Request(`${base}/__rpxd/stream`, { headers: COOKIE }));
+    await handler.fetch(new Request(`${base}/__rpxd/stream?stream=s1`, { headers: COOKIE }));
     await rpc(handler, instance, "y".repeat(2000));
     await sleep(30); // overflow kill lands; instance rides the warm TTL now
     expect(handler.instanceCount).toBe(1);
@@ -147,7 +147,7 @@ describe("SSE egress byte budget — slow-consumer kill (§11)", () => {
     const handler = makeHandler({ maxBufferedBytes: 512, onDiagnostic: (e) => events.push(e) });
     const instance = await mount(handler);
     const streamRes = await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+      new Request(`${base}/__rpxd/stream?stream=s1`, { headers: COOKIE }),
     );
     const sse = new SseReader(streamRes);
     expect((await sse.next())?.full).toBeDefined();
@@ -171,7 +171,7 @@ describe("SSE egress byte budget — slow-consumer kill (§11)", () => {
     });
     await mount(handler, "/blob"); // 5 KB setup state ≫ 256-byte budget
     const streamRes = await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+      new Request(`${base}/__rpxd/stream?stream=s1`, { headers: COOKIE }),
     );
     expect(events.find((e) => e.type === "stream-overflow")).toBeDefined();
     const reader = (streamRes.body as ReadableStream<Uint8Array>).getReader();
@@ -187,7 +187,7 @@ describe("SSE egress byte budget — slow-consumer kill (§11)", () => {
     const handler = makeHandler({ maxBufferedBytes: null, onDiagnostic: (e) => events.push(e) });
     const instance = await mount(handler);
     const streamRes = await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, { headers: COOKIE }),
+      new Request(`${base}/__rpxd/stream?stream=s1`, { headers: COOKIE }),
     );
     await rpc(handler, instance, "y".repeat(2000));
     await sleep(30);
@@ -218,6 +218,8 @@ describe("WS egress byte budget — bufferedAmount kill (§11)", () => {
     sid: string;
     sessionData: unknown;
     attach: { token: string | null; seq: number };
+    /** The tab's stream id (ADR 0003) — matches the control mounts' `stream: "s1"`. */
+    stream: string;
     session: unknown;
   }
 
@@ -225,7 +227,13 @@ describe("WS egress byte budget — bufferedAmount kill (§11)", () => {
     const sent: string[] = [];
     let closed = false;
     const socket: SocketLike<FakeWsData> = {
-      data: { sid: "egress-a", sessionData: {}, attach: { token: null, seq: -1 }, session: null },
+      data: {
+        sid: "egress-a",
+        sessionData: {},
+        attach: { token: null, seq: -1 },
+        stream: "s1",
+        session: null,
+      },
       send: (message: string) => {
         sent.push(message);
       },
