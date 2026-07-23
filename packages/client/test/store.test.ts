@@ -6,7 +6,7 @@ import {
   PROTOCOL_VERSION,
   type RpcBatch,
 } from "@rpxd/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { LiveStore, type RpcMeta, rpcMetaFromDef } from "../src/store.ts";
 
 interface Todo {
@@ -453,5 +453,66 @@ describe("server ↔ client integration", () => {
     expect(snap.state).toEqual(inst.state); // client converged on server truth
     expect(store.keyOf("srv-1")).toBe(tempId); // stable key, no remount
     expect(snap.sync.pending).toBe(false);
+  });
+
+  it("two tabs on one shared instance never collide on rpcId (§11 dedupe)", async () => {
+    const def: LiveDefinition<SrvState, "/chat", Sess> = {
+      setup: () => ({ todos: [] }),
+      rpc: {
+        send: {
+          async handler({ text }: { text: string }, ctx) {
+            ctx.patchState((state) => {
+              state.todos.push({ id: `srv-${state.todos.length + 1}`, text });
+            });
+          },
+        },
+      },
+    };
+    const inst = await LiveInstance.create({
+      id: "chat",
+      def,
+      params: {},
+      session: {},
+      storage: memory(),
+      storageKey: "k",
+    });
+
+    // Each browser tab is its own JS realm with a fresh copy of the store
+    // module — module-level counters restart from 0 in every tab.
+    vi.resetModules();
+    const realmA = await import("../src/store.ts");
+    vi.resetModules();
+    const realmB = await import("../src/store.ts");
+
+    const sentIds: string[] = [];
+    const makeTab = (mod: typeof import("../src/store.ts")) => {
+      const store = new mod.LiveStore<SrvState>({
+        instance: "chat",
+        meta: rpcMetaFromDef(def),
+        send: (batch) => {
+          sentIds.push(batch.rpcId);
+          void inst.handleBatch(batch);
+        },
+        requestResync: () => inst.resync(),
+      });
+      inst.addListener((env: Envelope) => store.applyEnvelope(env));
+      inst.resync();
+      return store;
+    };
+    const tabA = makeTab(realmA);
+    const tabB = makeTab(realmB);
+
+    // Alternate sends across the tabs — the reported repro: type, send,
+    // switch tab, type, send. Each awaited call is its own batch.
+    await tabA.call("send", { text: "a1" });
+    await tabB.call("send", { text: "b1" });
+    await tabA.call("send", { text: "a2" });
+    await tabB.call("send", { text: "b2" });
+    await inst.idle();
+
+    // The instance's dedupe cache is keyed by rpcId alone, so ids must be
+    // unique across every client of the instance — not just within one tab.
+    expect(new Set(sentIds).size).toBe(sentIds.length);
+    expect(inst.state.todos.map((t) => t.text)).toEqual(["a1", "b1", "a2", "b2"]);
   });
 });

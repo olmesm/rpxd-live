@@ -118,6 +118,19 @@ export interface LiveStoreOptions {
 
 let tempCounter = 0;
 let rpcCounter = 0;
+/**
+ * Realm-unique tag mixed into every rpcId. The server's at-least-once dedupe
+ * cache (§11) is keyed by rpcId alone and lives on the shared instance, so a
+ * bare counter — which restarts at 0 in every browser tab — collides across
+ * tabs mounted on the same instance: the second tab's batch is re-acked as a
+ * "resend" without running. tempIds stay untagged; they never leave the realm.
+ */
+const rpcRealm = (() => {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  return c?.randomUUID
+    ? c.randomUUID().slice(0, 8)
+    : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+})();
 
 /**
  * Client-side store for one live object instance.
@@ -360,7 +373,7 @@ export class LiveStore<S = unknown, Session = Record<string, unknown>> {
     if (this.#queue.length === 0) return;
     const calls = this.#queue;
     this.#queue = [];
-    const rpcId = `c${++rpcCounter}`;
+    const rpcId = `c${rpcRealm}-${++rpcCounter}`;
     const batch: RpcBatch = {
       v: PROTOCOL_VERSION,
       instance: this.#opts.instance,
