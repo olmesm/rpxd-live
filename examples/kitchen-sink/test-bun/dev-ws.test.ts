@@ -35,7 +35,7 @@ afterAll(async () => {
 
 function openSocket(): Promise<{ socket: WebSocket; next(timeoutMs?: number): Promise<Envelope> }> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://localhost:${server.port}/__rpxd/ws`, {
+    const socket = new WebSocket(`ws://localhost:${server.port}/__rpxd/ws?stream=dev-s1`, {
       // Bun extension: pass the session cookie on the upgrade request
       headers: { cookie: COOKIE },
     } as unknown as string[]);
@@ -72,7 +72,7 @@ describe("dev-mode ws transport (§11)", () => {
     const mountRes = await fetch(`http://localhost:${server.port}/__rpxd/control`, {
       method: "POST",
       headers: { cookie: COOKIE },
-      body: JSON.stringify({ type: "mount", path: "/" }),
+      body: JSON.stringify({ type: "mount", path: "/", stream: "dev-s1" }),
     });
     const { instance } = await mountRes.json();
 

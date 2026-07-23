@@ -200,7 +200,9 @@ describe("duplicate concurrent mounts — one key, one entry", () => {
       new Request(`${base}/__rpxd/control`, {
         method: "POST",
         headers: cookieOf("dup"),
-        body: JSON.stringify({ type: "mount", path: "/dup" }),
+        // Same stream (ADR 0003): the twin race under one registry key is a
+        // SAME-TAB property now — e.g. a double-mounted slot racing itself.
+        body: JSON.stringify({ type: "mount", path: "/dup", stream: "s1" }),
       });
     const p1 = handler.fetch(req());
     const p2 = handler.fetch(req());
@@ -225,7 +227,12 @@ describe("duplicate concurrent mounts — one key, one entry", () => {
     // winner's registry slot and snapshot row must survive it.
     const abort = new AbortController();
     await handler.fetch(
-      new Request(`${base}/__rpxd/stream`, { headers: cookieOf("dup"), signal: abort.signal }),
+      // The winner is scoped to stream s1 (its mounts named it) — connect as
+      // that stream so it subscribes its own instance (ADR 0003).
+      new Request(`${base}/__rpxd/stream?stream=s1`, {
+        headers: cookieOf("dup"),
+        signal: abort.signal,
+      }),
     );
     await new Promise((r) => setTimeout(r, 150)); // past attachTtlMs(100) — an orphan would have evicted
     expect(handler.sessionCount).toBe(1); // slot not clobbered by a twin's eviction

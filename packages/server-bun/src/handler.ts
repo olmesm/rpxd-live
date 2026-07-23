@@ -481,8 +481,26 @@ interface InstanceEntry {
   instance: LiveInstance<any, any, any>;
   /** Owning session id — client lookups by instance id must match it (no cross-session access). */
   sid: string;
-  /** The pathname this entry is keyed under in its session map (for eviction). */
+  /**
+   * The stream-scoped registry key this entry sits under in its session map
+   * (ADR 0003): `${scope}\n${storageKey}`, where `scope` is the owning stream id
+   * or a unique `g:` placeholder for a not-yet-claimed GET/cold mount. Mutable:
+   * an attach-token claim rekeys the entry onto the claiming stream's scope.
+   */
   key: string;
+  /**
+   * The IDENTITY-based storage row qualifier ({@link keyFor}) — deliberately
+   * NOT stream-scoped (ADR 0003): the `${sid}:${storageKey}` snapshot carries
+   * the session slice (§9 continuity), which is per-user shared state. Every
+   * tab's instance of one identity shares the row, last writer wins.
+   */
+  storageKey: string;
+  /**
+   * The client stream (tab) that owns this instance (ADR 0003), or `undefined`
+   * for a GET/cold-born instance no stream has claimed yet. Set at control
+   * mount (the message names its stream) or by an attach-token claim.
+   */
+  streamId?: string;
   path: string;
   params: Record<string, string>;
   /**
@@ -577,7 +595,7 @@ type WsControlIngress =
  * Create the rpxd request handler.
  *
  * Endpoints:
- * - `GET /__rpxd/stream` — SSE envelope stream (all session instances)
+ * - `GET /__rpxd/stream` — SSE envelope stream (the stream's own instances, ADR 0003)
  * - `POST /__rpxd/rpc` — rpc batch upstream
  * - `POST /__rpxd/control` — `mount` / `resync` / `url` / `release`
  * - any other GET matching a route — SSR mount (§12)
@@ -880,6 +898,67 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     return pattern === pathname ? pathname : `${pattern}\n${pathname}`;
   }
 
+  /**
+   * The stream-scoped registry key (ADR 0003): instances belong to ONE client
+   * stream (one tab), so the session map keys by `${scope}\n${identity}` —
+   * `scope` being the owning stream id, or a unique `g:` placeholder for a
+   * GET/cold mount no stream has claimed yet (a placeholder scope can never be
+   * looked up, so those mounts never warm-collide). `\n` can't appear in a URL
+   * path or a client stream id that survives URL encoding, so scopes can't
+   * alias identities.
+   */
+  function scopedKey(scope: string, storageKey: string): string {
+    return `${scope}\n${storageKey}`;
+  }
+
+  /**
+   * Claim a not-yet-owned instance for `streamId` (ADR 0003): stamp ownership
+   * and rekey it onto the stream's scope so the stream's later mounts of the
+   * same identity warm-reuse it (Decision 2's within-tab page↔slot sharing).
+   * Identity-guarded like {@link evictEntry}; if the stream somehow already
+   * holds an entry at the target key, ownership is stamped without the rekey —
+   * the entry stays reachable by instance id and the streamId-match connect loop.
+   */
+  function claimEntryForStream(entry: InstanceEntry, streamId: string): void {
+    const m = sessions.get(entry.sid);
+    const nextKey = scopedKey(streamId, entry.storageKey);
+    if (m && m.get(entry.key) === entry && !m.has(nextKey)) {
+      m.delete(entry.key);
+      entry.key = nextKey;
+      m.set(nextKey, entry);
+    }
+    entry.streamId = streamId;
+  }
+
+  /**
+   * Find the unclaimed entry an SSR attach token names, scoped to one identity
+   * (ADR 0003): the token must match and the entry must be both unowned and of
+   * the SAME identity as the mount presenting it — a valid token never lets a
+   * mount of a different path adopt a foreign instance. Token EQUALITY (not
+   * expiry) proves ownership: the token came from the GET that built the
+   * instance, so a late-connecting tab (slow JS load) still claims its own
+   * instance as long as eviction hasn't collected it — expiry bounds the
+   * un-adopted instance's LIFETIME ({@link scheduleEvictionIfIdle}), and the
+   * seq check at subscribe decides snapshot-vs-silent, not membership.
+   */
+  function claimableByToken(
+    sid: string,
+    storageKey: string,
+    token: string,
+  ): InstanceEntry | undefined {
+    for (const entry of entriesFor(sid).values()) {
+      if (
+        entry.streamId === undefined &&
+        entry.storageKey === storageKey &&
+        entry.attach !== undefined &&
+        timingSafeEqualStr(entry.attach.token, token)
+      ) {
+        return entry;
+      }
+    }
+    return undefined;
+  }
+
   // Reconcile an instance to a URL (§7) — `guard` then `load`. Runs on every
   // page load, fresh or warm: the URL is the query key, so a full-page load (or
   // Link mount) must reconcile to its props, not just the first `setup`.
@@ -983,6 +1062,17 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   ): Promise<{ instance: InstanceEntry["instance"]; loadedClean: boolean }> {
     if (route.def.guard) {
       await runGuard(route.def, match.params, sessionData, search); // deny → throw, nothing built
+    }
+    // Principal-change guard on the COLD path (§10, ADR 0003): every page GET
+    // builds fresh now, so `LiveInstance.create`'s snapshot restore (§9 session
+    // continuity) runs on every reload — and a snapshot written by a DIFFERENT
+    // principal (the sign-out → reload flow) would resurrect the old user.
+    // Apply the same whole-slice rule the warm-reuse branch uses: on mismatch,
+    // drop the row so `create` builds from the freshly authenticated session.
+    const row = `${sid}:${storageKey}`;
+    const snap = await storage.get(row);
+    if (snap && JSON.stringify(snap.session ?? {}) !== JSON.stringify(sessionData ?? {})) {
+      await storage.delete(row);
     }
     const instance = await LiveInstance.create({
       id: crypto.randomUUID(),
@@ -1114,6 +1204,16 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     // page-vs-slot 404 guard and its props schema, then threads it here — one
     // match per GET). Omit it and the mount matches itself (the control plane).
     preMatch?: RouteMatch,
+    // The requesting client stream (ADR 0003): instances are stream-scoped, so
+    // warm reuse only ever finds THIS stream's own instance of the identity.
+    // Absent (a page GET, a cold `LiveConnection.mount`) the fresh instance is
+    // registered under a unique placeholder scope — never warm-reusable until a
+    // stream claims it via its attach token.
+    stream?: string,
+    // The SSR bootstrap attach token (ADR 0003): lets a mount that RACES AHEAD
+    // of its stream's connect claim the SSR-born instance of the same identity
+    // instead of building a twin (order-free page↔slot sharing).
+    attachToken?: string,
   ): Promise<InstanceEntry> {
     // Resolve the caller's matched pattern up front: the session key incorporates
     // it ({@link keyFor}, review R1 finding 1) so a page `/$slug` at the concrete
@@ -1131,10 +1231,26 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       );
     if (!match) throw new NotFoundError(pathname);
     const route = registrations.find((r) => r.path === match.path) as RouteRegistration;
-    const key = keyFor(match.path, pathname);
+    const storageKey = keyFor(match.path, pathname);
+    // Stream-scoped registry key (ADR 0003): a streamless mount (GET / cold
+    // control mount) gets a unique placeholder scope, so it can never collide
+    // with — or be adopted by — another tab's mount of the same identity.
+    const key = scopedKey(stream ?? `g:${crypto.randomUUID()}`, storageKey);
 
     const entries = entriesFor(sid);
-    const existing = entries.get(key);
+    // Warm reuse is scoped to the requesting stream (ADR 0003): only THIS tab's
+    // instance of the identity is reusable. On a miss, a presented attach token
+    // may claim the unclaimed SSR-born twin instead (the mount beat its
+    // stream's connect) — the claim rekeys it onto this stream's scope, so it
+    // flows through the exact same warm-reuse branch.
+    let existing = stream ? entries.get(key) : undefined;
+    if (!existing && stream && attachToken) {
+      const claimable = claimableByToken(sid, storageKey, attachToken);
+      if (claimable) {
+        claimEntryForStream(claimable, stream);
+        existing = claimable;
+      }
+    }
     if (existing) {
       const sameSession =
         JSON.stringify(existing.instance.session ?? {}) === JSON.stringify(sessionData ?? {});
@@ -1157,11 +1273,11 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       // the snapshot, and re-create fresh below rather than adopt the warm
       // instance (§12), which would render the old principal.
       if (existing.evictTimer) clearTimeout(existing.evictTimer);
-      entries.delete(key);
+      entries.delete(existing.key);
       byInstanceId.delete(existing.instance.id);
       unattached.delete(existing);
       await existing.instance.dispose();
-      await storage.delete(`${sid}:${key}`);
+      await storage.delete(`${sid}:${existing.storageKey}`);
     }
 
     // Hard per-session ceiling (C): reserve a slot *before* building. Idle
@@ -1222,7 +1338,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     // the storage/session key so a different-pattern twin can't collide (finding 1).
     const { instance, loadedClean } = await buildInstance(
       sid,
-      key,
+      storageKey,
       sessionData,
       route,
       match,
@@ -1235,7 +1351,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     // and snapshot row — dispose the just-built loser and adopt the winner.
     const winner = entriesFor(sid).get(key);
     if (winner) {
-      await instance.dispose(false); // no snapshot — the winner owns `${sid}:${key}`
+      await instance.dispose(false); // no snapshot — the winner owns the storage row
       return winner;
     }
 
@@ -1243,6 +1359,8 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       instance,
       sid,
       key,
+      storageKey,
+      streamId: stream,
       path: match.path,
       params: match.params,
       // Seed the dedup key ONLY when the initial `buildInstance` load reconciled
@@ -1293,7 +1411,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     } else {
       void entry.instance
         .dispose(false)
-        .then(() => (owner ? storage.delete(`${entry.sid}:${entry.key}`) : undefined))
+        .then(() => (owner ? storage.delete(`${entry.sid}:${entry.storageKey}`) : undefined))
         .catch(() => {});
     }
   }
@@ -1419,14 +1537,16 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
   }
 
   /**
-   * Subscribe every session instance to `send` (shared by SSE and WS, §11 —
-   * the envelope is transport-agnostic). Returns a cleanup that also
-   * re-arms eviction timers.
+   * Subscribe the stream's OWN instances to `send` (shared by SSE and WS, §11 —
+   * the envelope is transport-agnostic; ownership per ADR 0003: streamId match
+   * or an attach-token claim). Returns a cleanup that also re-arms eviction
+   * timers.
    */
   function subscribeSession(
     sid: string,
     send: (env: Envelope) => void,
     attach?: { token: string | null; seq: number },
+    streamId?: string,
   ): StreamHandle {
     const entries = entriesFor(sid);
     /** instanceId → this subscriber's unsub, so a single instance is joined once. */
@@ -1476,7 +1596,35 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       if (entry) scheduleEvictionIfIdle(entry);
     };
 
-    for (const entry of entries.values()) subscribeInstance(entry, true);
+    // Ownership-scoped connect loop (ADR 0003) — a stream joins ONLY:
+    // (1) instances it already owns (a reconnect recovering its own tabs'
+    //     state — never another tab's), and
+    // (2) the unclaimed instance its attach token names (SSR adoption / a cold
+    //     `LiveConnection.mount`), which it CLAIMS — stamping ownership and
+    //     rekeying onto this stream's scope. The pre-ADR-0003 loop subscribed
+    //     every session instance, fanning each tab's envelopes to all tabs.
+    // Snapshot the values first: a claim rekeys mid-iteration, and a Map visits
+    // entries re-inserted under new keys again.
+    for (const entry of [...entries.values()]) {
+      if (streamId !== undefined && entry.streamId === streamId) {
+        subscribeInstance(entry, true);
+        continue;
+      }
+      // Token EQUALITY claims (see {@link claimableByToken}) — a stale-but-
+      // correct token still proves this stream is the tab the GET served; the
+      // seq/expiry check inside subscribeInstance then falls back to a full
+      // resync instead of the silent adoption.
+      if (
+        streamId !== undefined &&
+        entry.streamId === undefined &&
+        attach?.token != null &&
+        entry.attach !== undefined &&
+        timingSafeEqualStr(entry.attach.token, attach.token)
+      ) {
+        claimEntryForStream(entry, streamId);
+        subscribeInstance(entry, true);
+      }
+    }
 
     return {
       subscribeInstance: (entry) => subscribeInstance(entry, false),
@@ -1542,6 +1690,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
               if (maxBufferedBytes != null && (controller.desiredSize ?? 0) < 0) kill();
             },
             { token: attachToken, seq: attachSeq },
+            streamId,
           );
           handle = h;
           if (overflowed) {
@@ -1612,11 +1761,21 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
     sessionData: unknown,
     stream: string | undefined,
     registrations: RouteRegistration[],
+    attachToken?: string,
   ): Promise<MountOutcome> {
     let entry: InstanceEntry;
     try {
       const props = await resolveMountProps(path, rawProps ?? {}, registrations);
-      entry = await mountInstance(sid, sessionData, path, props, registrations);
+      entry = await mountInstance(
+        sid,
+        sessionData,
+        path,
+        props,
+        registrations,
+        undefined,
+        stream,
+        attachToken,
+      );
     } catch (e) {
       if (isRedirect(e)) return { kind: "redirect", location: e.location };
       if (
@@ -1658,6 +1817,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         sessionData,
         msg.stream,
         mountable(),
+        msg.attach,
       );
       // `setup`/`guard` denied (§10): tell the client to navigate rather than
       // instantiate. A GET load handles this as a 302 (see fetch catch).
@@ -1672,6 +1832,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
         seq: entry.instance.seq,
         path: entry.path,
         params: entry.params,
+        // A cold mount (no live stream yet) hands back its adoption token
+        // (ADR 0003): instances are stream-scoped, so the later-connecting
+        // stream presents it as `?attach` to claim this instance.
+        ...(entry.attach !== undefined && { attach: entry.attach.token }),
       });
     }
 
@@ -1729,6 +1893,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
               sessionData,
               msg.stream,
               registrations,
+              msg.attach,
             );
             if (outcome.kind === "redirect") return { redirect: outcome.location };
             if (outcome.kind === "error") {
@@ -1739,6 +1904,7 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
               seq: outcome.entry.instance.seq,
               path: outcome.entry.path,
               params: outcome.entry.params,
+              ...(outcome.entry.attach !== undefined && { attach: outcome.entry.attach.token }),
             };
           } catch (e) {
             // A genuinely unexpected per-entry throw: report it, but keep the
@@ -2113,8 +2279,18 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
       sessionData: unknown,
       send: (env: Envelope) => void,
       attach?: { token: string | null; seq: number },
+      // The client's stream id (ADR 0003, from the upgrade URL's `?stream`):
+      // the socket IS the stream, and instances are stream-scoped, so the
+      // socket's mounts key by it — the same id the client names on its
+      // control POSTs, making POST-mount + frame-join land on ONE instance.
+      streamId: string = crypto.randomUUID(),
     ): { message(raw: string): Promise<void>; close(): void } {
-      const { subscribeInstance, releaseInstance, cleanup } = subscribeSession(sid, send, attach);
+      const { subscribeInstance, releaseInstance, cleanup } = subscribeSession(
+        sid,
+        send,
+        attach,
+        streamId,
+      );
       return {
         async message(raw: string): Promise<void> {
           // Ingress DoS guard (§11): a WS frame carries no Content-Length, so
@@ -2174,7 +2350,16 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
               // the mount (untrusted) — a violation throws ValidationError,
               // answered on the socket by the catch below (the WS surface).
               const props = await resolveMountProps(msg.path, msg.props ?? {}, registrations);
-              const entry = await mountInstance(sid, sessionData, msg.path, props, registrations);
+              const entry = await mountInstance(
+                sid,
+                sessionData,
+                msg.path,
+                props,
+                registrations,
+                undefined,
+                streamId,
+                msg.attach,
+              );
               // A `mount` frame is the client registering a NEW store for this
               // instance and asking for its snapshot (buildSlotHandle sends it right
               // after the store registers). `subscribeInstance` snapshots a FRESH
@@ -2201,8 +2386,10 @@ export function createRpxdHandler(opts: RpxdHandlerOptions) {
                 registrations.map((r) => r.path),
                 msg.path,
               );
+              // Stream-scoped lookup (ADR 0003): only THIS socket's own warm
+              // instance of the identity can lend the redirect its seq/instance.
               const warm = warmMatch
-                ? sessions.get(sid)?.get(keyFor(warmMatch.path, msg.path))
+                ? sessions.get(sid)?.get(scopedKey(streamId, keyFor(warmMatch.path, msg.path)))
                 : undefined;
               // A failed mount usually has no bound instance to address the
               // outcome to, so echo the frame's correlation id (#65) — the

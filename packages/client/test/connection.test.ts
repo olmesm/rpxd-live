@@ -1091,7 +1091,13 @@ describe("ws transport (§11 opt-in)", () => {
   it("attaches over ws and routes batches + controls through the socket", async () => {
     const { conn, redirects, socket } = makeWsConnection();
     const ws = socket();
-    expect(ws.url).toBe("ws://app.test/__rpxd/ws?attach=tok-1&seq=4");
+    // The socket names its stream (ADR 0003: instances are stream-scoped) and
+    // carries the first-connect attach params.
+    const wsUrl = new URL(ws.url);
+    expect(wsUrl.pathname).toBe("/__rpxd/ws");
+    expect(wsUrl.searchParams.get("stream")).toBeTruthy();
+    expect(wsUrl.searchParams.get("attach")).toBe("tok-1");
+    expect(wsUrl.searchParams.get("seq")).toBe("4");
 
     ws.emit("open");
     expect(conn.store.snapshot().status).toBe("live");
@@ -1228,7 +1234,13 @@ describe("ws transport (§11 opt-in)", () => {
 
     const second = socket();
     expect(second).not.toBe(first);
-    expect(second.url).toBe("ws://app.test/__rpxd/ws"); // no stale attach token
+    // No stale attach token on reconnect — but the SAME stream id, so the
+    // server re-subscribes this tab's own instances (ADR 0003).
+    const secondUrl = new URL(second.url);
+    expect(secondUrl.searchParams.get("attach")).toBeNull();
+    expect(secondUrl.searchParams.get("stream")).toBe(
+      new URL(first.url).searchParams.get("stream"),
+    );
     second.emit("open");
     expect(conn.store.snapshot().status).toBe("live");
     // unacked batch resent with the same rpcId (server dedupes)

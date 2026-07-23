@@ -119,6 +119,13 @@ export interface MountControl {
   props: Record<string, unknown>;
   stream?: string;
   mountId?: string;
+  /**
+   * SSR attach token (ADR 0003): instances are stream-scoped, so a mount from
+   * a stream that hasn't connected yet can present the bootstrap's token to
+   * CLAIM the SSR-born instance of the same identity instead of building a
+   * twin — making page↔slot sharing order-free across connect/mount races.
+   */
+  attach?: string;
 }
 
 /**
@@ -175,6 +182,8 @@ export interface MountBatchControl {
   type: "mount-batch";
   stream?: string;
   mounts: { path: string; props: Record<string, unknown> }[];
+  /** SSR attach token, shared by every entry (see {@link MountControl.attach}). */
+  attach?: string;
 }
 
 /**
@@ -186,7 +195,18 @@ export interface MountBatchControl {
  * siblings still resolve.
  */
 export type MountBatchResult =
-  | { instance: string; seq: number; path?: string; params?: Record<string, string> }
+  | {
+      instance: string;
+      seq: number;
+      path?: string;
+      params?: Record<string, string>;
+      /**
+       * Adoption token for a cold mount with no live stream yet (ADR 0003):
+       * instances are stream-scoped, so a stream connecting later presents this
+       * as `?attach` to claim the instance (`LiveConnection.mount`).
+       */
+      attach?: string;
+    }
   | { redirect: string }
   | { error: EnvelopeError };
 

@@ -94,11 +94,10 @@ type RpcBatch = {
 
 - The client coalesces same-tick calls (`queueMicrotask` flush) into one batch →
   one ack. `rpcId` must be unique across **every client of the instance**, not
-  just within one connection: the server's dedupe cache is keyed by rpcId alone
-  and lives on the (possibly shared) instance, so two tabs mounted on the same
-  instance would otherwise swallow each other's batches as "resends". The
-  client's format is a realm-random tag plus a counter
-  (`c<random>-1`, `c<random>-2`, …); the server treats it as opaque.
+  just within one store: the server's dedupe cache is keyed by rpcId alone and
+  an instance can back multiple stores (a page and a same-identity slot). The
+  client's format is a realm-random tag plus a counter (`c<random>-1`,
+  `c<random>-2`, …); the server treats it as opaque.
 - tempIds are **client-local**: the store hands them to optimistic reducers and
   reconciles them on ack. They do not travel in the batch — the server learns of
   a tempId only if a handler calls `ctx.resolveId` (which comes back as `idMap`).
@@ -145,17 +144,27 @@ query params (below).
 ```ts
 type Control =
   | { type: "resync"; instance: string }                                        // gap recovery / late attach
-  | { type: "mount"; path: string; props: Record<string, unknown>; stream?: string; mountId?: string } // cold / same-route / slot mount
-  | { type: "mount-batch"; stream?: string; mounts: { path: string; props: Record<string, unknown> }[] } // N same-tick slot mounts, one POST
+  | { type: "mount"; path: string; props: Record<string, unknown>; stream?: string; mountId?: string; attach?: string } // cold / same-route / slot mount
+  | { type: "mount-batch"; stream?: string; mounts: { path: string; props: Record<string, unknown> }[]; attach?: string } // N same-tick slot mounts, one POST
   | { type: "url"; instance: string; props: Record<string, unknown> }           // nav.patch → guard + load
   | { type: "release"; instance: string; stream: string };                      // same-route nav abandons an instance
 ```
 
+**Instances are stream-scoped (ADR 0003)**: a live instance belongs to ONE
+client stream (one tab). Mounts name their stream; warm reuse only ever finds
+the requesting stream's own instance of an identity, and a second tab mounting
+the same path gets a fresh instance. A stream's connection subscribes only the
+instances it owns. Cross-tab (and cross-user) sync is the bus's job (§8) — the
+protocol makes tabs independent by construction.
+
 - **SSR adoption (§12)** happens at connect: the stream/WS URL carries
-  `?attach=<token>&seq=<n>`. On the connection's first subscribe, a token that
-  matches a warm instance whose `seq` equals the client's adopts it and resumes
-  from that seq — no snapshot. Any mismatch (expired/unknown token, or a seq that
-  has moved on) falls through to an unconditional `full`.
+  `?attach=<token>&seq=<n>`. The token is the **ownership proof** (ADR 0003):
+  token equality (constant-time) CLAIMS the GET-born instance for this stream —
+  a stale-but-correct token still claims (expiry only bounds the un-adopted
+  instance's lifetime), while a wrong token claims nothing (the stream simply
+  isn't the tab that GET served). A claimed instance whose `seq` equals the
+  client's resumes silently — no snapshot; a moved-on seq falls back to an
+  unconditional `full`.
 - `resync` → the server pushes a `full` at the current `seq`. It carries no seq
   and requests no comparison: the server always answers with a full snapshot.
 - `mount` matches `path` against the **union** of routed pages and mount-only
@@ -164,12 +173,17 @@ type Control =
   model (values arrive already typed, not as raw query strings) validated against
   the matched registration's props schema **before** `guard` — an invalid record
   is a `422` (SSE control response) or an `error` envelope (WS) and nothing is
-  built. Its optional `stream` id and the `release` message drive a **soft
-  reload**: a same-route path change joins a fresh instance to the open stream
-  and releases the old one, so the transport survives. Mounting a routed page's
-  own pattern **shares** the session's existing instance for that pattern (the
-  two-tabs semantics) rather than building a second one. A pattern registered as
-  a mount-only slot is **not** served over a browser GET — that is a `404`.
+  built. The response is `{ instance, seq, path, params, attach? }` — `attach`
+  present when the instance still holds its adoption token (a cold mount with no
+  live stream presents it as `?attach` on the later connect). Its optional
+  `stream` id and the `release` message drive a **soft reload**: a same-route
+  path change joins a fresh instance to the open stream and releases the old
+  one, so the transport survives. Mounting a routed page's own pattern from the
+  SAME stream **shares** that tab's existing instance (Decision 2, scoped
+  per-stream by ADR 0003); the optional `attach` field carries the SSR bootstrap
+  token so the claim is order-free when the mount beats the stream's connect. A
+  pattern registered as a mount-only slot is **not** served over a browser GET —
+  that is a `404`.
 - Over WS, `mount` has no response slot — the outcome arrives as envelopes on
   the socket. A mount that denies or fails before binding an instance answers
   with `instance: ""`, which the client's bound-instance filter can never
@@ -187,7 +201,7 @@ type Control =
   ```ts
   type MountBatchResponse = {
     results: (
-      | { instance: string; seq: number; path?: string; params?: Record<string, string> } // mounted
+      | { instance: string; seq: number; path?: string; params?: Record<string, string>; attach?: string } // mounted
       | { redirect: string }                                                               // setup/guard deny
       | { error: { name: string; message: string } }                                       // props-invalid / not-found / cap
     )[];
@@ -246,8 +260,9 @@ type Control =
 
 ## SSE framing
 
-- Endpoint: `GET /__rpxd/stream` (one per connection, all instances
-  multiplexed). SSR adoption and the stream id ride the query string:
+- Endpoint: `GET /__rpxd/stream` (one per connection; the stream's OWN
+  instances multiplexed, ADR 0003). SSR adoption and the stream id ride the
+  query string:
   `?attach=<token>&seq=<n>&stream=<id>`.
 - Each envelope is one SSE event: `event: env`, `data: <json>`, SSE `id:`
   mirrors `seq` for proxy-level resume hints (authoritative resume is still
@@ -257,9 +272,12 @@ type Control =
 ## WS framing
 
 - Single duplex socket, endpoint `GET /__rpxd/ws` (upgrade); SSR adoption rides
-  the same `?attach=<token>&seq=<n>` query params. Every message is one JSON
-  object: envelopes downstream, batches/controls upstream. No other
-  differences — same envelope, same seq rules, same recovery.
+  the same `?attach=<token>&seq=<n>` query params, plus `&stream=<id>` — the
+  client's connection stream id (ADR 0003). The socket IS the stream, and its
+  control POSTs name the same id, so a POST-mount and its socket join land on
+  ONE stream-scoped instance. Every message is one JSON object: envelopes
+  downstream, batches/controls upstream. No other differences — same envelope,
+  same seq rules, same recovery.
 
 ## Invariants (test these)
 

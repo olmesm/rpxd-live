@@ -143,6 +143,15 @@ export interface ConnectionOptions {
   /** SSR bootstrap: seeds the store and attaches to the warm instance (§12). */
   bootstrap?: Bootstrap;
   /**
+   * Adoption handle WITHOUT a snapshot (ADR 0003): instances are stream-scoped,
+   * so a connection built from a cold control mount (`LiveConnection.mount`)
+   * presents the mount response's token as `?attach` to CLAIM its instance on
+   * connect. Unlike {@link bootstrap} it seeds no state — a seq mismatch at
+   * adoption just resyncs. Ignored when `bootstrap` is present (which carries
+   * its own token).
+   */
+  attach?: { token: string; seq: number };
+  /**
    * Transport (§11): `"sse"` (default) or `"ws"` — one duplex socket, same
    * envelope protocol, identical API shape.
    */
@@ -504,11 +513,11 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     }
     if (this.#source) return;
     const base = this.#opts.base ?? "";
-    const boot = this.#opts.bootstrap;
     const query = new URLSearchParams();
-    if (boot) {
-      query.set("attach", boot.attachToken);
-      query.set("seq", String(boot.seq));
+    const adopt = this.#adoption();
+    if (adopt) {
+      query.set("attach", adopt.token);
+      query.set("seq", String(adopt.seq));
     }
     // Name this stream so a tier-2 remount can join/release instances on it (§7).
     query.set("stream", this.#streamId);
@@ -551,9 +560,17 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
 
   #connectWs(): void {
     if (this.#socket || this.#closed) return;
-    const boot = this.#opts.bootstrap;
+    const query = new URLSearchParams();
+    // The socket IS the stream (ADR 0003): name it so the server scopes this
+    // tab's instances to it — the same id the control POSTs carry, so a
+    // POST-mount and its frame-join land on ONE instance.
+    query.set("stream", this.#streamId);
     // Attach params are only valid for the first connect; reconnects resync.
-    const attach = boot && !this.#everOpened ? `?attach=${boot.attachToken}&seq=${boot.seq}` : "";
+    const adopt = this.#adoption();
+    if (adopt && !this.#everOpened) {
+      query.set("attach", adopt.token);
+      query.set("seq", String(adopt.seq));
+    }
     const base = this.#opts.base ?? "";
     const wsBase = base
       ? base.replace(/^http/, "ws")
@@ -562,7 +579,7 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
         : "";
     const factory =
       this.#opts.webSocket ?? ((url: string) => new WebSocket(url) as unknown as WebSocketLike);
-    const socket = factory(`${wsBase}/__rpxd/ws${attach}`);
+    const socket = factory(`${wsBase}/__rpxd/ws?${query}`);
     this.#socket = socket;
     this.#setStatusAll(this.#everOpened ? "reconnecting" : "connecting");
 
@@ -955,6 +972,10 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
         type: "mount-batch",
         stream: this.#streamId,
         mounts: pending.map((p) => ({ path: p.path, props: p.props })),
+        // The SSR token rides every mount (ADR 0003): a slot sharing the PAGE's
+        // identity claims the SSR-born instance even when this POST beats the
+        // stream connect — order-free within-tab sharing.
+        ...(this.#opts.bootstrap && { attach: this.#opts.bootstrap.attachToken }),
       }),
       credentials: "same-origin",
     });
@@ -1060,8 +1081,15 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     const res = await this.#fetch()(`${this.#opts.base ?? ""}/__rpxd/control`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      // The mount control carries `props` (ADR 0002 item 6).
-      body: JSON.stringify({ type: "mount", path, props, stream: this.#streamId }),
+      // The mount control carries `props` (ADR 0002 item 6); the SSR token
+      // rides along for the order-free same-identity claim (ADR 0003).
+      body: JSON.stringify({
+        type: "mount",
+        path,
+        props,
+        stream: this.#streamId,
+        ...(this.#opts.bootstrap && { attach: this.#opts.bootstrap.attachToken }),
+      }),
       credentials: "same-origin",
     });
     if (!res.ok) throw new Error(`remount failed: ${res.status}`);
@@ -1149,6 +1177,17 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
     else console.warn(`[rpxd] ignoring unsafe redirect target: ${target}`);
   }
 
+  /**
+   * The adoption handle for connect (§12, ADR 0003): the SSR bootstrap's
+   * token+seq, or the cold-mount `attach` option — how this stream CLAIMS its
+   * server-side instance under stream-scoped ownership.
+   */
+  #adoption(): { token: string; seq: number } | undefined {
+    const boot = this.#opts.bootstrap;
+    if (boot) return { token: boot.attachToken, seq: boot.seq };
+    return this.#opts.attach;
+  }
+
   /** Close the transport. Server-side warm TTL takes it from here (§11). */
   close(): void {
     this.#closed = true;
@@ -1220,11 +1259,22 @@ export class LiveConnection<S = unknown, Session = Record<string, unknown>> {
       credentials: "same-origin",
     });
     if (!res.ok) throw new Error(`mount failed: ${res.status}`);
-    const parsed = (await res.json()) as { instance: string } | { redirect: string };
+    const parsed = (await res.json()) as
+      | { instance: string; seq?: number; attach?: string }
+      | { redirect: string };
     // `mount` rejected with redirect() (§10) — surface it so the router can
     // soft-navigate to the target instead of connecting a broken instance.
     if ("redirect" in parsed) throw redirect(parsed.redirect);
-    const conn = new LiveConnection<S, Session>({ ...opts, instance: parsed.instance });
+    const conn = new LiveConnection<S, Session>({
+      ...opts,
+      instance: parsed.instance,
+      // The mount's adoption token (ADR 0003): instances are stream-scoped, so
+      // connect() presents it to claim the just-mounted instance — without it a
+      // cold-mounted connection would never be subscribed to its own instance.
+      ...(parsed.attach !== undefined && {
+        attach: { token: parsed.attach, seq: parsed.seq ?? 0 },
+      }),
+    });
     conn.connect();
     return conn;
   }

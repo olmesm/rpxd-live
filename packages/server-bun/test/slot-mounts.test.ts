@@ -269,11 +269,20 @@ describe("union-table control-plane mounts (ADR 0002 item 6)", () => {
     ).text();
     const boot = JSON.parse(
       /<script id="__rpxd" type="application\/json">(.*?)<\/script>/s.exec(html)?.[1] as string,
-    ) as { instance: string };
+    ) as { instance: string; attachToken: string };
 
-    // …and a control-plane mount of the SAME concrete path in the SAME session
+    // …and a control-plane mount of the SAME concrete path from the SAME TAB
     // shares it (Decision 2 — a routed page is a mountable slot by construction).
-    const res = await control(handler, { type: "mount", path: "/org/9/board", props: {} });
+    // Instances are stream-scoped (ADR 0003), so the mount presents the tab's
+    // bootstrap attach token to CLAIM the SSR-born instance — order-free with
+    // respect to the stream connect (which hasn't happened here).
+    const res = await control(handler, {
+      type: "mount",
+      path: "/org/9/board",
+      props: {},
+      stream: "tab-a",
+      attach: boot.attachToken,
+    });
     const { instance } = (await res.json()) as { instance: string };
     expect(instance).toBe(boot.instance);
     expect(handler.instanceCount).toBe(1);
@@ -393,8 +402,16 @@ describe("union-table control-plane mounts (ADR 0002 item 6)", () => {
     const handler = makeSlugHandler({ slots: [] });
     const boot = bootOf(
       await (await handler.fetch(new Request(`${base}/about`, { headers: COOKIE }))).text(),
-    );
-    const res = await control(handler, { type: "mount", path: "/about", props: {} });
+    ) as unknown as { instance: string; attachToken: string };
+    // Stream-scoped instances (ADR 0003): the tab's mount claims the SSR-born
+    // instance via its bootstrap attach token (same pattern → same identity).
+    const res = await control(handler, {
+      type: "mount",
+      path: "/about",
+      props: {},
+      stream: "tab-a",
+      attach: boot.attachToken,
+    });
     const { instance } = (await res.json()) as { instance: string };
     expect(instance).toBe(boot.instance); // shared — same pattern, same concrete path
     expect(handler.instanceCount).toBe(1);
@@ -428,42 +445,34 @@ describe("union-table control-plane mounts (ADR 0002 item 6)", () => {
   // ADR 0002 items 8/9/11 — the WS slot-join double layer (PR #129 CI): on WS the
   // socket *is* the stream, so after the control mount resolves the instance id the
   // client sends a `mount` FRAME to join its freshly-registered store to the socket.
-  // For a SECOND tab the slot is already warm, so subscribeSession's connect-time
-  // loop already subscribed the instance on this socket and resynced it — but that
-  // snapshot predates the client's store (connection.ts drops envelopes for an
-  // instance it doesn't hold yet). The join frame is therefore the ONLY moment the
-  // late store can be snapshotted; the idempotent subscribe must still resync it,
-  // and item 8's dedup must keep it from re-running `load`.
-  it("WS: a mount frame for an already-warm slot resyncs the newly-joined store without re-running load (2nd-tab race)", async () => {
+  // Under stream-scoped instances (ADR 0003) the second-TAB variant of this race is
+  // gone (another tab mounts its own instance), but the same-socket variant remains:
+  // a SECOND same-identity <LiveSlot> on one page registers its own store and sends
+  // its own join frame while the instance is already on the socket. The idempotent
+  // subscribe early-returns, so the frame's resync is the ONLY moment that late
+  // store can be snapshotted — and item 8's dedup must keep it from re-running `load`.
+  it("WS: a mount frame for a slot already on this socket resyncs the newly-registered store without re-running load", async () => {
     const handler = makeHandler();
 
-    // Tab 1: a fresh socket mounts the chat slot. Its frame builds the instance and
-    // resyncs — this tab works today (the instance was born after the socket).
-    const aEnvs: Envelope[] = [];
-    const sockA = handler.socket("session-a", {}, (e) => aEnvs.push(e));
-    await sockA.message(JSON.stringify({ type: "mount", path: "/chat", props: { tools: ["x"] } }));
+    // First slot: the frame builds the instance (scoped to this socket) and resyncs.
+    const envs: Envelope[] = [];
+    const sock = handler.socket("session-a", {}, (e) => envs.push(e));
+    await sock.message(JSON.stringify({ type: "mount", path: "/chat", props: { tools: ["x"] } }));
     expect(chatLoad).toBe(1);
-    expect(aEnvs.some((e) => e.full)).toBe(true); // tab 1 got its snapshot
+    expect(envs.some((e) => e.full)).toBe(true); // first store got its snapshot
+    envs.length = 0; // from here, only what the second join FRAME produces counts
 
-    // Tab 2: a second socket opens while chat is already warm. The connect-time
-    // resync fires immediately — but a real client has not registered its store yet,
-    // so that snapshot is wasted (documents the race).
-    const bEnvs: Envelope[] = [];
-    const sockB = handler.socket("session-a", {}, (e) => bEnvs.push(e));
-    expect(bEnvs.some((e) => e.full)).toBe(true); // connect-time snapshot (store-less → dropped client-side)
-    bEnvs.length = 0; // from here, only what the join FRAME produces counts
-
-    await sockB.message(JSON.stringify({ type: "mount", path: "/chat", props: { tools: ["x"] } }));
+    // Second same-identity slot on the same page: warm on THIS socket already.
+    await sock.message(JSON.stringify({ type: "mount", path: "/chat", props: { tools: ["x"] } }));
 
     // Item 8 dedup holds across the frame path: identical props → no reload.
     expect(chatLoad).toBe(1);
-    // The join frame MUST resync the late-registered tab-2 store. Without it the warm
+    // The join frame MUST resync the late-registered store. Without it the warm
     // instance is already on this socket (idempotent subscribe → early return), no
-    // envelope is emitted, and the client's chat store hangs in `fallback` forever.
-    expect(bEnvs.some((e) => e.full)).toBe(true);
+    // envelope is emitted, and the second slot's store hangs in `fallback` forever.
+    expect(envs.some((e) => e.full)).toBe(true);
 
-    sockA.close();
-    sockB.close();
+    sock.close();
     await handler.dispose();
   });
 
